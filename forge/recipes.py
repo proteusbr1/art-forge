@@ -2,9 +2,9 @@
 The order is read by forge.order.load_order, which merges the family defaults of the
 per-piece keys (variants, stages, skip, params, inputs, review) into each piece.
 
-  unit          FLUX.2 Klein concept, N seeds -> automatic pick -> 3 more views by
+  figure        FLUX.2 Klein concept, N seeds -> automatic pick -> 3 more views by
                 Qwen-Image-Edit 2511 (90, 180, 270 degrees) -> sheet -> Hunyuan3D 2.1
-                shape + Paint (PBR) from the picked front view
+                shape + Paint (PBR) from the picked front view (unrigged)
   vehicle       Klein 3/4 concept, N seeds -> pick -> 4 views (sides, back, top) -> sheet ->
                 emissive mask of the lights (Qwen-Image-Edit) -> mesh with a 4096 texture
   object_3d     Klein concept, N seeds -> pick -> Hunyuan3D 2.1 shape + Paint; with
@@ -143,8 +143,8 @@ def recipe_illustration(fam, a, st):
 
 
 def recipe_vehicle(fam, a, st):
-    """Craft seen large (world map, air combat): 3/4 concept, side, back, other side and top
-    views, sheet, emissive mask of the lights, mesh with a 4096 texture."""
+    """A vehicle seen whole: 3/4 concept, side, back, other side and top views, sheet,
+    emissive mask of the lights, mesh with a 4096 texture."""
     jobs = concept_jobs(fam, a, st, "view_vehicle", 8, (1536, 1024))
     pick = jobs[-1]["id"]
     fid, aid = fam["id"], a["id"]
@@ -160,8 +160,10 @@ def recipe_vehicle(fam, a, st):
     return jobs
 
 
-def recipe_unit(fam, a, st):
-    jobs = concept_jobs(fam, a, st, "view_unit", 8, (1024, 1536))
+def recipe_figure(fam, a, st):
+    """A figure without a rig: front concept, three more views, sheet, optional emissive
+    mask, mesh."""
+    jobs = concept_jobs(fam, a, st, "view_figure", 8, (1024, 1536))
     pick = jobs[-1]["id"]
     fid, aid = fam["id"], a["id"]
     sheet = [{"ref": pick, "role": "rgba"}]
@@ -218,6 +220,18 @@ HUMANOID_SIZE = (1024, 1536)
 EDIT_VALUES = {"$NEGATIVE$": "", "$STEPS$": 4, "$CFG$": 1.0, "$LORA$": 1.0}
 REVIEW_DEFAULTS = {"pitch": 60, "directions": 8, "figure_height": 96, "front": True}
 EXPORT_PARAMS = ("height", "head", "hands", "feet", "widen")
+# The rig's seed unless the order's rig setting "seed" gives another (the lab's SkinTokens
+# setting: seed 9001, 10 beams).
+RIG_SEED = 9001
+
+
+def variant_bone_map(given, variant):
+    """The bone map file of one variant: inputs.bone_map is a file for every variant, or an
+    object {"v<seed>" or "<seed>": file} for some of them (SkinTokens predicts a skeleton per
+    variant); a variant it does not name gets the proposal."""
+    if isinstance(given, dict):
+        return given.get(variant) or given.get(variant[1:])
+    return given or None
 
 
 def humanoid_texts(st, fam, a):
@@ -253,6 +267,9 @@ def recipe_humanoid(fam, a, st):
         def add(stage, job):
             job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, stage), "stage": stage, "variant": v})
             job.setdefault("group", fields[stage]["group"])
+            if fields[stage].get("ignored"):
+                # Arguments the catalogue knows the tool ignores (the provenance says why).
+                job["ignored"] = dict(fields[stage]["ignored"])
             jobs.append(job)
             chain.append(job["id"])
             return job["id"]
@@ -316,24 +333,32 @@ def recipe_humanoid(fam, a, st):
         painted = {"ref": last, "role": "painted_mesh"}
         # rig, export: local tools on the card (forge/local_gpu.py RUNNERS)
         if "rig" in opts:
-            args = {"method": opts["rig"], "seed": s}
+            # The rig seed is the validated setting (9001 with 10 beams), not the variant's
+            # seed; the stage's "seed" setting overrides it.
+            args = {"method": opts["rig"], "seed": RIG_SEED}
             if opts["rig"] == "skintokens":
                 args.update(beams=10, postprocess=False)
             last, role = add("rig", {"kind": "local_gpu", "tool": "rig", "inputs": {"mesh": painted}, "args": args}), "rig"
         if "export" in opts:
             ins = {"rig": {"ref": last, "role": "rig"}, "bake_source": {"ref": mesh, "role": "raw_mesh"}}
-            for name, key in (("clips", "file"), ("items", "folder"), ("bone_map", "file")):
+            for name, key in (("clips", "file"), ("items", "folder")):
                 if inputs.get(name):
                     ins[name] = {key: inputs[name]}
+            bone_map = variant_bone_map(inputs.get("bone_map"), v)
+            if bone_map:
+                ins["bone_map"] = {"file": bone_map}
             args = {"name": aid, "tris": tris, "normal_map": tex}
             args.update({k: v for k, v in (a.get("params") or {}).items() if k in EXPORT_PARAMS})
             last, role = add("export", {"kind": "local_gpu", "tool": "export", "inputs": ins, "args": args}), "glb"
         variants.append({"variant": v, "job": last, "role": role, "chain": list(chain)})
     last_ids = [x["job"] for x in variants]
     # review: one sheet of every variant (failures marked), once none is still running
-    jobs.append({"id": "%s/%s/review" % (fid, aid), "kind": "local_gpu", "tool": "review", "stage": "review",
-                 "group": fields["review"]["group"], "partial": True, "from": last_ids, "variants": variants,
-                 "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))})
+    review = {"id": "%s/%s/review" % (fid, aid), "kind": "local_gpu", "tool": "review", "stage": "review",
+              "group": fields["review"]["group"], "partial": True, "from": last_ids, "variants": variants,
+              "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))}
+    if fields["review"].get("ignored"):
+        review["ignored"] = dict(fields["review"]["ignored"])
+    jobs.append(review)
     # final: the chosen variant copied to final/ (automatic pick provisional, pending review)
     jobs.append({"id": "%s/%s/final" % (fid, aid), "kind": "final", "group": "local", "partial": True,
                  "from": last_ids, "variants": variants})
@@ -374,6 +399,13 @@ def check_humanoid(where, piece, problems):
             if why:
                 problems.append("%s: inputs.reference %s: with pose skipped and cutout birefnet it must have a "
                                 "transparent background (or use cutout qwen_edit_character)" % (where, why))
+    bone_map = inputs.get("bone_map")
+    if isinstance(bone_map, dict):
+        names = ["v%d" % s for s in seeds_for(where, variants_of({}, piece, 4))]
+        for key in bone_map:
+            if key not in names and "v" + str(key) not in names:
+                problems.append("%s: inputs.bone_map names %r, which is no variant of this piece (variants: %s)" % (
+                    where, key, ", ".join(names)))
     tex = params.get("texture")
     if isinstance(tex, int) and not isinstance(tex, bool):
         if opts.get("paint") == "hunyuan_paint" and not (512 <= tex <= 4096 and tex % 512 == 0):
@@ -383,7 +415,7 @@ def check_humanoid(where, piece, problems):
             problems.append("%s: params.texture %d: TRELLIS.2's bake takes 256 to 8192, a multiple of 256" % (where, tex))
 
 
-RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "unit": recipe_unit,
+RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "figure": recipe_figure,
            "object_3d": recipe_object_3d, "concept": recipe_concept, "prop": recipe_prop,
            "material": recipe_material, "humanoid": recipe_humanoid}
 # Recipe-specific checks of a piece, called by forge.order.check_order with the piece's

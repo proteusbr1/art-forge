@@ -42,6 +42,11 @@ def lock_dir(folder=None):
         return folder
     if os.environ.get("FORGE_LOCK_DIR"):
         return os.environ["FORGE_LOCK_DIR"]
+    return default_lock_dir()
+
+
+def default_lock_dir():
+    """The lock folder without FORGE_LOCK_DIR: this user's machine-wide one."""
     if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
         return os.path.join(os.environ["LOCALAPPDATA"], "art-forge")
     return os.path.join(os.path.expanduser("~"), ".local", "state", "art-forge")
@@ -228,3 +233,32 @@ def busy_processes(procs, busy_mb):
     """The processes of gpu_processes() that hold more than busy_mb of VRAM (other than this
     one)."""
     return [p for p in procs or [] if p["mb"] is not None and p["mb"] > busy_mb and p["pid"] != os.getpid()]
+
+
+def gpu_memory(server=None, exe=None, timeout=15):
+    """{"used_mb", "total_mb", "source"} of the card: from nvidia-smi --query-gpu (the first
+    card), else from the ComfyUI server's /system_stats (vram_total - vram_free of its first
+    device), else None. The measure of a local GPU job's wait when the driver reports no
+    VRAM amount per process (Windows display drivers)."""
+    exe = exe or os.environ.get("FORGE_NVIDIA_SMI") or "nvidia-smi"
+    flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    try:
+        res = subprocess.run([exe, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, **flags)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) == 2 and all(p.replace(".", "", 1).isdigit() for p in parts):
+                    return {"used_mb": int(float(parts[0])), "total_mb": int(float(parts[1])), "source": "nvidia-smi"}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if server is not None:
+        try:
+            dev = server.get_json("/system_stats")["devices"][0]
+            total, free = dev.get("vram_total"), dev.get("vram_free")
+            if total and free is not None:
+                return {"used_mb": int((total - free) / 2 ** 20), "total_mb": int(total / 2 ** 20),
+                        "source": "ComfyUI /system_stats"}
+        except Exception:
+            pass
+    return None

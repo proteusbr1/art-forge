@@ -136,6 +136,46 @@ def _git_revision(folder):
     return None
 
 
+def tool_fingerprint(job, config):
+    """What a local GPU job's specification takes from the tool it runs: the SHA-256 of the
+    scripts its runner uses (rig: the SkinTokens entry; export: the exporter and the bone
+    map module; review: the Godot review project) and, for the rig, the checked-out git
+    revision of the configured checkout. A fixed tool redoes its jobs; weight files are left
+    to the provenance record. None for a runner this module does not know."""
+    tool = job.get("tool")
+    args = job.get("args") or {}
+    if tool == "rig":
+        method = args.get("method", "skintokens")
+        scripts = [SKINTOKENS_ENTRY] if method == "skintokens" else []
+        key = RIG_METHODS.get(method, (None,))[0]
+        folder = (config or {}).get(key) if key else None
+        extra = {"checkout_revision": _git_revision(folder) if folder else None}
+    elif tool == "export":
+        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT], {}
+    elif tool == "review":
+        scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in REVIEW_FILES], {}
+    else:
+        return None
+    files = {os.path.basename(p): (sha_file_cached(p) if os.path.isfile(p) else "missing") for p in scripts}
+    return dict(extra, scripts=files)
+
+
+def manual_bone_map(out_dir):
+    """SHA-256 of <out_dir>/bone_map.json when a person marked it "manual": true (it then
+    wins over the proposal: a changed manual map redoes the export), else None."""
+    path = os.path.join(out_dir, "bone_map.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(doc, dict) and doc.get("manual"):
+        return sha_file_cached(path)
+    return None
+
+
 def _model_files(folder, limit=50):
     """Model weight files under a folder, with sizes and hashes (cached by size and time)."""
     out = []
@@ -499,6 +539,10 @@ def variant_failure(factory, variant):
     """Why a variant did not finish: the first failed job of its chain and its error."""
     for jid in variant["chain"]:
         e = factory.entry(jid)
+        why = getattr(factory, "spec_errors", {}).get(jid)
+        if why:
+            stage = factory.by_id[jid].get("stage") or jid.rsplit("/", 1)[-1]
+            return "%s failed: %s" % (stage, why[:120])
         if e.get("status") == "failed":
             err = (e.get("error") or "").strip().splitlines()
             stage = factory.by_id[jid].get("stage") or jid.rsplit("/", 1)[-1]

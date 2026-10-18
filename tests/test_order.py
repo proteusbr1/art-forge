@@ -197,11 +197,22 @@ class ConfigTest(unittest.TestCase):
             cfg = load_config(path)
             self.assertEqual(set(cfg), {"comfy_url", "python", "blender_python", "unirig_dir", "unirig_venv",
                                         "unirig_hf", "unirig_shim", "skintokens_dir", "skintokens_python",
-                                        "godot", "bake_device", "gpu_wait", "gpu_busy_mb"})
-            self.assertEqual((cfg["gpu_wait"], cfg["gpu_busy_mb"]), (300, 2048))
+                                        "godot", "bake_device", "gpu_wait", "gpu_busy_mb", "gpu_used_busy_mb",
+                                        "queue_wait_warn"})
+            self.assertEqual((cfg["gpu_wait"], cfg["gpu_busy_mb"], cfg["gpu_used_busy_mb"], cfg["queue_wait_warn"]),
+                             (300, 2048, 4096, 3600))
             self.assertEqual(cfg["bake_device"], "GPU")
             self.assertEqual(cfg["comfy_url"], "http://127.0.0.1:9999")
             self.assertEqual(cfg["godot"], os.path.join(tmp, "tools", "godot.exe"))
+            # A copy of the file elsewhere (the launcher's snapshot) resolves against the
+            # folder it is told, as the original would.
+            copy = os.path.join(tmp, "program")
+            os.makedirs(copy)
+            shutil.copy(path, os.path.join(copy, "forge.local.json"))
+            self.assertEqual(load_config(os.path.join(copy, "forge.local.json"))["godot"],
+                             os.path.join(copy, "tools", "godot.exe"))
+            self.assertEqual(load_config(os.path.join(copy, "forge.local.json"), tmp)["godot"],
+                             os.path.join(tmp, "tools", "godot.exe"))
             self.assertIsNone(cfg["unirig_dir"])
             self.assertEqual(load_config(os.path.join(tmp, "absent.json"))["comfy_url"], "http://127.0.0.1:8188")
             with open(path, "w", encoding="utf-8") as f:

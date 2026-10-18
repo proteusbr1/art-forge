@@ -5,7 +5,8 @@
 #   .\Run-Forge.ps1 -Order <order.json> -Out <folder>            start (or resume) in the background
 #   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Check     check the order, then the environment
 #   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Estimate  job counts and estimated GPU hours
-#   .\Run-Forge.ps1 -Out <folder> -Status                        progress, failures, GPU lock, last log lines
+#   .\Run-Forge.ps1 -Out <folder> -Status                        progress, failures, GPU lock, what a local
+#                                                                GPU job waits for, last log lines
 #   .\Run-Forge.ps1 -Out <folder> -Stop                          stop after the prompts already queued
 #   .\Run-Forge.ps1 -Out <folder> -Stop -Now                     stop now (queued prompts are collected on resume)
 #
@@ -16,7 +17,8 @@
 # The running factory uses a snapshot of the program, the workflows, the local tools, the
 # order and the configuration copied to <Out>\program, so editing them does not change a
 # run in progress: edit, then -Stop and start again (finished jobs are skipped by the
-# manifest). Relative input paths of the order still resolve against the order's own folder.
+# manifest). Relative input paths of the order still resolve against the order's own folder,
+# and relative paths of forge.local.json against this repository (as with -Check).
 #
 # -Check prints two results: "order: valid" or its problems, then the environment as
 # "verified", "not ready" (with the list) or "not verified" (the server did not answer:
@@ -45,6 +47,16 @@ $configPath = Join-Path $root "forge.local.json"
 function Get-FullPath([string]$path) {
     return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).Path, $path))
 }
+
+# One argument of a Windows command line: quoted when it has a space or a backslash, with
+# the backslashes before the closing quote doubled (a quoted C:\ would otherwise escape
+# its own closing quote).
+# BEGIN Format-Argument
+function Format-Argument([string]$arg) {
+    if ($arg -notmatch "[\s\\]") { return $arg }
+    return "`"" + ($arg -replace '(\\+)$', '$1$1') + "`""
+}
+# END Format-Argument
 
 function Test-Inside([string]$path, [string]$folder) {
     $p = $path.TrimEnd("\") + "\"
@@ -107,7 +119,26 @@ if ($Status) {
         } else { Write-Host "GPU lock: free." }
     } else { Write-Host "GPU lock: free." }
     $state = Join-Path $Out "state.json"
-    if (Test-Path $state) { Get-Content -Raw $state | Write-Host }
+    if (Test-Path $state) {
+        $raw = Get-Content -Raw $state
+        $doc = $raw | ConvertFrom-Json
+        # What a local GPU job is waiting for (the whole ComfyUI queue empty, /free, other
+        # processes on the card), or which one is running.
+        if ($doc.gpu_wait) {
+            $w = $doc.gpu_wait
+            $word = "waits"
+            if ($w.stalled) { $word = "STALLED, waits" }
+            Write-Host "Local GPU job $($w.job) $word since $($w.since) ($([int]$w.seconds) s): $($w.reason)."
+            if ($w.holders -and $w.holders.other_prompts) {
+                Write-Host "  Prompts of other clients in the queue: $($w.holders.other_prompts -join ', ')"
+            }
+        }
+        if ($doc.local_gpu_running) {
+            $r = $doc.local_gpu_running
+            Write-Host "Local GPU job $($r.job) running since $($r.since) (tool $($r.tool))."
+        }
+        $raw | Write-Host
+    }
     $log = Join-Path $Out "factory.log"
     if (Test-Path $log) { Get-Content $log -Tail 15 | Write-Host }
     exit 0
@@ -180,7 +211,8 @@ $factoryArgs = @("-m", "forge", "--order", "$program\order.json", "--order-base"
     "--out", $Out, "--limit", "$Limit")
 if (Test-Path $configPath) {
     Copy-Item -Force $configPath (Join-Path $program "forge.local.json")
-    $factoryArgs += @("--config", "$program\forge.local.json")
+    # Relative paths of the copy still resolve against this repository, as with -Check.
+    $factoryArgs += @("--config", "$program\forge.local.json", "--config-base", $root)
 }
 if ($Only -ne "") { $factoryArgs += @("--only", $Only) }
 if ($RetryFailed) { $factoryArgs += "--retry-failed" }
@@ -195,7 +227,7 @@ if ($Foreground) {
 # with pythonw it has no window. Its own log is <Out>\factory.log.
 $pythonw = Join-Path (Split-Path $python) "pythonw.exe"
 if (-not (Test-Path $pythonw)) { $pythonw = $python }
-$line = "`"$pythonw`" " + (($factoryArgs | ForEach-Object { if ($_ -match "[\s\\]") { "`"$_`"" } else { $_ } }) -join " ")
+$line = "`"$pythonw`" " + (($factoryArgs | ForEach-Object { Format-Argument $_ }) -join " ")
 $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $line; CurrentDirectory = $program }
 if ($r.ReturnValue -ne 0) { throw "could not start the factory (Win32_Process.Create returned $($r.ReturnValue))" }
 Write-Host "Factory started in the background (pid $($r.ProcessId)). Log: $Out\factory.log"

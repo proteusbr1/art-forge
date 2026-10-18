@@ -52,8 +52,8 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 
 | Key | Used by |
 |---|---|
-| `global` | every concept (unit, vehicle, object_3d, concept, illustration, prop) and every humanoid reference |
-| `view_unit`, `view_object`, `view_prop`, `view_vehicle`, `view_illustration` | the default view of each recipe (required when the order has a piece of that recipe) |
+| `global` | every concept (figure, vehicle, object_3d, concept, illustration, prop) and every humanoid reference |
+| `view_figure`, `view_object`, `view_prop`, `view_vehicle`, `view_illustration` | the default view of each recipe (required when the order has a piece of that recipe) |
 | `view_humanoid` | the view of every humanoid reference, and the text of its pose and cutout edits unless the next two are given (required when the order has a humanoid). It describes only what should be seen: full body in an A-pose, open empty hands held away from the body, plain grey background, even light |
 | `pose_humanoid`, `cutout_humanoid` | optional: the text of the humanoid's pose edit and of its `qwen_edit_character` cutout (what the edited picture shows) |
 | other `view_*` (for example `view_creature`, `view_icon`) | when a family or piece asks for that `"view"` |
@@ -61,7 +61,7 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 | other `material_*` (for example `material_sky`) | a material whose `"view"` names it |
 | `material_look` | appended to every material |
 | `material_negative` | negative text of every material (required when there is a material) |
-| `emissive` | the emissive-mask request (required with a vehicle, or a unit with `emissive`) |
+| `emissive` | the emissive-mask request (required with a vehicle, or a figure with `emissive`) |
 | `tier_<level>` | one per level the pieces use (for example `tier_basic`, `tier_advanced`) |
 
 ## Family
@@ -98,7 +98,7 @@ Inherited keys:
 | `view` | concepts: a `style` key; materials: `front`, `top` or a `material_*` key |
 | `seeds` | number of seeds (`variants` replaces it) |
 | `size` | `[width, height]` of the concept |
-| `emissive` | `true`: a unit also makes the emissive mask |
+| `emissive` | `true`: a figure also makes the emissive mask |
 | `3d` | `false`: a prop without a mesh |
 | `faces` | maximum faces of the mesh (`params.tris` replaces it) |
 | `texture_size` | Hunyuan Paint texture (default 2048, vehicle 4096; `params.texture` replaces it) |
@@ -142,8 +142,8 @@ Types: `int` (whole number in its range, sometimes a multiple of a step), `numbe
 
 The core recipes have one option per stage (the models they always used): stage
 `concept` (option `klein`) in `concept`, `illustration`, `object_3d`, `prop`, `vehicle`
-and `unit`; stage `mesh` (option `hunyuan21`) in `object_3d`, `prop`, `vehicle` and
-`unit`. `material` has no stages. No core stage can be skipped.
+and `figure`; stage `mesh` (option `hunyuan21`) in `object_3d`, `prop`, `vehicle` and
+`figure`. `material` has no stages. No core stage can be skipped.
 
 | Option | Workflow | Setting | Type and range | Lands on |
 |---|---|---|---|---|
@@ -169,6 +169,7 @@ at 512 (18), shape upsampled (23) and texture (12); without a setting each keeps
 workflow's value and the variant's seed. `trellis2` is the default mesh option of the
 `humanoid` recipe (below). A texture setting on a job that drops the texture bake is
 refused: in a humanoid the bake is dropped unless paint is skipped or `trellis2_texture`.
+A setting with several targets (`sampler`) lands only on the samplers the job keeps.
 
 Without settings a piece's jobs are the same as before (no hash changes).
 
@@ -176,8 +177,8 @@ Without settings a piece's jobs are the same as before (no hash changes).
 
 | Name | Type | Meaning | Read by |
 |---|---|---|---|
-| `tris` | whole number above 0 | triangle (face) budget of a mesh | object_3d, prop, vehicle, unit; humanoid mesh and export (default 25000) |
-| `texture` | whole number above 0 | texture size in pixels | object_3d, prop, vehicle, unit; humanoid paint (512 to 4096, a multiple of 512) or TRELLIS.2 bake (256 to 8192, a multiple of 256), and the export's normal map (default 2048) |
+| `tris` | whole number above 0 | triangle (face) budget of a mesh | object_3d, prop, vehicle, figure; humanoid mesh and export (default 25000) |
+| `texture` | whole number above 0 | texture size in pixels | object_3d, prop, vehicle, figure; humanoid paint (512 to 4096, a multiple of 512) or TRELLIS.2 bake (256 to 8192, a multiple of 256), and the export's normal map (default 2048) |
 | `height` | number above 0 | figure height in metres | humanoid export |
 | `head`, `hands`, `feet`, `widen` | number above 0 | proportions of a figure | humanoid export |
 
@@ -189,16 +190,16 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `reference` | humanoid with reference `input_image` | the picture of the figure that replaces the generated reference (every variant starts from it); with pose skipped and cutout `birefnet` it must have a transparent background |
 | `clips` | humanoid export | the motion library (JSON, [conventions.md](conventions.md)); without it the GLB has the rest pose only |
 | `items` | humanoid export | a folder of held items (`<name>.json` sockets next to `<name>.glb`); it enters the hash by the files inside it |
-| `bone_map` | humanoid export | a bone map JSON that replaces the proposed one (roles to the rig's bone names) |
+| `bone_map` | humanoid export | a bone map JSON that replaces the proposed one (roles to the rig's bone names), for every variant; or an object `{"v<seed>": file}` (the key may also be the bare seed) with one map per variant, since the rig predicts a skeleton per variant: a variant it does not name gets the proposal, a key that is no variant of the piece is a problem of the order |
 
 `review` (humanoid only): `pitch` (number, degrees above the horizon, default 60),
 `directions` (whole number, default 8), `figure_height` (whole number, pixels of the
 small figure, default 96), `front` (true or false: one large front view too, default
 true).
 
-Defaults per recipe: seeds 8 (unit, vehicle), 6 (object_3d, concept, illustration),
-4 (prop, material); size 1024x1536 (unit), 1024x1024 (prop), 1536x1024 (the others); faces
-60000 (unit), 120000 (vehicle), 40000 (object_3d), 30000 (prop).
+Defaults per recipe: seeds 8 (figure, vehicle), 6 (object_3d, concept, illustration),
+4 (prop, material); size 1024x1536 (figure), 1024x1024 (prop), 1536x1024 (the others); faces
+60000 (figure), 120000 (vehicle), 40000 (object_3d), 30000 (prop).
 
 Concept text: `brief`, the tier text, the family `style`, `global` and the view, in that
 order. Material text: the material view, `brief`, `material_style` and `material_look`.
@@ -214,11 +215,11 @@ Seeds are fixed: derived from `family/piece` (the same order gives the same seed
 | `object_3d` | Klein concept -> pick -> Hunyuan3D 2.1 shape and Paint; with `inputs.reference`, only the mesh |
 | `prop` | as `object_3d` with the prop view; no mesh with `"3d": false` |
 | `vehicle` | 3/4 concept (N seeds) -> pick -> views `side`, `back`, `other_side`, `top` -> sheet -> emissive mask -> mesh with a 4096 texture |
-| `unit` | Klein concept -> pick -> 3 Qwen Image Edit views (90, 180, 270 degrees) -> sheet -> emissive mask if `emissive` -> unrigged Hunyuan3D mesh |
+| `figure` | Klein concept -> pick -> 3 Qwen Image Edit views (90, 180, 270 degrees) -> sheet -> emissive mask if `emissive` -> unrigged Hunyuan3D mesh |
 | `humanoid` | per variant: reference -> pose -> cutout -> mesh -> paint -> rig -> export; then review and final ([below](#the-humanoid-recipe)) |
 
 Job ids: `family/piece/step`, with steps `concept_s<seed>`, `pick`, `view_90`,
-`view_180`, `view_270` (unit), `view_side`, `view_back`, `view_other_side`, `view_top`
+`view_180`, `view_270` (figure), `view_side`, `view_back`, `view_other_side`, `view_top`
 (vehicle), `sheet`, `emissive`, `mesh`, and for materials `raw_s<seed>`, `pick`, `2k`,
 `rolled`, `seam`, `seamless`. A humanoid's ids are `family/piece/v<seed>/<stage>` per
 variant, plus `family/piece/review` and `family/piece/final`.
@@ -237,7 +238,7 @@ Everything it delivers is a candidate pending human review.
 | `cutout` | `birefnet` (local: the BiRefNet mask the previous workflow saved becomes the alpha; without a mask the picture's own alpha) | `qwen_edit_character` (Qwen Image Edit character edit, text `cutout_humanoid`, else `view_humanoid`) | no | `rgba` |
 | `mesh` | `trellis2` (TRELLIS.2 at 1024, remesh, reduction to `params.tris`) | `hunyuan21` (Hunyuan3D 2.1 shape only, reduced to `params.tris`; heavy) | no | `game_mesh` (reduced) and `raw_mesh` (before the reduction) |
 | `paint` | `hunyuan_paint` (Hunyuan3D Paint 2.1 over `game_mesh` by its local path, 10 steps, `params.texture`; heavy) | `trellis2_texture` (the mesh job keeps TRELLIS.2's own bake, at `params.texture`) | yes: TRELLIS.2's texture stays | `painted_mesh` |
-| `rig` | `skintokens` (seed: the variant's, 10 beams) | `unirig` | yes, with export (a statue) | `rig` |
+| `rig` | `skintokens` (seed 9001, 10 beams: the validated setting; the `seed` setting overrides it) | `unirig` (seed 9001) | yes, with export (a statue) | `rig` |
 | `export` | `humanoid_export` (Blender: bone map, Godot humanoid names, `raw_mesh` as `--bake-source`, `params`, `inputs.clips`, `inputs.items`, `inputs.bone_map`) | | yes | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report` |
 | `review` | `godot_sheet` (Godot off screen, the piece's `review` camera) | | no | `sheet`, `layout` |
 
@@ -290,15 +291,24 @@ Jobs and files, per variant `v<seed>` in `<out>/<family>/<piece>/`: `v<seed>_ref
 (the runners' outputs, logs and step provenance, [conventions.md](conventions.md)). The
 piece's `review/` holds `sheet.png` and its layout.
 
-- A failed variant does not stop the others: only its own later stages wait. An export
-  stopped by an invalid bone map (or a mesh that cannot be exported) is not tried again:
-  its report is in `v<seed>_export/`.
+- A failed variant does not stop the others: only its own later stages wait. A mesh job
+  that finishes without its `game_mesh` or `raw_mesh` is a failure of that variant (tried
+  once more). An export stopped by an invalid bone map (or a mesh that cannot be
+  exported) is not tried again: its report is in `v<seed>_export/`.
+- A bone map corrected by hand in `v<seed>_export/bone_map.json` with `"manual": true`
+  enters the export's specification: the next run redoes that export, the review and the
+  final copy (also after an invalid map, without `-RetryFailed`).
+- The scripts a local GPU job runs enter its specification (rig: the SkinTokens entry and
+  the checkout's git revision; export: the exporter and the bone map module; review: the
+  Godot project): a fixed tool redoes its jobs and what depends on them.
 - `review` runs once no variant is still active and at least one finished; a variant that
   did not finish appears as a failure mark with the stage and the error.
 - `final` waits likewise for at least one complete variant. `pick_final.json` works as
-  every pick: the automatic choice is provisional (the first variant that finished every
-  stage with no mesh or motion flag in its reports, else the first that finished) and
-  always `"review": "pending"`; `"manual": true` with another candidate in `chosen` redoes
+  every pick: the automatic choice is provisional (of the variants that finished every
+  stage, the one with the fewest mesh flags, then the fewest motion flags, then the
+  smallest total excess over the thresholds, `value / threshold - 1` summed; the first in
+  order on a tie; each candidate's `rank` is in the file) and always
+  `"review": "pending"`; `"manual": true` with another candidate in `chosen` redoes
   only the copy. The chosen variant's files of its last stage (the export's, or the painted
   mesh of a statue) are copied to `<out>/<family>/<piece>/final/`.
 
@@ -373,10 +383,20 @@ it actually passed and its provenance record). Such a job runs alone:
 
 - only when the whole ComfyUI queue is empty, prompts of any client included
   (`queue_running` and `queue_pending`), then after `/free`;
+- after `/free` the job waits one pass (the server unloads its models);
 - the processes `nvidia-smi` lists are logged; while one holds more than `gpu_busy_mb`
   of VRAM (default 2048) the job waits, up to `gpu_wait` seconds (default 300), then goes.
-  Without `nvidia-smi`, or when the driver reports no amount per process (Windows display
-  drivers report `[N/A]`), the log says so and the job goes;
+  When the driver reports no amount per process (Windows display drivers report `[N/A]`),
+  the measure is the whole card's VRAM in use (`nvidia-smi --query-gpu`, else the server's
+  `/system_stats`): the job waits while it is above `gpu_used_busy_mb` (default 4096).
+  Without either measure the log says so and the job goes;
+- the wait for an empty queue has no time limit, but it is visible: `state.json`
+  `gpu_wait` (`job`, `since`, `seconds`, `reason`, `running`, `pending`, `holders` with the
+  factory's own prompt count and the other clients' prompt ids, and `stalled` once it is
+  longer than `queue_wait_warn`, default 3600 s), `-Status` prints it, the log repeats it
+  every 15 minutes with the time waited, and `timings.csv` and the manifest record the
+  seconds waited (`wait_seconds`, `waited_seconds`);
+- while it runs `state.json` names it (`local_gpu_running`), even for a two-hour export;
 - from the moment it is ready until it has run, nothing is sent to ComfyUI;
 - a failure is tried once more, again only once the queue is empty; the log names an
   out-of-memory cause (from the error or the tool's log) and an external prompt that
@@ -439,9 +459,10 @@ In `<out>/<family>/<piece>/`, each file as `<step>_<role>.<ext>`:
 
 At the root of `<out>`: `manifest.json` (each job with its state, specification hash,
 files and hashes, times, tries and provenance), `state.json` (count per state: `done`,
-`failed`, `blocked`, `waiting`, `ready`, `queued`; GPU hours left; server queue; picks to
-review; failures), `timings.csv` (`finished;job;family;asset;group;status;exec_seconds;
-wall_seconds`), `factory.log`, `program/` (the frozen copy the run uses) and, while
+`failed`, `blocked`, `waiting`, `ready`, `queued`; GPU hours left; server queue;
+`gpu_wait` and `local_gpu_running` (above); picks to review; failures and
+`specification_errors`), `timings.csv` (`finished;job;family;asset;group;status;
+exec_seconds;wall_seconds;wait_seconds`), `factory.log`, `program/` (the frozen copy the run uses) and, while
 running, `factory.pid`.
 
 ## Picks and review
@@ -453,7 +474,7 @@ Picks are automatic: sharpness of the object and a clean background for concepts
 `how_to_change`. To change it: put another candidate's id in `chosen` and set
 `"manual": true`; the next pass redoes only what depends on the pick. A humanoid's
 `pick_final.json` has the same keys (each candidate with `job`, `variant`, `complete`,
-`flags` and `status`, and the chosen `variant`); its `metric` says how the automatic
+`flags`, `rank` and `status`, and the chosen `variant`); its `metric` says how the automatic
 choice was made. `state.json` counts it among the picks to review.
 
 ## Provenance

@@ -12,5 +12,7 @@
  "godot": "C:/path/to/Godot_v4_win64_console.exe",
  "bake_device": "GPU",
  "gpu_wait": 300,
- "gpu_busy_mb": 2048
+ "gpu_busy_mb": 2048,
+ "gpu_used_busy_mb": 4096,
+ "queue_wait_warn": 3600
 }

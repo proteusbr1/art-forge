@@ -82,6 +82,7 @@ class CoordinationTest(unittest.TestCase):
         f.load()
         f.pass_sleep, f.error_sleep = 0.02, 0.1
         f.gpu_processes = processes
+        f.gpu_memory = lambda server: None
         self.patch = patch.dict(local_gpu.RUNNERS, {"fake_rig": tool})
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -132,6 +133,79 @@ class CoordinationTest(unittest.TestCase):
         tool.calls.clear()
         self.assertEqual(self.run_quiet(self.factory(tool)), 0)
         self.assertEqual(tool.calls, [])
+
+    def test_the_wait_is_visible_in_the_state_the_log_and_the_timings(self):
+        seen = []
+
+        def tool(factory, job, out_dir):
+            with open(os.path.join(self.out, "state.json"), encoding="utf-8") as fh:
+                seen.append(("running", json.load(fh)))
+            return FakeTool(self.fake)(factory, job, out_dir)
+        f = self.factory(tool)
+        f.wait_log_every, f.queue_wait_warn = 0.2, 0.3
+        write_state = f.write_state
+
+        def capture(*args):
+            write_state(*args)
+            with open(os.path.join(self.out, "state.json"), encoding="utf-8") as fh:
+                seen.append(("pass", json.load(fh)))
+        f.write_state = capture
+        external = self.fake.external(0.9)
+        self.assertEqual(self.run_quiet(f), 0)
+        waits = [st["gpu_wait"] for kind, st in seen if kind == "pass" and st["gpu_wait"]]
+        self.assertTrue(waits, "state.json never showed the wait")
+        first = waits[0]
+        self.assertEqual(first["job"], "extra/backdrop/rig")
+        self.assertIn("the ComfyUI queue is not empty (1 running, 0 pending)", first["reason"])
+        self.assertEqual((first["running"], first["pending"]), (1, 0))
+        ext = [pid for pid in self.fake.prompts if pid.startswith("external-")]
+        self.assertEqual(first["holders"]["other_prompts"], ext)
+        self.assertTrue(any(w["stalled"] for w in waits))
+        # While the job runs the state names it; after it ran nothing waits.
+        [running] = [st for kind, st in seen if kind == "running"]
+        self.assertEqual(running["local_gpu_running"]["job"], "extra/backdrop/rig")
+        self.assertIsNone(running["gpu_wait"])
+        with open(os.path.join(self.out, "state.json"), encoding="utf-8") as fh:
+            final = json.load(fh)
+        self.assertIsNone(final["gpu_wait"])
+        self.assertIsNone(final["local_gpu_running"])
+        log = self.log()
+        self.assertIn("local GPU job extra/backdrop/rig has waited 0 min: the ComfyUI queue is not empty", log)
+        self.assertIn("STALLED (over queue_wait_warn", log)
+        # The waiting time is in timings.csv and in the manifest.
+        with open(os.path.join(self.out, "timings.csv"), encoding="utf-8") as fh:
+            rows = [ln.strip().split(";") for ln in fh]
+        self.assertEqual(rows[0][-1], "wait_seconds")
+        [row] = [r for r in rows if r[1] == "extra/backdrop/rig"]
+        self.assertGreaterEqual(float(row[-1]), 0.8)
+        self.assertGreaterEqual(self.manifest()["extra/backdrop/rig"]["waited_seconds"], 0.8)
+        self.assertGreater(min(t for t, m, p in self.fake.requests if (m, p) == ("POST", "/prompt")), external)
+
+    def test_one_pass_after_free_before_the_job(self):
+        tool = FakeTool(self.fake)
+        f = self.factory(tool)
+        self.assertEqual(self.run_quiet(f), 0)
+        [(start, _)] = tool.calls
+        [free] = [t for t, m, p in self.fake.requests if (m, p) == ("POST", "/free") and t < start]
+        queue_polls = [t for t, m, p in self.fake.requests if (m, p) == ("GET", "/queue") and free < t < start]
+        self.assertGreaterEqual(len(queue_polls), 2)  # the next pass, and the check right before
+
+    def test_waits_while_the_card_is_full_and_processes_report_no_vram(self):
+        tool = FakeTool(self.fake)
+        t0 = time.time()
+        f = self.factory(tool, lambda: [{"pid": 4242, "name": "game.exe", "mb": None}])
+        f.gpu_wait = 30
+        f.gpu_memory = lambda server: {"used_mb": 9000 if time.time() - t0 < 0.6 else 1200, "total_mb": 24576,
+                                       "source": "test"}
+        self.assertEqual(self.run_quiet(f), 0)
+        self.assertGreaterEqual(tool.calls[0][0], t0 + 0.6)
+        self.assertIn("busy: the card has 9000 of 24576 MB in use (test; over gpu_used_busy_mb 4096)", self.log())
+        # The measure itself: nvidia-smi's totals, else the server's /system_stats.
+        self.assertIsNone(gpu_lock.gpu_memory(exe=os.path.join(self.tmp, "no-nvidia-smi.exe")))
+        server = SimpleNamespace(get_json=lambda path: {"devices": [{"vram_total": 24 * 2 ** 30,
+                                                                     "vram_free": 20 * 2 ** 30}]})
+        self.assertEqual(gpu_lock.gpu_memory(server, exe=os.path.join(self.tmp, "no-nvidia-smi.exe")),
+                         {"used_mb": 4096, "total_mb": 24576, "source": "ComfyUI /system_stats"})
 
     def test_waits_while_another_process_holds_the_card(self):
         tool = FakeTool(self.fake)

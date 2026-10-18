@@ -26,6 +26,13 @@ def _resolve(path, base):
     return os.path.normpath(path if os.path.isabs(path) else os.path.join(base, path))
 
 
+def _resolve_input(v, base):
+    """An input path made absolute; an object of paths (one per variant) path by path."""
+    if isinstance(v, dict):
+        return {k: _resolve(x, base) for k, x in v.items()}
+    return _resolve(v, base)
+
+
 def _resolve_files(v, base):
     """{"file": path} references inside a raw task's values or images, made absolute."""
     if isinstance(v, dict):
@@ -66,11 +73,11 @@ def merge_order(order, base):
                 continue
             p = merge_piece(fam, piece)
             if isinstance(p.get("inputs"), dict):
-                p["inputs"] = {k: _resolve(v, base) for k, v in p["inputs"].items()}
+                p["inputs"] = {k: _resolve_input(v, base) for k, v in p["inputs"].items()}
             pieces.append(p)
         fam["assets"] = pieces
         if isinstance(fam.get("inputs"), dict):
-            fam["inputs"] = {k: _resolve(v, base) for k, v in fam["inputs"].items()}
+            fam["inputs"] = {k: _resolve_input(v, base) for k, v in fam["inputs"].items()}
     tasks = order.get("tasks")
     if isinstance(tasks, list):
         for t in tasks:
@@ -191,6 +198,15 @@ def _check_piece(where, recipe, piece, config, problems):
         inputs = {}
     allowed = stages.allowed_inputs(recipe, piece)
     for name, path in inputs.items():
+        if name in allowed and name in stages.VARIANT_INPUTS and isinstance(path, dict):
+            # One file per variant: each must be a file (the variant names: check_humanoid).
+            for key, p in path.items():
+                if not isinstance(p, str) or not p:
+                    problems.append("%s: input %s.%s must be a path" % (where, name, key))
+                elif not os.path.isfile(p):
+                    problems.append("%s: input %s.%s %s: %s" % (
+                        where, name, key, "must be a file" if os.path.exists(p) else "not found", p))
+            continue
         if name not in allowed:
             problems.append("%s: input %r is not used by recipe %s with these stages (used: %s)" % (
                 where, name, recipe, ", ".join(sorted(allowed)) or "none"))

@@ -126,7 +126,7 @@ def _edit_settings(what):
 
 # Seeds of the local rig tools: whole numbers that numpy and torch both accept.
 RIG_SEED = {"type": "int", "min": 0, "max": 2 ** 32 - 1, "arg": "seed",
-            "meaning": "seed of the rig model (default: the variant's seed)"}
+            "meaning": "seed of the rig model (default 9001, the validated setting)"}
 
 # Options of the humanoid recipe (forge/recipes.py recipe_humanoid). "outputs" are the
 # roles each option hands to the next stage. Kinds besides comfy and local_gpu: "local"
@@ -263,7 +263,7 @@ CATALOGUE = {
     "object_3d": {"concept": _CONCEPT, "mesh": _MESH},
     "prop": {"concept": _CONCEPT, "mesh": _MESH},
     "vehicle": {"concept": _CONCEPT, "mesh": _MESH},
-    "unit": {"concept": _CONCEPT, "mesh": _MESH},
+    "figure": {"concept": _CONCEPT, "mesh": _MESH},
     "humanoid": {stage: {"default": HUMANOID_DEFAULTS[stage], "skippable": stage in HUMANOID_SKIPPABLE,
                          "options": opts} for stage, opts in HUMANOID_OPTIONS.items()},
 }
@@ -295,7 +295,7 @@ RECIPE_PARAMS = {
     "object_3d": ("tris", "texture"),
     "prop": ("tris", "texture"),
     "vehicle": ("tris", "texture"),
-    "unit": ("tris", "texture"),
+    "figure": ("tris", "texture"),
 }
 RECIPE_INPUTS = {
     "object_3d": ("reference",),
@@ -304,6 +304,8 @@ RECIPE_INPUTS = {
 # Inputs that are folders (they enter the job specification by the files inside them);
 # every other input is a file.
 FOLDER_INPUTS = ("items",)
+# Inputs that may also be an object {"v<seed>" or "<seed>": file}: one file per variant.
+VARIANT_INPUTS = ("bone_map",)
 
 # Nodes of forge/workflows/trellis2_mesh.json that only the texture bake uses: a job that
 # lists them in "drop" makes the untextured mesh alone (the shape for another paint stage).
@@ -439,8 +441,11 @@ def settings_problems(fields, settings):
     return out
 
 
-def setting_targets(fields, settings):
-    """({"<node>.<input>": value}, {arg: value}) where the given settings land."""
+def setting_targets(fields, settings, drop=()):
+    """({"<node>.<input>": value}, {arg: value}) where the given settings land. A setting
+    with several targets skips those on nodes the job drops (TRELLIS.2's "sampler" while
+    another stage paints: the texture sampler is gone); a setting whose every target is
+    dropped keeps them, so the order check names it."""
     sets, args = {}, {}
     declared = fields.get("settings", {})
     for name in sorted(settings):
@@ -448,7 +453,11 @@ def setting_targets(fields, settings):
             raise ValueError("unknown setting %r (settings: %s); check the order with -Check" % (
                 name, ", ".join(sorted(declared)) or "none"))
         decl = declared[name]
-        for key in decl.get("to", ()):
+        targets = list(decl.get("to", ()))
+        kept = [k for k in targets if k.split(".", 1)[0] not in drop]
+        if len(targets) > 1 and kept:
+            targets = kept
+        for key in targets:
             sets[key] = settings[name]
         if decl.get("arg"):
             args[decl["arg"]] = settings[name]
@@ -475,12 +484,11 @@ def apply_settings(recipe, piece, jobs):
     if not given:
         return jobs
     chosen = {stage: option(recipe, stage, opt) for stage, opt in chosen_options(recipe, piece).items()}
-    targets = {stage: setting_targets(chosen[stage], s) for stage, s in given.items()}
     for j in jobs:
         stage = job_stage(j, chosen)
-        if stage not in targets:
+        if stage not in given:
             continue
-        sets, args = targets[stage]
+        sets, args = setting_targets(chosen[stage], given[stage], j.get("drop", ()))
         if sets:
             j["set"] = dict(j.get("set", {}), **sets)
         if args:

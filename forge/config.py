@@ -3,7 +3,8 @@
 forge.local.json at the repository root (ignored by git; forge.local.example.json is the
 committed example). Every key is optional; a missing tool only matters when an order has a
 stage that needs it (forge.order.check_order names it). Relative paths are resolved against
-the folder of the configuration file.
+the folder of the configuration file, or against `base` when given (the launcher runs a
+copy of the file from its snapshot folder and passes the repository: --config-base).
 """
 
 import glob
@@ -27,10 +28,14 @@ KEYS = {
     "bake_device": "Cycles device for normal-map baking: GPU (default) or CPU",
     "gpu_wait": "seconds a local GPU job waits while another process holds the card (default 300)",
     "gpu_busy_mb": "VRAM in MB another process may hold before a local GPU job waits (default 2048)",
+    "gpu_used_busy_mb": "VRAM in MB the whole card may have in use before a local GPU job waits, when the "
+                        "driver reports no amount per process (default 4096)",
+    "queue_wait_warn": "seconds a local GPU job may wait for the card before the log and state.json call it "
+                       "stalled (default 3600)",
 }
 # Keys that are values, not paths on this machine; NUMBER_KEYS are numbers of at least 0.
-VALUE_KEYS = ("comfy_url", "bake_device", "gpu_wait", "gpu_busy_mb")
-NUMBER_KEYS = {"gpu_wait": 300, "gpu_busy_mb": 2048}
+VALUE_KEYS = ("comfy_url", "bake_device", "gpu_wait", "gpu_busy_mb", "gpu_used_busy_mb", "queue_wait_warn")
+NUMBER_KEYS = {"gpu_wait": 300, "gpu_busy_mb": 2048, "gpu_used_busy_mb": 4096, "queue_wait_warn": 3600}
 TOOL_KEYS = tuple(k for k in KEYS if k not in VALUE_KEYS)
 # Files that must exist inside a tool folder for the tool to run.
 TOOL_FILES = {
@@ -51,9 +56,10 @@ TOOL_WEIGHTS = {
 BAKE_DEVICES = ("GPU", "CPU")
 
 
-def load_config(path=None):
+def load_config(path=None, base=None):
     """The configuration as a dictionary with every key of KEYS (None when not set).
-    path None or a missing file gives the defaults (only comfy_url and bake_device set)."""
+    path None or a missing file gives the defaults (only comfy_url and bake_device set).
+    Relative tool paths are resolved against base, else the file's folder."""
     cfg = {k: None for k in KEYS}
     cfg["comfy_url"] = DEFAULT_SERVER
     cfg["bake_device"] = "GPU"
@@ -67,7 +73,7 @@ def load_config(path=None):
     unknown = sorted(k for k in data if k not in KEYS and not k.startswith("_") and k != "note")
     if unknown:
         raise ValueError("%s: unknown keys %s (known: %s)" % (path, unknown, ", ".join(KEYS)))
-    base = os.path.dirname(os.path.abspath(path))
+    base = os.path.abspath(base) if base else os.path.dirname(os.path.abspath(path))
     for k in KEYS:
         v = data.get(k)
         if v in (None, ""):

@@ -1,7 +1,7 @@
 """art-forge: keeps a local ComfyUI busy for hours with the art an order asks for, without
 anyone watching it.
 
-  python -m forge --order <order.json> --out <dir> [--config forge.local.json] [--limit 6]
+  python -m forge --order <order.json> --out <dir> [--config forge.local.json] [--config-base DIR] [--limit 6]
                   [--estimate] [--check] [--only FAMILY[,FAMILY]] [--retry-failed] [--one-pass]
   python -m forge --out <dir> --provenance <file.json>
 
@@ -93,6 +93,8 @@ def main(argv=None):
                                                      "are resolved against (default: the order's folder)")
     ap.add_argument("--out", required=True, help="output folder (outside this repository)")
     ap.add_argument("--config", default="", help="machine configuration (forge.local.json)")
+    ap.add_argument("--config-base", default="", help="folder that relative paths of the configuration are "
+                                                      "resolved against (default: the configuration's folder)")
     ap.add_argument("--server", default="", help="ComfyUI address (overrides the configuration)")
     ap.add_argument("--limit", type=int, default=6, help="max factory prompts in the server queue")
     ap.add_argument("--only", default="", help="only these families (comma separated)")
@@ -117,7 +119,7 @@ def main(argv=None):
     if not a.order:
         ap.error("--order is required")
     from .config import load_config
-    config = load_config(a.config or None)
+    config = load_config(a.config or None, a.config_base or None)
     if a.check:
         return run_check(a, config)
     from .factory_core import Factory

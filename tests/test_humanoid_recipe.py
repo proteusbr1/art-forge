@@ -102,6 +102,7 @@ class Base(unittest.TestCase):
         a = SimpleNamespace(order=self.order_path, order_base="", out=os.path.join(self.tmp, "out"), only="",
                             retry_failed=False)
         f = Factory(a, "http://127.0.0.1:1")
+        f.config = self.config
         f.load()
         out = {}
         while len(out) < len(f.jobs):
@@ -158,8 +159,10 @@ class ExpansionTest(Base):
         self.assertEqual(jobs[v + "paint"]["values"]["$MESH$"],
                          {"ref": v + "mesh", "role": "game_mesh", "transport": "local_path"})
         self.assertEqual(jobs[v + "rig"]["inputs"], {"mesh": {"ref": v + "paint", "role": "painted_mesh"}})
-        self.assertEqual(jobs[v + "rig"]["args"], {"method": "skintokens", "seed": seeds[0], "beams": 10,
+        # The rig: the validated SkinTokens setting (seed 9001, 10 beams), not the variant's seed.
+        self.assertEqual(jobs[v + "rig"]["args"], {"method": "skintokens", "seed": 9001, "beams": 10,
                                                    "postprocess": False})
+        self.assertEqual(set(j["args"]["seed"] for j in jobs.values() if j.get("stage") == "rig"), {9001})
         for stage in ("rig", "export"):
             self.assertEqual((jobs[v + stage]["kind"], jobs[v + stage]["tool"]), ("local_gpu", stage))
             self.assertIn(stage, local_gpu.RUNNERS)
@@ -294,6 +297,14 @@ class ExpansionTest(Base):
         # The texture sampler of TRELLIS.2 is dropped while Hunyuan3D Paint paints.
         self.assertProblem(self.problems({"stages": {"mesh": {"settings": {"texture_steps": 8}}}}),
                            "12.steps lands on node 12, which this job drops")
+        # The setting of all four samplers lands on the three the job keeps.
+        piece = {"stages": {"mesh": {"settings": {"sampler": "euler"}}}}
+        self.assertEqual(self.problems(piece), [])
+        mesh = next(j for j in self.jobs(piece).values() if j.get("stage") == "mesh")
+        self.assertEqual(mesh["set"], {"3.sampler_name": "euler", "18.sampler_name": "euler",
+                                       "23.sampler_name": "euler"})
+        mesh = next(j for j in self.jobs(dict(piece, skip=["paint"])).values() if j.get("stage") == "mesh")
+        self.assertEqual(mesh["set"]["12.sampler_name"], "euler")
         self.assertEqual(self.problems({"skip": ["paint"], "stages": {"mesh": {"settings": {"texture_steps": 8}}}}),
                          [])
 
@@ -340,6 +351,84 @@ class ExpansionTest(Base):
         shutil.copy(os.path.join(self.inputs, "items", "box.json"), os.path.join(self.inputs, "items", "crate.json"))
         again = self.specs(order)
         self.assertEqual(sorted(j for j in after if after[j] != again[j]), changed)
+
+    def test_a_changed_tool_redoes_its_jobs(self):
+        order = piece_order()
+        before = self.specs(order)
+        jobs = list(self.jobs().values())
+        stage_of = {j["id"]: j.get("stage") for j in jobs}
+
+        def changed_with(name, path):
+            with patch.object(local_gpu, name, path):
+                after = self.specs(order)
+            return sorted(j for j in before if before[j] != after[j])
+        tmp_tools = os.path.join(self.tmp, "tool_copies")
+        os.makedirs(tmp_tools)
+        for name, src in (("EXPORT_SCRIPT", local_gpu.EXPORT_SCRIPT), ("BONES_SCRIPT", local_gpu.BONES_SCRIPT),
+                          ("SKINTOKENS_ENTRY", local_gpu.SKINTOKENS_ENTRY)):
+            copy = os.path.join(tmp_tools, os.path.basename(src))
+            shutil.copy(src, copy)
+            with open(copy, "a", encoding="utf-8") as f:
+                f.write("\n# a fix\n")
+            with self.subTest(script=name):
+                stage = "rig" if name == "SKINTOKENS_ENTRY" else "export"
+                expect = set()
+                for jid in (j for j in stage_of if stage_of[j] == stage):
+                    expect |= dependants(jobs, jid)
+                self.assertEqual(changed_with(name, copy), sorted(expect))
+        review = os.path.join(tmp_tools, "review_godot")
+        shutil.copytree(local_gpu.REVIEW_PROJECT, review, ignore=shutil.ignore_patterns(".godot"))
+        with open(os.path.join(review, "main.gd"), "a", encoding="utf-8") as f:
+            f.write("\n# a fix\n")
+        self.assertEqual(changed_with("REVIEW_PROJECT", review), ["crew/tech/review"])
+        # The rig checkout moved to another revision: the rigs and what depends on them.
+        git = os.path.join(self.config["skintokens_dir"], ".git")
+        os.makedirs(git)
+        with open(os.path.join(git, "HEAD"), "w") as f:
+            f.write("0123456789abcdef0123456789abcdef01234567\n")
+        after = self.specs(order)
+        rigs = [j for j in stage_of if stage_of[j] == "rig"]
+        expect = set()
+        for jid in rigs:
+            expect |= dependants(jobs, jid)
+        self.assertEqual(sorted(j for j in before if before[j] != after[j]), sorted(expect))
+
+    def test_a_bone_map_per_variant(self):
+        seeds = seeds_for("crew/tech", 2)
+        other = os.path.join(self.inputs, "bone_map_b.json")
+        shutil.copy(os.path.join(self.inputs, "bone_map.json"), other)
+        inputs = {"bone_map": {"v%d" % seeds[0]: "inputs/bone_map.json", str(seeds[1]): "inputs/bone_map_b.json"}}
+        self.assertEqual(self.problems(family={"inputs": inputs}), [])
+        jobs = self.jobs(family={"inputs": inputs})
+        exports = [j for j in jobs.values() if j.get("stage") == "export"]
+        self.assertEqual([e["inputs"]["bone_map"]["file"] for e in exports],
+                         [os.path.join(self.inputs, "bone_map.json"), other])
+        # A variant the object does not name gets the proposal.
+        jobs = self.jobs(family={"inputs": {"bone_map": {"v%d" % seeds[1]: "inputs/bone_map_b.json"}}})
+        exports = [j for j in jobs.values() if j.get("stage") == "export"]
+        self.assertNotIn("bone_map", exports[0]["inputs"])
+        self.assertEqual(exports[1]["inputs"]["bone_map"], {"file": other})
+        # Changing one variant's map redoes only that variant's export (and review, final).
+        order = piece_order(family={"inputs": inputs})
+        before = self.specs(order)
+        with open(other, "w", encoding="utf-8") as f:
+            json.dump({"roles": {"hips": "bone_2"}}, f)
+        after = self.specs(order)
+        self.assertEqual(sorted(j for j in before if before[j] != after[j]),
+                         ["crew/tech/final", "crew/tech/review", "crew/tech/v%d/export" % seeds[1]])
+        # The check names a key that is no variant and a missing file.
+        self.assertProblem(self.problems(family={"inputs": {"bone_map": {"v1": "inputs/bone_map.json"}}}),
+                           "inputs.bone_map names 'v1', which is no variant of this piece")
+        self.assertProblem(self.problems(family={"inputs": {"bone_map": {"v%d" % seeds[0]: "inputs/none.json"}}}),
+                           "input bone_map.v%d not found" % seeds[0])
+
+    def test_known_ignored_arguments_reach_the_job(self):
+        rig = dict(stages.HUMANOID_OPTIONS["rig"]["skintokens"], ignored={"postprocess": "the tool ignores it"})
+        with patch.dict(stages.HUMANOID_OPTIONS["rig"], {"skintokens": rig}):
+            jobs = self.jobs()
+        rigs = [j for j in jobs.values() if j.get("stage") == "rig"]
+        self.assertEqual([j["ignored"] for j in rigs], [{"postprocess": "the tool ignores it"}] * 2)
+        self.assertFalse(any("ignored" in j for j in self.jobs().values()))
 
     def test_review_receives_every_variant(self):
         jobs = self.jobs(family={"variants": 4})
@@ -407,10 +496,14 @@ class ExpansionTest(Base):
 class FakeTools:
     """run_rig, run_export and run_review stand-ins: files as the real ones name them; the
     export of the variants in fail_export stops on an invalid bone map, those in flagged get a
-    motion flag."""
+    motion flag (flagged may also be {variant: [(measure, value, threshold), ...]}), those in
+    mesh_flagged a mesh flag."""
 
-    def __init__(self, fail_export=(), flagged=()):
-        self.fail_export, self.flagged = set(fail_export), set(flagged)
+    def __init__(self, fail_export=(), flagged=(), mesh_flagged=()):
+        self.fail_export, self.mesh_flagged = set(fail_export), set(mesh_flagged)
+        if not isinstance(flagged, dict):
+            flagged = {v: [("foot_slide_cm", 4.0, 2.0)] for v in flagged}
+        self.flagged = flagged
         self.calls = []
 
     def variant(self, out):
@@ -435,12 +528,17 @@ class FakeTools:
                                       retry=False)
         files = {}
         for role, name, data in (("glb", "tech.glb", {}), ("model", "model.json", {"status": "pending review"}),
-                                 ("mesh_report", "mesh_report.json", {"flags": []}),
+                                 ("mesh_report", "mesh_report.json",
+                                  {"flags": ["3 vertices have no weight"] if v in self.mesh_flagged else []}),
                                  ("motion_report", "motion_report.json",
-                                  {"flags": [{"clip": "walk", "measure": "foot_slide_cm", "value": 4.0,
-                                              "threshold": 2.0}] if v in self.flagged else []}),
+                                  {"flags": [{"clip": "walk", "measure": m, "value": val, "threshold": t}
+                                             for m, val, t in self.flagged.get(v, [])]}),
                                  ("bone_map", "bone_map.json", {"valid": True}), ("regions_mask", "regions_mask.png", {})):
             files[role] = os.path.join(out, name)
+            if role == "bone_map" and os.path.exists(files[role]):
+                with open(files[role], encoding="utf-8") as f:
+                    if json.load(f).get("manual"):
+                        continue  # as the exporter: a manual map stays as written
             with open(files[role], "w", encoding="utf-8") as f:
                 json.dump(dict(data, variant=v), f)
         return files
@@ -552,13 +650,90 @@ class NightTest(Base):
             self.assertEqual(json.load(fh)["variant"], self.v[1])
         self.assertEqual(m2["crew/tech/review"]["spec"], m["crew/tech/review"]["spec"])
 
-    def test_every_variant_flagged_picks_the_first_that_finished(self):
-        tools = FakeTools(flagged=self.v)
+    def test_every_variant_flagged_picks_the_fewest_and_smallest_flags(self):
+        # v0: two motion flags; v1: one large; v2: one small. The rank: mesh flags, then the
+        # number of motion flags, then how far they are over their thresholds.
+        tools = FakeTools(flagged={self.v[0]: [("foot_slide_cm", 2.2, 2.0), ("stretch_p95", 0.55, 0.5)],
+                                   self.v[1]: [("stretch_p95", 0.9, 0.5)],
+                                   self.v[2]: [("stretch_p95", 0.6, 0.5)]})
         self.run_night(tools)
         pick = self.pick()
-        self.assertEqual(pick["chosen"], "crew/tech/%s/export" % self.v[0])
+        self.assertEqual(pick["chosen"], "crew/tech/%s/export" % self.v[2])
         self.assertEqual(pick["review"], "pending")
         self.assertIn("every one has flags", pick["metric"])
+        self.assertEqual([c["rank"]["motion_flags"] for c in pick["candidates"]], [2, 1, 1])
+        self.assertAlmostEqual(pick["candidates"][1]["rank"]["excess"], 0.8, places=3)
+        # A mesh flag weighs more than any number of motion flags.
+        shutil.rmtree(self.out)
+        self.run_night(FakeTools(flagged={self.v[0]: [("stretch_p95", 0.6, 0.5)] * 3},
+                                 mesh_flagged=[self.v[1], self.v[2]]))
+        self.assertEqual(self.pick()["chosen"], "crew/tech/%s/export" % self.v[0])
+
+    def test_a_missing_raw_mesh_fails_only_its_variant(self):
+        # The raw-mesh save (node 405) of the first variant leaves no file in the history.
+        self.fake.withhold["crew/tech/%s_mesh" % self.v[0]] = ("405",)
+        tools = FakeTools()
+        m = self.run_night(tools)
+        mesh = m["crew/tech/%s/mesh" % self.v[0]]
+        self.assertEqual((mesh["status"], mesh["tries"]), ("failed", 2))  # tried once more
+        self.assertIn("finished without the output(s) raw_mesh", mesh["error"])
+        self.assertEqual(len([s for s in self.fake.submitted if s[0] == "crew/tech/%s_mesh" % self.v[0]]), 2)
+        for stage in ("paint", "rig", "export"):
+            self.assertNotIn("crew/tech/%s/%s" % (self.v[0], stage), m)
+        for v in self.v[1:]:
+            self.assertEqual(m["crew/tech/%s/export" % v]["status"], "done")
+        [review] = [c for c in tools.calls if c[0] == "review"]
+        self.assertTrue(review[1][0].startswith("!mesh failed: finished without the output(s) raw_mesh"),
+                        review[1][0])
+        self.assertEqual(self.pick()["chosen"], "crew/tech/%s/export" % self.v[1])
+        with open(os.path.join(self.out, "state.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["failures"], ["crew/tech/%s/mesh" % self.v[0]])
+
+    def test_an_unworkable_specification_fails_only_its_job(self):
+        # A finished mesh job whose record lost a role a later job reads (an older manifest):
+        # the export of that variant cannot work out its specification.
+        tools = FakeTools()
+        self.run_night(tools)
+        path = os.path.join(self.out, "manifest.json")
+        with open(path, encoding="utf-8") as fh:
+            m = json.load(fh)
+        del m["crew/tech/%s/mesh" % self.v[0]]["files"]["raw_mesh"]
+        del m["crew/tech/%s/export" % self.v[0]]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(m, fh)
+        tools.calls.clear()
+        m2 = self.run_night(tools)  # finishes (exit 0) instead of stopping the factory
+        export = "crew/tech/%s/export" % self.v[0]
+        self.assertNotIn(export, m2)
+        self.assertFalse([c for c in tools.calls if c[0] == "export"])
+        with open(os.path.join(self.out, "state.json"), encoding="utf-8") as fh:
+            state = json.load(fh)
+        self.assertIn(export, state["failures"])
+        self.assertIn("has no output with role raw_mesh", state["specification_errors"][export])
+        [review] = [c for c in tools.calls if c[0] == "review"]
+        self.assertTrue(review[1][0].startswith("!export failed: its specification cannot be worked out"),
+                        review[1][0])
+        with open(os.path.join(self.out, "factory.log"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read().count("FAILED %s: its specification" % export), 1)  # logged once
+
+    def test_a_manual_bone_map_redoes_its_export(self):
+        tools = FakeTools()
+        self.run_night(tools)
+        folder = os.path.join(self.out, "crew", "tech", "%s_export" % self.v[1])
+        # A proposal (not manual) next to the export changes nothing.
+        with open(os.path.join(folder, "bone_map.json"), "w", encoding="utf-8") as fh:
+            json.dump({"source": "proposed", "roles": {"hips": "bone_0"}}, fh)
+        tools.calls.clear()
+        self.run_night(tools)
+        self.assertEqual(tools.calls, [])
+        # Marked manual: that variant's export, the review and the final copy are redone.
+        with open(os.path.join(folder, "bone_map.json"), "w", encoding="utf-8") as fh:
+            json.dump({"manual": True, "roles": {"hips": "bone_1"}}, fh)
+        self.fake.reset_log()
+        self.run_night(tools)
+        self.assertEqual([(c[0], c[1]) for c in tools.calls if c[0] != "review"], [("export", self.v[1])])
+        self.assertEqual(len([c for c in tools.calls if c[0] == "review"]), 1)
+        self.assertEqual(self.fake.submitted, [])
 
     def test_a_statue_reviews_the_painted_mesh(self):
         tools = FakeTools()

@@ -75,7 +75,7 @@ the order does not change a run in progress.
 
 Without the launcher:
 
-    python -m forge --order <order.json> --out <folder> [--config forge.local.json]
+    python -m forge --order <order.json> --out <folder> [--config forge.local.json] [--config-base DIR]
                     [--check] [--estimate] [--limit 6] [--only F1,F2] [--retry-failed] [--one-pass]
     python -m forge --out <folder> --provenance <file.json>
 
@@ -85,9 +85,12 @@ tests shorten them): `FORGE_PASS_SLEEP` (4 s between passes), `FORGE_ERROR_SLEEP
 after an error or with the server down), `FORGE_LOST_AFTER` (20 s before resubmitting a
 prompt the server lost), `FORGE_HEAVY_WAIT` (300 s waiting for VRAM for a heavy job),
 `FORGE_GPU_WAIT` (the configuration's `gpu_wait`, 300 s: a local GPU job waiting while
-another process holds the card). `FORGE_LOCK_DIR` moves the GPU lock file (the tests use
-a temporary folder; `tests/fake_comfy.py` sets it on import) and `FORGE_NVIDIA_SMI`
-replaces the `nvidia-smi` program.
+another process holds the card), `FORGE_QUEUE_WAIT_WARN` (the configuration's
+`queue_wait_warn`, 3600 s: a waiting local GPU job is called stalled) and
+`FORGE_WAIT_LOG_EVERY` (900 s between the log lines of a waiting local GPU job).
+`FORGE_LOCK_DIR` moves the GPU lock file (the tests use a temporary folder;
+`tests/fake_comfy.py` sets it on import) and `FORGE_NVIDIA_SMI` replaces the `nvidia-smi`
+program (`tests/fake_comfy.py` points it to a missing file, so tests never ask the card).
 
 `-Check` exits with 0 (order valid, environment verified), 1 (order problems or
 environment not ready) or 3 (environment not verified: the server did not answer).
@@ -106,12 +109,18 @@ environment not ready) or 3 (environment not verified: the server did not answer
   A second factory refuses to start (exit 2); a lock left by a process that is gone is
   taken over and logged.
 - Local GPU jobs (kind `local_gpu`) run alone: only when the whole ComfyUI queue is empty
-  (`queue_running` and `queue_pending`, any client), after `/free`, after logging the
-  processes `nvidia-smi` lists (waiting up to `gpu_wait` while one holds more than
-  `gpu_busy_mb`; without `nvidia-smi`, or when the driver reports no per-process amount,
-  it logs that and goes). While one is ready or running nothing is sent to ComfyUI. A
-  failure is tried once more after the queue is empty again; the log names an
-  out-of-memory cause and an external prompt that started meanwhile.
+  (`queue_running` and `queue_pending`, any client), after `/free` and one more pass (the
+  server unloads its models), after logging the processes `nvidia-smi` lists (waiting up
+  to `gpu_wait` while one holds more than `gpu_busy_mb`; when the driver reports no
+  per-process amount, while the whole card has more than `gpu_used_busy_mb` in use, read
+  from `nvidia-smi --query-gpu` or the server's `/system_stats`; without either it logs
+  that and goes). While one is ready or running nothing is sent to ComfyUI. The wait for
+  an empty queue has no time limit (the contract), but it is visible: `state.json`
+  `gpu_wait` (job, since, reason, queue counts, the other clients' prompt ids, `stalled`
+  after `queue_wait_warn`), `-Status` prints it, the log repeats it every 15 minutes, and
+  `timings.csv` records the seconds waited (`wait_seconds`). A failure is tried once more
+  after the queue is empty again; the log names an out-of-memory cause and an external
+  prompt that started meanwhile.
 - Interactive users jump the queue by posting to `/prompt` with `"front": true`; the
   factory never keeps more than `--limit` prompts in the queue for that reason.
 - The same model goes in bursts (up to 24 jobs of one group in a row), then the first
@@ -126,7 +135,11 @@ environment not ready) or 3 (environment not verified: the server did not answer
   server lost is resubmitted; with the server down the factory waits and retries.
 - A failed job is tried once more (the Hunyuan mesh with a 2048 texture and 512 views),
   then marked `failed`; only its dependants wait (a humanoid export stopped by an invalid
-  bone map is not tried twice). `-RetryFailed` tries again.
+  bone map is not tried twice). A prompt that finishes without an output a later job
+  reads (or without its painted mesh) counts as a failure too. A job whose specification
+  cannot be worked out (an input missing from a finished job's record, a vanished file)
+  is `failed` in `state.json` (`specification_errors`) and only its dependants wait.
+  `-RetryFailed` tries again.
 - `<out>/STOP` (the launcher's `-Stop`): nothing more is sent, queued prompts are
   collected, the file is removed and the factory exits. Running again resumes.
 
@@ -142,7 +155,8 @@ as a process. No GPU inference and no visible window; about a minute.
 `forge.local.json` points to `blender_python` and `godot` (skipped otherwise): the fixture
 GLBs are made once under `local/fixtures/`, outputs go to `local/smoke/`, normal maps are
 baked on the CPU, Godot renders in a window at (-20000, -20000) with the dummy audio
-driver and exits by itself. With `FORGE_SMOKE_RIG` (a rigged GLB) and `FORGE_SMOKE_CLIPS`
+driver and exits by itself. They hold this user's machine-wide GPU lock while they run
+and are skipped when a factory run holds it. With `FORGE_SMOKE_RIG` (a rigged GLB) and `FORGE_SMOKE_CLIPS`
 (a motion library), and optionally `FORGE_SMOKE_ITEMS`, it also exports that rig and makes
 its sheet in `local/smoke/real/`. Never commit those files. Never run SkinTokens or UniRig
 from a test (they need the GPU).

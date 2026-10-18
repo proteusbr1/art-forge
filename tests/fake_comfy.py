@@ -19,8 +19,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 from PIL import Image
 
+# The machine-wide lock folder this user's factories use (None: the default), kept for the
+# smoke tests that drive the real card (they take the real lock).
+MACHINE_LOCK_DIR = os.environ.get("FORGE_LOCK_DIR") or None
 if not os.environ.get("FORGE_LOCK_DIR"):
     os.environ["FORGE_LOCK_DIR"] = tempfile.mkdtemp(prefix="forge_test_lock_")
+# The factories of the tests never ask this machine's nvidia-smi about the card.
+if not os.environ.get("FORGE_NVIDIA_SMI"):
+    os.environ["FORGE_NVIDIA_SMI"] = os.path.join(os.environ["FORGE_LOCK_DIR"], "no-nvidia-smi.exe")
 
 SIZE = 96
 # Inputs that name files rather than settings: left out of the picture's seed.
@@ -80,6 +86,7 @@ class FakeComfy:
         self.history_changes = {}  # {"<node>.<input>": value} the executed prompt holds instead
         self.history_prompt = True  # False: /history entries hold no prompt
         self.object_info = None     # the /object_info answer (None: 404)
+        self.withhold = {}          # job id -> node ids whose files the history leaves out
         handler = self.handler()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.url = "http://127.0.0.1:%d" % self.httpd.server_address[1]
@@ -125,8 +132,11 @@ class FakeComfy:
     def run(self, wf):
         outputs = {}
         seed = seed_of(wf)
+        withheld = self.withhold.get(self.job_of(wf), ())
         for nid, node in wf.items():
             cls, ins = node["class_type"], node["inputs"]
+            if nid in withheld:
+                continue  # the node "ran" but its file is not in the history (a failed save)
             if cls == "SaveImage":
                 src = wf[ins["images"][0]]["class_type"]
                 mode = "RGBA" if src == "JoinImageWithAlpha" else "L" if src == "MaskToImage" else "RGB"

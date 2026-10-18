@@ -30,6 +30,14 @@ def drop_nodes(wf, drop, name="workflow"):
 
 
 class ComfyJobs:
+    def needed_roles(self, job):
+        """The output roles of a job that must be there when its prompt finishes: those later
+        jobs use (Factory.load works them out) and its painted mesh (mesh_role)."""
+        roles = set(getattr(self, "needed", {}).get(job["id"], ()))
+        if job.get("mesh_role"):
+            roles.add(job["mesh_role"])
+        return roles
+
     def build(self, job, tries=0):
         """The prompt of a job; also its applied settings and its input files (provenance)."""
         wf0, _ = self.workflow(job["workflow"])
@@ -157,6 +165,19 @@ class ComfyJobs:
             self.record(job, {"status": "failed"}, exec_s, wall)
             return
         files = self.collect_outputs(job, e, h)
+        missing = sorted(r for r in self.needed_roles(job) if r not in files)
+        if missing:
+            # A finished prompt without an output that a later job (or the job's own mesh
+            # download) needs counts as a failure: tried once more, then failed, so that only
+            # its own dependants wait.
+            tries = e.get("tries", 1)
+            err = "finished without the output(s) %s" % ", ".join(missing)
+            self.log("FAILED %s (try %d): %s" % (job["id"], tries, err))
+            e.update({"status": "failed" if tries >= MAX_TRIES else "retry", "error": err,
+                      "exec_seconds": exec_s, "files": files})
+            self.save_manifest()
+            self.record(job, {"status": "failed"}, exec_s, wall)
+            return
         rec = {"status": "done", "spec": e["spec"], "prompt_id": pid, "files": files, "exec_seconds": exec_s,
                "wall_seconds": wall, "tries": e.get("tries", 1),
                "finished": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -199,17 +220,20 @@ class ComfyJobs:
                 files[job["mesh_role"]] = [os.path.relpath(dest, self.out), sha_file(dest)]
             except Exception as ex:
                 self.log("painted mesh of %s not downloaded: %s" % (job["id"], ex))
-        missing = [r for r in roles.values() if r not in files]
+        missing = [r for r in roles.values() if r not in files and r not in self.needed_roles(job)]
         if missing:
-            self.log("WARNING %s finished without outputs %s" % (job["id"], missing))
+            self.log("WARNING %s finished without outputs %s (no later job uses them)" % (job["id"], missing))
         return files
 
-    def record(self, job, rec, exec_s, wall=None):
+    def record(self, job, rec, exec_s, wall=None, wait=None):
+        """One line of timings.csv; wait_seconds: how long a local GPU job waited for the
+        card (the ComfyUI queue, /free, other processes) before it ran."""
         path = os.path.join(self.out, "timings.csv")
         new = not os.path.exists(path)
         with open(path, "a", encoding="utf-8") as f:
             if new:
-                f.write("finished;job;family;asset;group;status;exec_seconds;wall_seconds\n")
-            f.write("%s;%s;%s;%s;%s;%s;%s;%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), job["id"], job["family"],
-                                                   job["asset"], job["group"], rec.get("status"),
-                                                   "" if exec_s is None else exec_s, "" if wall is None else wall))
+                f.write("finished;job;family;asset;group;status;exec_seconds;wall_seconds;wait_seconds\n")
+            f.write("%s;%s;%s;%s;%s;%s;%s;%s;%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), job["id"], job["family"],
+                                                      job["asset"], job["group"], rec.get("status"),
+                                                      "" if exec_s is None else exec_s, "" if wall is None else wall,
+                                                      "" if wait is None else wait))

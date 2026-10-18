@@ -24,7 +24,7 @@ sheet; the rig runners (SkinTokens, UniRig) have not run while building. See the
 
 - **The factory knows recipes, not games.** A recipe is picked by how a thing moves, not by
   what it is. Implemented: `concept`, `illustration`, `material` (seamless), `object_3d`,
-  `prop`, `vehicle` (rigid, seen whole) and `unit` (a figure with views and an unrigged
+  `prop`, `vehicle` (rigid, seen whole) and `figure` (a figure with views and an unrigged
   mesh) and `humanoid` (skinned, human skeleton: every variant goes from a generated
   reference to an exported, animated GLB, then one review sheet and a provisional final
   pick). Planned: `articulated` (rigid parts on pivots) and `creature` (skinned, own
@@ -84,8 +84,11 @@ only `GET /object_info`). More in [AGENTS.md](AGENTS.md); tests:
 | `bake_device` | Cycles device of the normal-map bake: `GPU` (default; falls back to the CPU when Cycles finds no GPU) or `CPU` |
 | `gpu_wait` | seconds a local GPU job waits while another process holds more than `gpu_busy_mb` of VRAM (default 300; then it goes) |
 | `gpu_busy_mb` | VRAM in MB another process may hold before a local GPU job waits (default 2048) |
+| `gpu_used_busy_mb` | when the driver reports no VRAM per process (Windows display drivers): the VRAM in MB the whole card may have in use before a local GPU job waits (default 4096; measured with `nvidia-smi --query-gpu`, else the server's `/system_stats`) |
+| `queue_wait_warn` | seconds a local GPU job may wait for the card before the log and `state.json` call it stalled (default 3600; it keeps waiting) |
 
-Relative paths are relative to the file. The Blender, rig and Godot keys are for the
+Relative paths are relative to the file (the launcher runs a copy of it from its snapshot
+folder and passes `--config-base` with this repository, so they resolve as with `-Check`). The Blender, rig and Godot keys are for the
 humanoid recipe's rig, export and review stages; the other recipes need only ComfyUI. `python -m forge.local_gpu` says
 which local tools of this machine are ready.
 

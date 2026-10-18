@@ -83,6 +83,45 @@ def load_workflow(name):
     return wf, hashlib.sha256(raw).hexdigest()
 
 
+def needed_outputs(jobs):
+    """{job id: set of roles}: the outputs of each job that a later job reads (a reference
+    {"ref", "role"}, a pick's candidates, the variants of a review or final job). A reference
+    to a pick needs the role from every candidate of the pick."""
+    by_id = {j["id"]: j for j in jobs}
+    out = {}
+
+    def need(jid, role):
+        j = by_id.get(jid)
+        if j is None:
+            return
+        if j["kind"] == "pick":
+            for c in j["from"]:
+                need(c, role)
+        else:
+            out.setdefault(jid, set()).add(role)
+
+    def walk(v):
+        if isinstance(v, dict):
+            if "ref" in v:
+                need(v["ref"], v.get("role", "rgb"))
+            else:
+                for x in v.values():
+                    walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    for j in jobs:
+        for key in ("values", "images", "inputs", "input", "rolled", "painted"):
+            if key in j:
+                walk(j[key])
+        if j["kind"] == "pick":
+            for c in j["from"]:
+                need(c, j["role"])
+        for v in j.get("variants", []):
+            need(v["job"], v["role"])
+    return out
+
+
 class Factory(ComfyJobs, LocalSteps):
     def __init__(self, a, server_url):
         self.a = a
@@ -90,7 +129,7 @@ class Factory(ComfyJobs, LocalSteps):
         os.makedirs(self.out, exist_ok=True)
         self.log = Log(os.path.join(self.out, "factory.log"))
         self.server = Server(server_url)
-        self.config = load_config(getattr(a, "config", "") or None)
+        self.config = load_config(getattr(a, "config", "") or None, getattr(a, "config_base", "") or None)
         self.manifest_path = os.path.join(self.out, "manifest.json")
         self.manifest = {}
         if os.path.exists(self.manifest_path):
@@ -113,6 +152,15 @@ class Factory(ComfyJobs, LocalSteps):
         self.gpu_since = None
         self.gpu_waiting = None
         self.gpu_processes = gpu_lock.gpu_processes
+        self.gpu_memory = gpu_lock.gpu_memory
+        self.gpu_used_busy_mb = self.config["gpu_used_busy_mb"]
+        # The wait of a ready local GPU job (state.json "gpu_wait", the log every
+        # wait_log_every seconds, "stalled" after queue_wait_warn seconds).
+        self.wait = None
+        self.wait_log_every = env_seconds("FORGE_WAIT_LOG_EVERY", 900)
+        self.queue_wait_warn = env_seconds("FORGE_QUEUE_WAIT_WARN", self.config["queue_wait_warn"])
+        self.running_local = None
+        self.spec_errors = {}  # job id -> why its specification cannot be worked out
 
     # --- order and workflows
     def load(self):
@@ -120,6 +168,7 @@ class Factory(ComfyJobs, LocalSteps):
         only = set(self.a.only.split(",")) if self.a.only else None
         self.jobs = expand(self.job_list, only)
         self.by_id = {j["id"]: j for j in self.jobs}
+        self.needed = needed_outputs(self.jobs)
         for j in self.jobs:
             for r in refs_of(j):
                 if r not in self.by_id:
@@ -206,6 +255,15 @@ class Factory(ComfyJobs, LocalSteps):
         base = {k: subst(v) for k, v in job.items() if k not in ("family", "asset", "heavy", "group")}
         if job["kind"] == "comfy":
             base["workflow_sha"] = self.workflow(job["workflow"])[1]
+        if job["kind"] == "local_gpu":
+            # The local equivalent of the workflow hash: the scripts the runner uses (and the
+            # rig checkout's revision), so a fixed tool redoes its jobs.
+            from . import local_gpu
+            base["tool_sha"] = local_gpu.tool_fingerprint(job, self.config)
+            if job.get("tool") == "export":
+                # A bone map corrected by hand next to the export ("manual": true) redoes it.
+                base["manual_bone_map"] = local_gpu.manual_bone_map(
+                    os.path.join(self.asset_dir(job), slug(job["id"])))
         if job["kind"] == "pick":
             base["candidates"] = {c: self.entry(c).get("files", {}).get(job["role"], [None, None])[1]
                                   for c in job["from"] if self.done_ok(c)}
@@ -245,7 +303,19 @@ class Factory(ComfyJobs, LocalSteps):
                 if s != "done":
                     st = "waiting"
         if st is None:
-            sp = self.spec(job)
+            try:
+                sp = self.spec(job)
+            except (KeyError, ValueError, OSError) as ex:
+                # Its inputs cannot be worked out (an output a finished job should have
+                # made is missing, an input file vanished): this job fails, only its
+                # dependants wait; the rest of the factory goes on.
+                msg = "its specification cannot be worked out: %s" % (ex.args[0] if ex.args else ex)
+                if self.spec_errors.get(jid) != msg:
+                    self.log("FAILED %s: %s" % (jid, msg))
+                self.spec_errors[jid] = msg
+                cache[jid] = "failed"
+                return "failed"
+            self.spec_errors.pop(jid, None)
             if e.get("status") == "done" and e.get("spec") == sp and self.files_present(e):
                 st = "done"
             elif e.get("status") == "failed" and e.get("spec") == sp and not self.a.retry_failed:
@@ -310,7 +380,11 @@ class Factory(ComfyJobs, LocalSteps):
                         self.run_local(j)
                     except Exception as ex:
                         self.log("FAILED local %s: %s" % (j["id"], ex))
-                        self.manifest[j["id"]] = {"status": "failed", "spec": self.spec(j), "error": str(ex)}
+                        try:
+                            sp = self.spec(j)
+                        except Exception:
+                            sp = None
+                        self.manifest[j["id"]] = {"status": "failed", "spec": sp, "error": str(ex)}
                         self.save_manifest()
                     ran = True
             if ran:
@@ -332,8 +406,13 @@ class Factory(ComfyJobs, LocalSteps):
         if gpu_ready and not stopping:
             # A local GPU job has the card to itself: nothing more is sent to ComfyUI until
             # it has run (it waits for the whole queue, /free and the other processes).
-            self.local_gpu_turn(gpu_ready[0], inflight, running, pending)
+            self.local_gpu_turn(gpu_ready[0], inflight, running, pending, queued_ids, states)
             ready = []
+        elif self.wait is not None:
+            self.log("local GPU job %s no longer waits (after %d s): %s" % (
+                self.wait["job"], time.time() - self.wait["since"], "stop requested" if stopping else "not ready"))
+            self.wait = None
+            self.gpu_since = None
         while not stopping and not heavy_inflight and len(inflight) < self.a.limit and ready:
             j = self.choose(ready)
             if j.get("heavy") and inflight:
@@ -366,14 +445,21 @@ class Factory(ComfyJobs, LocalSteps):
         return None
 
     # --- local GPU jobs
-    def local_gpu_turn(self, job, inflight, running, pending):
+    def local_gpu_turn(self, job, inflight, running, pending, queued_ids=(), states=None):
         """Run a ready local GPU job when the card is free: no prompt of any client in the
-        ComfyUI queue (queue_running and queue_pending), then /free, then the other processes
-        on the card listed from nvidia-smi and logged (it waits up to gpu_wait seconds while
-        one holds more than gpu_busy_mb of VRAM, then goes). Returns True when it ran."""
+        ComfyUI queue (queue_running and queue_pending), then /free and one pass for the
+        server to unload, then the other processes on the card listed from nvidia-smi and
+        logged (it waits up to gpu_wait seconds while one holds more than gpu_busy_mb of
+        VRAM, or, when the driver reports no amount per process, while the card has more than
+        gpu_used_busy_mb in use; then goes). The wait is recorded in state.json ("gpu_wait")
+        and logged again every wait_log_every seconds. Returns True when it ran."""
         jid = job["id"]
         if inflight or running or pending:
             why = "%d running, %d pending" % (running, pending)
+            own = sorted(self.entry(j["id"]).get("prompt_id") for j in inflight)
+            others = sorted(p for p in queued_ids if p not in own)
+            self.note_wait(jid, "the ComfyUI queue is not empty (%s)" % why, running, pending,
+                           {"factory_prompts": len(inflight), "other_prompts": others[:10]})
             if self.gpu_waiting != (jid, why):
                 self.log("local GPU job %s waits for an empty ComfyUI queue (%s)" % (jid, why))
                 self.gpu_waiting = (jid, why)
@@ -385,31 +471,79 @@ class Factory(ComfyJobs, LocalSteps):
             self.gpu_since = now
             procs = self.gpu_processes()
             self.log("local GPU job %s: /free sent; %s" % (jid, gpu_lock.describe_processes(procs)))
-        else:
-            procs = self.gpu_processes()
+            # Measured on the next pass, once the server has unloaded its models.
+            self.note_wait(jid, "/free sent; the server unloads its models", 0, 0, {})
+            return False
+        procs = self.gpu_processes()
         busy = gpu_lock.busy_processes(procs, self.gpu_busy_mb)
-        if busy and now - self.gpu_since < self.gpu_wait:
+        why = None
+        if busy:
             why = "busy: " + ", ".join("%s (%d, %d MB)" % (p["name"], p["pid"], p["mb"]) for p in busy)
+        elif procs is None or any(p["mb"] is None for p in procs):
+            # Windows display drivers report no VRAM per process: the card's total in use.
+            mem = self.gpu_memory(self.server)
+            if mem and mem["used_mb"] > self.gpu_used_busy_mb:
+                why = "busy: the card has %d of %d MB in use (%s; over gpu_used_busy_mb %d)" % (
+                    mem["used_mb"], mem["total_mb"], mem["source"], self.gpu_used_busy_mb)
+        if why and now - self.gpu_since < self.gpu_wait:
+            self.note_wait(jid, why, 0, 0, {})
             if self.gpu_waiting != (jid, why):
                 self.log("local GPU job %s waits (up to %d s) while other processes hold the card: %s" % (
                     jid, self.gpu_wait, why))
                 self.gpu_waiting = (jid, why)
             return False
-        if busy:
+        if why:
             self.log("local GPU job %s goes after %d s although other processes hold the card" % (
                 jid, now - self.gpu_since))
         # The queue again, right before the job takes the card (another client may have sent
         # a prompt since the start of this pass).
         _, running, pending = self.server.queue_ids()
         if running or pending:
+            self.note_wait(jid, "the ComfyUI queue is not empty (%d running, %d pending)" % (running, pending),
+                           running, pending, {})
             self.gpu_since = None
             return False
+        waited = round(now - self.wait["since"], 1) if self.wait and self.wait["job"] == jid else 0.0
+        self.wait = None
         self.gpu_since = None
         self.gpu_waiting = None
-        self.run_local_gpu(job)
+        self.running_local = {"job": jid, "tool": job.get("tool"), "since": time.strftime("%Y-%m-%d %H:%M:%S"),
+                              "waited_seconds": waited}
+        if states is not None:
+            # A long job (an export may take two hours) leaves the state saying what runs.
+            self.write_state(states, 0, 0)
+        try:
+            self.run_local_gpu(job, waited)
+        finally:
+            self.running_local = None
         return True
 
-    def run_local_gpu(self, job):
+    def note_wait(self, jid, reason, running, pending, holders):
+        """Record why a ready local GPU job waits (state.json "gpu_wait"); the log repeats it
+        every wait_log_every seconds with the time waited, "stalled" after queue_wait_warn."""
+        now = time.time()
+        if self.wait is None or self.wait["job"] != jid:
+            self.wait = {"job": jid, "since": now, "logged": now}
+        w = self.wait
+        w.update({"reason": reason, "running": running, "pending": pending, "holders": holders})
+        w["stalled"] = now - w["since"] >= self.queue_wait_warn
+        if now - w["logged"] >= self.wait_log_every:
+            w["logged"] = now
+            self.log("local GPU job %s has waited %d min: %s%s" % (
+                jid, (now - w["since"]) / 60, reason,
+                "; STALLED (over queue_wait_warn, %d s)" % self.queue_wait_warn if w["stalled"] else ""))
+
+    def wait_state(self):
+        """The "gpu_wait" entry of state.json, or None."""
+        w = self.wait
+        if w is None:
+            return None
+        return {"job": w["job"], "since": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(w["since"])),
+                "seconds": round(time.time() - w["since"], 1), "reason": w.get("reason"),
+                "running": w.get("running"), "pending": w.get("pending"), "holders": w.get("holders") or {},
+                "stalled": bool(w.get("stalled"))}
+
+    def run_local_gpu(self, job, waited=0.0):
         """One local GPU job, synchronously: nothing is sent to the server while it runs.
         Its runner is forge.local_gpu.RUNNERS[job["tool"]](factory, job, out_dir), which
         returns {"files": {role: path}, "passed": {argument: value}, "provenance": record}.
@@ -454,15 +588,15 @@ class Factory(ComfyJobs, LocalSteps):
                                   "out_of_memory": oom, "exec_seconds": seconds,
                                   "log": getattr(ex, "log", None)}
             self.save_manifest()
-            self.record(job, {"status": "failed"}, seconds)
+            self.record(job, {"status": "failed"}, seconds, wait=waited)
             return
         seconds = round(time.time() - t0, 1)
         rec = {"status": "done", "spec": sp, "kind": "local_gpu", "files": files, "exec_seconds": seconds,
                "tries": tries, "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
-               "provenance": local_gpu_record(job, res, job.get("ignored"))}
+               "waited_seconds": waited, "provenance": local_gpu_record(job, res, job.get("ignored"))}
         self.manifest[jid] = rec
         self.save_manifest()
-        self.record(job, rec, seconds)
+        self.record(job, rec, seconds, wait=waited)
         self.log("done local GPU job %s in %s s (%d files)" % (jid, seconds, len(files)))
 
     def write_state(self, states, running, pending):
@@ -479,8 +613,10 @@ class Factory(ComfyJobs, LocalSteps):
             "updated": time.strftime("%Y-%m-%d %H:%M:%S"), "pid": os.getpid(), "counts": count,
             "estimated_gpu_hours_left": round(left / 3600, 2),
             "server_queue": {"running": running, "pending": pending},
+            "gpu_wait": self.wait_state(), "local_gpu_running": self.running_local,
             "picks_to_review": len(review),
-            "failures": sorted(j["id"] for j in self.jobs if states[j["id"]] == "failed")})
+            "failures": sorted(j["id"] for j in self.jobs if states[j["id"]] == "failed"),
+            "specification_errors": dict(sorted(self.spec_errors.items()))})
 
     def run(self):
         lock = os.path.join(self.out, "factory.pid")

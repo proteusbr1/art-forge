@@ -165,45 +165,71 @@ class LocalSteps:
         files["rgba"] = [os.path.relpath(p, self.out), sha_file(p)]
 
     def variant_flags(self, jid):
-        """Mesh and motion flags of a finished variant (from its export's reports), or None
-        when its last stage wrote no report."""
+        """(flags, rank) of a finished variant from its export's reports: flags as text lines
+        (None when its last stage wrote no report) and its rank, (mesh flags, motion flags,
+        total excess): the number of mesh flags (a defective GLB) first, then the number of
+        motion flags, then their size, the sum over motion flags of how far each value is over
+        its threshold (value / threshold - 1). Lower is better."""
         files = self.entry(jid).get("files", {})
         flags, seen = [], False
+        mesh_n = motion_n = 0
+        excess = 0.0
         for role in ("mesh_report", "motion_report"):
             if role not in files:
                 continue
             seen = True
             try:
                 with open(os.path.join(self.out, files[role][0]), encoding="utf-8") as f:
-                    flags += ["%s: %s" % (role, x if isinstance(x, str) else json.dumps(x, sort_keys=True))
-                              for x in (json.load(f).get("flags") or [])]
+                    found = json.load(f).get("flags") or []
             except (OSError, ValueError) as ex:
                 flags.append("%s unreadable: %s" % (role, ex))
-        return flags if seen else None
+                mesh_n += 1
+                continue
+            for x in found:
+                flags.append("%s: %s" % (role, x if isinstance(x, str) else json.dumps(x, sort_keys=True)))
+                if role == "mesh_report":
+                    mesh_n += 1
+                    continue
+                motion_n += 1
+                try:
+                    value, limit = float(x["value"]), float(x["threshold"])
+                    excess += (value / limit - 1.0) if limit > 0 else value
+                except (TypeError, KeyError, ValueError):
+                    excess += 1.0  # a flag without a measure (a missing clip) counts as one
+        return (flags if seen else None), (mesh_n, motion_n, round(excess, 4))
 
     def final(self, job, d, rec, files):
         """The chosen variant of a humanoid piece copied to <piece>/final/. The pick file
         pick_final.json works as every pick: "manual": true with another candidate in
-        "chosen" changes it. The automatic pick is provisional: the first variant that
-        finished every stage with no mesh or motion flag, else the first that finished;
+        "chosen" changes it. The automatic pick is provisional: of the variants that
+        finished every stage, the one with the fewest mesh flags, then the fewest motion
+        flags, then the smallest excess over the thresholds (the first in order on a tie);
         it is always marked pending review."""
         cands, inputs = [], []
         for v in job["variants"]:
             c = v["job"]
             done = self.done_ok(c)
-            flags = self.variant_flags(c) if done else None
+            flags, rank = self.variant_flags(c) if done else (None, None)
             cands.append({"job": c, "variant": v["variant"], "complete": done,
-                          "flags": flags, "status": self.entry(c).get("status") or "not run"})
+                          "flags": flags, "status": self.entry(c).get("status") or "not run",
+                          "rank": None if rank is None else {"mesh_flags": rank[0], "motion_flags": rank[1],
+                                                              "excess": rank[2]}})
             if done:
                 inputs += [self.input_record({"ref": c, "role": r}) for r in sorted(self.entry(c)["files"])]
         manual = self.manual_choice(job)
         if manual and not self.done_ok(manual):
             raise ValueError("the manual pick %s in pick_%s.json has not finished" % (manual, slug(job["id"])))
         finished = [x for x in cands if x["complete"]]
-        clean = [x for x in finished if not x["flags"]]
-        chosen = manual or (clean or finished)[0]["job"]
-        why = "manual" if manual else ("first complete variant without mesh or motion flags" if clean
-                                       else "first complete variant (every one has flags)")
+        best = min(finished, key=lambda x: (x["rank"]["mesh_flags"], x["rank"]["motion_flags"], x["rank"]["excess"]))
+        chosen = manual or best["job"]
+        if manual:
+            why = "manual"
+        elif not best["flags"]:
+            why = "complete variant without mesh or motion flags (the first such)"
+        else:
+            why = ("complete variant with the fewest and smallest flags (every one has flags): %d mesh, "
+                   "%d motion, excess %.2f" % (best["rank"]["mesh_flags"], best["rank"]["motion_flags"],
+                                              best["rank"]["excess"]))
         dest = os.path.join(d, "final")
         if os.path.isdir(dest):
             shutil.rmtree(dest)  # the copy of an earlier pick
