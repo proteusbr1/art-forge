@@ -13,10 +13,10 @@
 # -Only <families>. The output folder belongs to the game and must be outside this
 # repository. The machine configuration is forge.local.json next to this script.
 #
-# The running factory uses a snapshot of the program, the workflows, the order and the
-# configuration copied to <Out>\program, so editing them does not change a run in progress:
-# edit, then -Stop and start again (finished jobs are skipped by the manifest). Relative
-# input paths of the order still resolve against the order's own folder.
+# The running factory uses a snapshot of the program, the workflows, the local tools, the
+# order and the configuration copied to <Out>\program, so editing them does not change a
+# run in progress: edit, then -Stop and start again (finished jobs are skipped by the
+# manifest). Relative input paths of the order still resolve against the order's own folder.
 param(
     [string]$Order = "",
     [string]$Out = "",
@@ -124,7 +124,7 @@ $pidFile = Join-Path $Out "factory.pid"
 $stopFile = Join-Path $Out "STOP"
 Remove-Item -Force $stopFile -ErrorAction SilentlyContinue
 
-# Snapshot of the program, the workflows, the order and the configuration.
+# Snapshot of the program, the workflows, the local tools, the order and the configuration.
 $program = Join-Path $Out "program"
 $programForge = Join-Path $program "forge"
 $programWorkflows = Join-Path $programForge "workflows"
@@ -132,6 +132,17 @@ if (Test-Path $programForge) { Remove-Item -Recurse -Force $programForge }
 New-Item -ItemType Directory -Force -Path $programWorkflows | Out-Null
 Copy-Item -Force (Join-Path $root "forge\*.py") $programForge
 Copy-Item -Force (Join-Path $root "forge\workflows\*.json") $programWorkflows
+# The local tools (Blender scripts, the Godot review project, the rig entry).
+$programTools = Join-Path $program "tools"
+if (Test-Path $programTools) { Remove-Item -Recurse -Force $programTools }
+foreach ($sub in @("blender", "rig", "review_godot")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $programTools $sub) | Out-Null
+}
+Copy-Item -Force (Join-Path $root "tools\blender\*.py") (Join-Path $programTools "blender")
+Copy-Item -Force (Join-Path $root "tools\rig\*.py") (Join-Path $programTools "rig")
+foreach ($f in @("project.godot", "main.tscn", "main.gd")) {
+    Copy-Item -Force (Join-Path $root "tools\review_godot\$f") (Join-Path $programTools "review_godot")
+}
 Copy-Item -Force $Order (Join-Path $program "order.json")
 $orderBase = Split-Path -Parent $Order
 

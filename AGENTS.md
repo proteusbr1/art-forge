@@ -41,9 +41,16 @@ format in [docs/order.md](docs/order.md) and the design in
   seamless materials) and the pick scores.
 - `forge/provenance.py`: provenance records and export.
 - `forge/comfy_server.py`, `forge/factory_util.py`: HTTP client and helpers.
+- `forge/local_gpu.py`: runners of the local tools that use the card (`run_rig`,
+  `run_export`, `run_review`), their logs and provenance.
 - `forge/workflows/`: production ComfyUI workflows in API format.
+- `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
+  `humanoid_export.py` (the humanoid export, run by `blender_python`).
+- `tools/review_godot/`: the Godot project of the review sheets (off screen).
+- `tools/rig/skintokens_entry.py`: SkinTokens with a fixed seed, run by its own Python.
+- `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
-  orders.
+  orders and `tests/fixtures/humanoid/` the synthetic humanoid (generator, library, item).
 
 ## Running
 
@@ -101,4 +108,13 @@ prompt the server lost), `FORGE_HEAVY_WAIT` (300 s waiting for VRAM for a heavy 
 
 Run from the repository root. They start a fake ComfyUI (`tests/fake_comfy.py`, an
 `http.server` thread that returns small PNGs and a fake `.glb`) and run the real factory
-as a process. No GPU and no window; about 20 seconds.
+as a process. No GPU inference and no visible window; about 30 seconds.
+
+`tests/test_local_tools_smoke.py` runs the humanoid exporter and the review sheet when
+`forge.local.json` points to `blender_python` and `godot` (skipped otherwise): the fixture
+GLBs are made once under `local/fixtures/`, outputs go to `local/smoke/`, normal maps are
+baked on the CPU, Godot renders in a window at (-20000, -20000) with the dummy audio
+driver and exits by itself. With `FORGE_SMOKE_RIG` (a rigged GLB) and `FORGE_SMOKE_CLIPS`
+(a motion library), and optionally `FORGE_SMOKE_ITEMS`, it also exports that rig and makes
+its sheet in `local/smoke/real/`. Never commit those files. Never run SkinTokens or UniRig
+from a test (they need the GPU).

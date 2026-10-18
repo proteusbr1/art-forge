@@ -7,10 +7,14 @@ local tools, then runs unattended overnight and delivers files a game engine can
 animated humanoid characters are the next milestone and are not implemented yet.
 
 **Status:** the factory core, the order format with its check, the launcher and the
-production workflows are in place and tested against a fake server. The `humanoid`
-recipe (rig, export, review sheets) is not written yet. See the
-[design](docs/superpowers/specs/2026-10-18-art-forge-design.md) and the
-[implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md).
+production workflows are in place and tested against a fake server. The local tools of the
+coming `humanoid` recipe exist and are smoke-tested without GPU inference: the humanoid
+exporter (bone map, Godot humanoid bone names, retarget of a motion library, normal map,
+mesh and motion reports), the Godot review sheet and the rig runners (SkinTokens, UniRig;
+not run while building). The recipe that queues them is not written yet. See the
+[design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
+[implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
+[docs/conventions.md](docs/conventions.md).
 
 ## Ideas in one page
 
@@ -50,7 +54,8 @@ local ComfyUI with the custom nodes and models the workflows use (see the table 
 
 `-Check` reads the server's node classes (`GET /object_info`) when it answers and checks
 without them otherwise. More in [AGENTS.md](AGENTS.md); tests:
-`python -m unittest discover -s tests`.
+`python -m unittest discover -s tests` (the smoke tests of the humanoid tools run when
+`forge.local.json` points to Blender and Godot, and skip otherwise).
 
 ## Machine configuration
 
@@ -62,10 +67,13 @@ without them otherwise. More in [AGENTS.md](AGENTS.md); tests:
 | `python` | Python 3 with NumPy and Pillow that runs the factory (default: `python` on the PATH) |
 | `blender_python` | a Python that can import `bpy` (Blender as a module) |
 | `unirig_dir`, `unirig_venv`, `unirig_hf`, `unirig_shim` | UniRig's source folder, its virtual environment, its Hugging Face cache (weights) and the folder put on its `PYTHONPATH` |
-| `godot` | Godot 4 executable |
+| `skintokens_dir`, `skintokens_python` | the SkinTokens checkout and the Python of its own environment |
+| `godot` | Godot 4 executable (on Windows the console build) |
+| `bake_device` | Cycles device of the normal-map bake: `GPU` (default; falls back to the CPU when Cycles finds no GPU) or `CPU` |
 
-Relative paths are relative to the file. The Blender, UniRig and Godot keys are for the
-coming `humanoid` recipe; the current recipes need only ComfyUI.
+Relative paths are relative to the file. The Blender, rig and Godot keys are for the
+humanoid tools; the current recipes need only ComfyUI. `python -m forge.local_gpu` says
+which local tools of this machine are ready.
 
 ## Models
 

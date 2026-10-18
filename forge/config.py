@@ -20,16 +20,29 @@ KEYS = {
     "unirig_venv": "virtual environment of UniRig",
     "unirig_hf": "Hugging Face cache folder with UniRig's weights (HF_HOME)",
     "unirig_shim": "folder put on UniRig's PYTHONPATH (stand-ins for modules without a Windows build)",
-    "godot": "Godot 4 executable (the review sheets)",
+    "skintokens_dir": "SkinTokens checkout (its demo.py and experiments/ checkpoints)",
+    "skintokens_python": "Python of SkinTokens' own environment",
+    "godot": "Godot 4 executable (the review sheets; the console build on Windows)",
+    "bake_device": "Cycles device for normal-map baking: GPU (default) or CPU",
 }
-TOOL_KEYS = tuple(k for k in KEYS if k != "comfy_url")
+# Keys that are values, not paths on this machine.
+VALUE_KEYS = ("comfy_url", "bake_device")
+TOOL_KEYS = tuple(k for k in KEYS if k not in VALUE_KEYS)
+# Files that must exist inside a tool folder for the tool to run.
+TOOL_FILES = {
+    "skintokens_dir": ("demo.py",),
+    "unirig_dir": ("run.py",),
+    "unirig_venv": (os.path.join("Scripts", "python.exe") if os.name == "nt" else os.path.join("bin", "python"),),
+}
+BAKE_DEVICES = ("GPU", "CPU")
 
 
 def load_config(path=None):
     """The configuration as a dictionary with every key of KEYS (None when not set).
-    path None or a missing file gives the defaults (only comfy_url set)."""
+    path None or a missing file gives the defaults (only comfy_url and bake_device set)."""
     cfg = {k: None for k in KEYS}
     cfg["comfy_url"] = DEFAULT_SERVER
+    cfg["bake_device"] = "GPU"
     if not path or not os.path.exists(path):
         return cfg
     with open(path, encoding="utf-8-sig") as f:
@@ -46,7 +59,11 @@ def load_config(path=None):
             continue
         if not isinstance(v, str):
             raise ValueError("%s: %s must be a string" % (path, k))
-        if k != "comfy_url":
+        if k == "bake_device":
+            v = v.upper()
+            if v not in BAKE_DEVICES:
+                raise ValueError("%s: bake_device must be one of %s" % (path, ", ".join(BAKE_DEVICES)))
+        elif k not in VALUE_KEYS:
             v = os.path.normpath(os.path.join(base, os.path.expandvars(os.path.expanduser(v))))
         cfg[k] = v
     return cfg
@@ -61,4 +78,8 @@ def missing_tools(config, keys):
             out.append("%s is not set in the configuration (%s)" % (k, KEYS.get(k, k)))
         elif not os.path.exists(v):
             out.append("%s points to a missing path: %s" % (k, v))
+        else:
+            for rel in TOOL_FILES.get(k, ()):
+                if not os.path.exists(os.path.join(v, rel)):
+                    out.append("%s has no %s: %s" % (k, rel, os.path.join(v, rel)))
     return out

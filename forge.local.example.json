@@ -7,5 +7,8 @@
  "unirig_venv": "C:/path/to/unirig-venv",
  "unirig_hf": "C:/path/to/unirig-hf-cache",
  "unirig_shim": "C:/path/to/unirig-shim",
- "godot": "C:/path/to/Godot_v4_console.exe"
+ "skintokens_dir": "C:/path/to/SkinTokens",
+ "skintokens_python": "C:/path/to/skintokens-env/Scripts/python.exe",
+ "godot": "C:/path/to/Godot_v4_win64_console.exe",
+ "bake_device": "GPU"
 }

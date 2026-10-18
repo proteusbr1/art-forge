@@ -96,14 +96,16 @@ def main(argv=None):
     ap.add_argument("--provenance", default="", metavar="FILE",
                     help="write the provenance file of <out>/manifest.json, run nothing")
     a = ap.parse_args(argv)
-    if inside(a.out, ROOT):
-        print("the output folder must be outside the factory's repository: %s" % a.out)
-        return 2
     if a.provenance:
+        # Reads <out> and writes only FILE: allowed for any folder (the smoke tests keep
+        # theirs under local/).
         from .provenance import export
         n = export(os.path.realpath(a.out), a.provenance)
         print("provenance of %d files written to %s" % (n, a.provenance))
         return 0
+    if inside(a.out, ROOT):
+        print("the output folder must be outside the factory's repository: %s" % a.out)
+        return 2
     if not a.order:
         ap.error("--order is required")
     from .config import load_config

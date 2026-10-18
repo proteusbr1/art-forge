@@ -194,7 +194,9 @@ class ConfigTest(unittest.TestCase):
                 json.dump({"comfy_url": "http://127.0.0.1:9999", "godot": "tools/godot.exe", "_note": "x"}, f)
             cfg = load_config(path)
             self.assertEqual(set(cfg), {"comfy_url", "python", "blender_python", "unirig_dir", "unirig_venv",
-                                        "unirig_hf", "unirig_shim", "godot"})
+                                        "unirig_hf", "unirig_shim", "skintokens_dir", "skintokens_python",
+                                        "godot", "bake_device"})
+            self.assertEqual(cfg["bake_device"], "GPU")
             self.assertEqual(cfg["comfy_url"], "http://127.0.0.1:9999")
             self.assertEqual(cfg["godot"], os.path.join(tmp, "tools", "godot.exe"))
             self.assertIsNone(cfg["unirig_dir"])
@@ -202,6 +204,13 @@ class ConfigTest(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"godott": "x"}, f)
             with self.assertRaisesRegex(ValueError, "unknown keys"):
+                load_config(path)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"bake_device": "cpu"}, f)
+            self.assertEqual(load_config(path)["bake_device"], "CPU")  # a value, not a path
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"bake_device": "TPU"}, f)
+            with self.assertRaisesRegex(ValueError, "bake_device"):
                 load_config(path)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

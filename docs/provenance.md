@@ -70,6 +70,22 @@ workflow of a second private repository of the same author, at revision
 `$WIDTH$` and `$HEIGHT$`, 60 steps and CFG 1.0 fixed in the sampler (now
 `12f8b37333381acf8c66642fa350d30ea08f8de407695778c7e1cff7ffa88c66`).
 
+## Humanoid tools
+
+Ported from the second private repository of the same author (the humanoid exporter at
+revision `6d82bb3df910a0299f7eb39acebeea6ae0c18e28`) and from the earlier factory's
+research tools (the SkinTokens entry at revision `620f632c1ecfd0ce566172f971fa863b265402cb`):
+
+| Source file | Here | Source SHA-256 | State |
+|---|---|---|---|
+| `tools/arte/blender/exportar_modelo_3d.py` | `tools/blender/humanoid_export.py` | `0cac16dc0f631142b00ef82f6fa5abe3fa11b171d5e6c59d3a2068fbcef6001c` | generic port: retarget by bone directions, IK feet and hands, item bones, normal bake, region mask and texture relief kept; the project's recolouring, level heights, per-tile phases, unit options and fixed hold placements removed (hold placements are now motion-library fields); new: validated bone map, bones renamed to Godot's humanoid profile, height in metres, bake source, mesh and motion reports |
+| `tools/arte/Rigar com UniRig.ps1` | `run_rig(..., method="unirig")` in `forge/local_gpu.py` | `f465aece37bad32f9a4bf441a0fb018888ff244ea5721fdb6c0e77696c470ffc` | the same five python steps, run from Python |
+| `tools/art/lab/skintokens_entry.py` | `tools/rig/skintokens_entry.py` | `297b8bd9f4ddae54b80c470476fed95b2d0511407efe30227d333ffed9a525df` | modified: messages |
+
+The canonical joint names of the motion library (`docs/conventions.md`) are those of the
+same author's motion tools. New in this repository: `tools/blender/humanoid_bones.py`,
+`tools/review_godot/`, `forge/local_gpu.py`, `tests/fixtures/humanoid/` and their tests.
+
 The workflows are stored without line-ending conversion (`.gitattributes`), so their
 SHA-256, which enters every job's specification and provenance, is the same on every
 machine.
