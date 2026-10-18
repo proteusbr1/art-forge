@@ -10,6 +10,13 @@ local tools, with no one watching, until it delivers files ready for the game to
 The factory knows no game: it knows **recipes** (ways of producing) and **models per
 stage**. The game picks the recipe and the settings of each piece in the order.
 
+The first deliverable is a **factory of reproducible candidates for review**: every
+output stays pending human review until a real night proves the whole chain delivers
+usable characters. The contracts that make candidates comparable and auditable (explicit
+bone maps, per-stage settings with effective parameters, mesh files kept through the
+stages, motion and mesh reports, a two-level readiness check, machine-wide GPU
+coordination) are detailed in the implementation plan.
+
 ## 2. Out of scope for this phase
 
 - The `articulated` and `creature` recipes (section 7), built when the first order needs
