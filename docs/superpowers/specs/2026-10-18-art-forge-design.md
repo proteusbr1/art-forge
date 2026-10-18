@@ -15,7 +15,8 @@ stage**. The game picks the recipe and the settings of each piece in the order.
 - The `articulated` and `creature` recipes (section 7), built when the first order needs
   them.
 - Generating new motion (text-to-motion). In this phase animation comes from a motion
-  library supplied by the order.
+  library supplied by the order; HY-Motion Lite is the planned motion option of the next
+  phase.
 - Finger rigs, hand grafting and fine contact with held items: they cost a lot and the
   first use case sees characters from above and from afar.
 - Game-side adapters (how a game installs what the factory produces). They live in each
@@ -62,8 +63,9 @@ Origin, recorded in `docs/provenance.md` when the code lands:
 ## 5. Machine configuration
 
 `forge.local.json` (ignored by git, with a committed `forge.local.example.json`): the
-ComfyUI address, the Python with dependencies, the Blender Python (`bpy`), the UniRig
-folder, venv and weights, Godot. Heavy tools are not duplicated: the configuration points
+ComfyUI address, the Python with dependencies, the Blender Python (`bpy`), the
+SkinTokens checkout and its Python environment, the UniRig folder, venv and weights
+(optional), Godot. Heavy tools are not duplicated: the configuration points
 to existing installs. A missing tool makes the order check fail before anything starts,
 naming what is missing.
 
@@ -116,10 +118,11 @@ Each variant goes through every stage; none waits for a human pick.
 | Stage | Default | Options in this phase |
 |---|---|---|
 | reference | Qwen Image 2.1 base, 60 steps, 1024x1536: full body in A-pose, empty hands held away from the body, neutral grey background | Qwen 2.1 Turbo, FLUX.2 Klein, image supplied in `inputs` |
+| pose | Qwen Image Edit 2511: corrects pose and details of the reference (A-pose, hands apart and open, full body in frame, nothing held) | skipped with `skip` |
 | cutout | BiRefNet, RGBA | Qwen Image Edit character |
 | mesh | TRELLIS.2, then reduction to `params.tris` (default 25k) | Hunyuan3D 2.1 shape |
 | paint | Hunyuan3D Paint 2.1, 10 steps, texture `params.texture` (default 2048) | TRELLIS.2's own texture |
-| rig | UniRig; bones renamed to Godot's humanoid profile (`SkeletonProfileHumanoid`) from the skeleton's tree; bones without a role keep their names | none other in this phase |
+| rig | SkinTokens (skeleton and weights); bones renamed to Godot's humanoid profile (`SkeletonProfileHumanoid`) from the skeleton's tree; bones without a role (fingers, extras) keep their names | UniRig |
 | export | reduction with a baked normal map, proportions from `params`, region mask (skin, hair, glow), retarget of the motion library from `inputs` with planted feet and hands on the held items' sockets | no library: rest pose only |
 | review | Godot off-screen: each variant seen by the `review` camera (small, as in game) and from the front (large), one sheet per piece | — |
 
@@ -143,8 +146,8 @@ repository.
 - ComfyUI jobs: at most 6 factory prompts in the server queue, Hunyuan jobs alone after
   `/free`, bursts of the same model, and interactive users can jump the queue with
   `front: true`.
-- Local stages that use the GPU (UniRig, normal-map baking in Cycles, the Godot review
-  render) form an exclusive group: they run only with no factory prompt in the ComfyUI
+- Local stages that use the GPU (SkinTokens or UniRig, normal-map baking in Cycles, the
+  Godot review render) form an exclusive group: they run only with no factory prompt in the ComfyUI
   queue and after `/free`; while they run, nothing is sent to ComfyUI. Hunyuan never runs
   outside the server.
 - Local stages without GPU run between passes.
@@ -171,7 +174,7 @@ repository.
   skeleton, sheet assembly.
 - The inherited core tests still pass.
 - `-Check` and `-Estimate` on a generic sample order (a humanoid, an object, a material).
-- Smoke test of the local stages without inference: from an existing UniRig skeleton,
+- Smoke test of the local stages without inference: from an existing rigged skeleton,
   export, renaming, retarget of a sample library and sheet, checking the re-imported GLB
   (bones, animations, scale) and the sheet image.
 - Provenance exported from the smoke test.
@@ -188,7 +191,9 @@ recipe before spending a night on a full art list.
 1. A first real humanoid order from a game, with its adapter in that game's repository.
 2. Full art lists in the existing recipes.
 3. `articulated`, with the first order that has a vehicle or a plated robot.
-4. `creature`, with the first order that has a non-humanoid creature (including where its
+4. A `motion` stage option with HY-Motion Lite: the order describes each movement in
+   text and the factory generates and retargets it.
+5. `creature`, with the first order that has a non-humanoid creature (including where its
    animation comes from).
-5. Publishing the research behind the stage defaults (which model won each stage, steps,
+6. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
