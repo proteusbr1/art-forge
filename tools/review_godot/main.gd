@@ -14,7 +14,9 @@ extends Node
 ##   --figure <px>                     height of a standing figure in the small views (96)
 ##   --front <0|1>                     the large front view (1)
 ##   --front-height <px>               its figure height (default 3 x --figure)
-##   --animation <name>                pose shown (default: the first idle, else the rest pose)
+##   --animation <name>                pose shown (default: the first idle, else the rest pose),
+##                                     at the clip's pose_frame (model.json) when it has one, else
+##                                     at the frame where both ankles are lowest
 ##   --strip-frames <n>                frames of each strip clip (8)
 ##   --strip-yaw <degrees>             direction of the strip (default: the second yaw)
 ## Next to each GLB it reads model.json (height, animation kinds), motion_report.json and
@@ -134,6 +136,74 @@ func _pose(v: Dictionary, anim: String, t: float) -> void:
 	player.pause()
 
 
+func _attach(v: Dictionary) -> void:
+	# Only this variant's figure under the pivot (the others are taken off).
+	var scene: Node3D = v["scene"]
+	for c in _pivot.get_children():
+		if c != scene:
+			_pivot.remove_child(c)
+	if scene.get_parent() != _pivot:
+		if scene.get_parent():
+			scene.get_parent().remove_child(scene)
+		_pivot.add_child(scene)
+
+
+func _in_scene(n: Node, scene: Node3D) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var cur: Node = n
+	while cur != null and cur != scene:
+		if cur is Node3D:
+			t = (cur as Node3D).transform * t
+		cur = cur.get_parent()
+	return t
+
+
+func _pose_frame(v: Dictionary, anim: String) -> Dictionary:
+	## The frame of `anim` the still figures show: the clip's pose_frame from model.json when
+	## it has one, else the frame where both ankles are lowest (the higher of the two feet is
+	## lowest, so the figure stands on both feet), else frame 0.
+	var player: AnimationPlayer = v.get("player")
+	if anim == "" or player == null or not player.has_animation(anim):
+		return {"time": 0.0, "frame": -1, "how": "rest pose"}
+	var fps := 24.0
+	var frames := 0
+	var declared = null
+	if v.get("model") is Dictionary:
+		for a: Dictionary in v["model"].get("animations", []):
+			if str(a.get("name", "")) == anim:
+				fps = float(a.get("fps", 24.0))
+				frames = int(a.get("frames", 0))
+				declared = a.get("pose_frame")
+	if fps <= 0.0:
+		fps = 24.0
+	if frames <= 0:
+		frames = maxi(1, int(round(player.get_animation(anim).length * fps)))
+	if declared != null:
+		var f := clampi(int(declared), 0, frames - 1)
+		return {"time": f / fps, "frame": f, "how": "pose_frame of the clip"}
+	var skels := (v["scene"] as Node3D).find_children("*", "Skeleton3D", true, false)
+	if skels.is_empty():
+		return {"time": 0.0, "frame": 0, "how": "frame 0 (no skeleton)"}
+	var sk: Skeleton3D = skels[0]
+	var lf := sk.find_bone("LeftFoot")
+	var rf := sk.find_bone("RightFoot")
+	if lf < 0 or rf < 0:
+		return {"time": 0.0, "frame": 0, "how": "frame 0 (no foot bones)"}
+	_attach(v)
+	var to_scene := _in_scene(sk, v["scene"])
+	var best := 0
+	var best_key := INF
+	for f in frames:
+		_pose(v, anim, f / fps)
+		var yl := (to_scene * sk.get_bone_global_pose(lf).origin).y
+		var yr := (to_scene * sk.get_bone_global_pose(rf).origin).y
+		var key := maxf(yl, yr) + 0.001 * (yl + yr)
+		if key < best_key - 1e-6:
+			best_key = key
+			best = f
+	return {"time": best / fps, "frame": best, "how": "both ankles lowest"}
+
+
 func _setup_viewport() -> void:
 	_vp = SubViewport.new()
 	_vp.transparent_bg = true
@@ -168,11 +238,7 @@ func _setup_viewport() -> void:
 
 func _render(v: Dictionary, size: Vector2i, px_per_m: float, pitch: float, yaw: float,
 		anim: String, t: float) -> Image:
-	var scene: Node3D = v["scene"]
-	if scene.get_parent() != _pivot:
-		if scene.get_parent():
-			scene.get_parent().remove_child(scene)
-		_pivot.add_child(scene)
+	_attach(v)
 	_pivot.rotation_degrees = Vector3(0, yaw, 0)
 	_vp.size = size
 	_cam.size = size.y / px_per_m
@@ -307,14 +373,21 @@ func _run() -> int:
 			if anim == "":
 				anim = _anim_of_kind(v, "idle")
 			b["pose"] = anim if anim != "" else "rest"
+			var pf := _pose_frame(v, anim)
+			b["pose_frame"] = pf["frame"]
+			b["pose_time"] = pf["time"]
+			b["pose_how"] = pf["how"]
+			if anim != "":
+				b["texts"][0]["text"] += "   pose %s frame %d (%s)" % [anim, pf["frame"], pf["how"]]
+			print("REVIEW: pose ", v["label"], " ", b["pose"], " frame ", pf["frame"], " (", pf["how"], ")")
 			var row_h := small.y
 			for yaw in yaws:
 				b["cells"].append({"kind": "small", "yaw": yaw, "rect": Rect2i(x, y, small.x, small.y),
-					"anim": anim, "time": 0.0, "pitch": pitch, "ppm": ppm_small})
+					"anim": anim, "time": pf["time"], "pitch": pitch, "ppm": ppm_small})
 				x += small.x + PAD
 			if front:
 				b["cells"].append({"kind": "front", "yaw": 0.0, "rect": Rect2i(x, y, large.x, large.y),
-					"anim": anim, "time": 0.0, "pitch": 0.0, "ppm": ppm_large})
+					"anim": anim, "time": pf["time"], "pitch": 0.0, "ppm": ppm_large})
 				x += large.x + PAD
 				row_h = maxi(row_h, large.y)
 			width = maxi(width, x)
@@ -349,7 +422,8 @@ func _run() -> int:
 		var b: Dictionary = blocks[i]
 		var v: Dictionary = _variants[i]
 		var lv := {"label": b["label"], "failed": b["failed"], "reason": b["reason"], "pose": b.get("pose", ""),
-			"flags": b["flags"], "cells": []}
+			"pose_frame": b.get("pose_frame", -1), "pose_time": b.get("pose_time", 0.0),
+			"pose_how": b.get("pose_how", ""), "flags": b["flags"], "cells": []}
 		for c: Dictionary in b["cells"]:
 			var r: Rect2i = c["rect"]
 			if c["kind"] == "failure":

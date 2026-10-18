@@ -6,6 +6,9 @@ They need forge.local.json at the repository root with blender_python (export) a
 (sheets); without them they are skipped. Normal maps are baked on the CPU here. Outputs go
 to local/smoke/ (ignored by git); the fixture GLBs are made once under local/fixtures/.
 Optional: FORGE_SMOKE_ITEMS (held-item folder of the real library), FORGE_SMOKE_OUT.
+
+The sheets render on the card: these tests hold this user's machine-wide GPU lock (not the
+tests' temporary one) while they run, and are skipped when a factory run holds it.
 """
 
 import hashlib
@@ -22,9 +25,9 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
-import fake_comfy  # noqa: E402,F401  (a GPU lock folder of the tests' own: FORGE_LOCK_DIR)
+import fake_comfy  # noqa: E402  (a GPU lock folder of the tests' own: FORGE_LOCK_DIR)
 
-from forge import local_gpu  # noqa: E402
+from forge import gpu_lock, local_gpu  # noqa: E402
 from forge.config import load_config  # noqa: E402
 from forge.factory_util import write_json  # noqa: E402
 
@@ -41,6 +44,23 @@ PROFILE = ["Hips", "Spine", "Chest", "UpperChest", "Neck", "Head", "LeftShoulder
            "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes", "RightUpperLeg", "RightLowerLeg",
            "RightFoot", "RightToes"]
 FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+# This user's machine-wide lock folder (fake_comfy points FORGE_LOCK_DIR elsewhere).
+MACHINE_LOCK = fake_comfy.MACHINE_LOCK_DIR or gpu_lock.default_lock_dir()
+_lock = []
+
+
+def setUpModule():
+    if not (HAVE_BLENDER or HAVE_GODOT):
+        return
+    try:
+        _lock.append(gpu_lock.acquire("art-forge smoke tests", MACHINE_LOCK))
+    except gpu_lock.GpuBusy as ex:
+        raise unittest.SkipTest("the card is in use: %s" % ex)
+
+
+def tearDownModule():
+    while _lock:
+        gpu_lock.release(path=_lock.pop())
 
 
 def load(path):
@@ -215,6 +235,109 @@ class SyntheticExport(unittest.TestCase):
         self.assertLess(motion["clips"]["walk"]["foot_slide_cm"], 2.0)
         self.assertNotIn("approved", json.dumps(motion).lower())
 
+    def test_the_machine_lock_is_held(self):
+        self.assertEqual(gpu_lock.holder(MACHINE_LOCK)["what"], "art-forge smoke tests")
+
+    def test_the_draco_error_line_is_explained_in_the_export_log(self):
+        # Blender's glTF exporter logs the missing Draco library as an error even with
+        # compression off; the exporter says right after it that it is harmless.
+        with open(os.path.join(self.lib_dir, "export.stdout.log"), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if "Draco mesh compression is not available" in text:
+            self.assertIn("NOTE the Draco line above is harmless", text)
+
+    def moved_high(self, name, matrix):
+        """A copy of the fixture's high mesh with every mesh object transformed (Blender axes)."""
+        path = os.path.join(SMOKE, "synthetic", name + ".glb")
+        code = ("import sys, bpy\nfrom mathutils import Matrix\n"
+                "bpy.ops.wm.read_factory_settings(use_empty=True)\n"
+                "bpy.ops.import_scene.gltf(filepath=sys.argv[1])\n"
+                "m = Matrix(%r)\n"
+                "for o in bpy.data.objects:\n"
+                "    if o.type == 'MESH':\n"
+                "        o.matrix_world = m @ o.matrix_world\n"
+                "bpy.ops.export_scene.gltf(filepath=sys.argv[2], export_format='GLB', "
+                "export_draco_mesh_compression_enable=False)\n"
+                "import os\nsys.stdout.flush()\nos._exit(0)\n" % ([list(r) for r in matrix],))
+        script = os.path.join(SMOKE, "synthetic", name + ".py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(code)
+        blender([script, self.high, path])
+        return path
+
+    def test_a_shifted_bake_source_is_fitted(self):
+        # Moved and scaled as a re-centring tool would: fitted back, then baked from.
+        k = 1.06
+        moved = self.moved_high("high_moved", [[k, 0, 0, 0.04], [0, k, 0, -0.03], [0, 0, k, 0.05], [0, 0, 0, 1]])
+        out = fresh("synthetic", "bake_fitted")
+        files = local_gpu.run_export(self.rig, out, CONFIG, dict(self.params, tris=25000), bake_source=moved,
+                                     device="CPU", name="figure")
+        mesh = load(files["mesh_report"])
+        fit = mesh["bake_source_fit"]
+        self.assertTrue(fit["corrected"] and fit["used"], fit)
+        self.assertAlmostEqual(fit["scale"], 1 / k, delta=0.01)
+        self.assertGreater(fit["distance_before_m"]["p90"], fit["tolerance_m"])
+        self.assertLessEqual(fit["distance_after_m"]["p90"], fit["tolerance_m"])
+        self.assertEqual(mesh["bake_source"], "high_moved.glb")
+        self.assertTrue(mesh["normal_baked"])
+        self.assertEqual(mesh["flags"], [])
+
+    def test_a_bake_source_that_cannot_be_fitted_is_left_out(self):
+        # Stretched on one axis only: no scale and translation lines it up.
+        moved = self.moved_high("high_stretched", [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1.3, 0], [0, 0, 0, 1]])
+        out = fresh("synthetic", "bake_rejected")
+        files = local_gpu.run_export(self.rig, out, CONFIG, dict(self.params, tris=25000), bake_source=moved,
+                                     device="CPU", name="figure")
+        mesh = load(files["mesh_report"])
+        fit = mesh["bake_source_fit"]
+        self.assertTrue(fit["corrected"])
+        self.assertFalse(fit["used"])
+        self.assertIsNone(mesh["bake_source"])
+        self.assertEqual(mesh["bake_source_rejected"], "high_stretched.glb")
+        self.assertFalse(mesh["normal_baked"])  # not reduced: the texture relief only
+        self.assertFalse(mesh["valid"])
+        self.assertTrue(any("does not line up" in f for f in mesh["flags"]), mesh["flags"])
+        r = check_glb(files["glb"], files["model"])
+        self.assertTrue(r["normal_map"])
+
+    @unittest.skipUnless(HAVE_GODOT, "godot is not configured")
+    def test_the_sheet_poses_the_idle_where_both_feet_stand(self):
+        lib = load(self.clips)
+        idle = json.loads(json.dumps(lib["anims"]["idle"]))
+        idle["holds"] = None
+        for i, f in enumerate(idle["frames"]):
+            if i < 4:  # the right foot lifted on the first frames (a weight shift)
+                for joint in ("r_ankle", "r_toe"):
+                    f[joint][2] += 0.12
+                    f[joint][1] -= 0.08
+        marked = json.loads(json.dumps(idle))
+        marked.update(kind="other", pose_frame=2)
+        lib["anims"] = {"idle": idle, "marked": marked}
+        out = fresh("synthetic", "pose")
+        path = os.path.join(out, "lifted_library.json")
+        write_json(path, lib)
+        files = local_gpu.run_export(self.rig, os.path.join(out, "export"), CONFIG, self.params, clips=path,
+                                     device="CPU", name="figure")
+        model = load(files["model"])
+        anims = {x["name"]: x for x in model["animations"]}
+        self.assertIsNone(anims["idle"]["pose_frame"])
+        self.assertEqual(anims["marked"]["pose_frame"], 2)  # carried from the library
+        sheet = local_gpu.run_review([files["glb"]], os.path.join(out, "review"), CONFIG,
+                                     {"pitch": 60, "directions": 2, "figure_height": 64, "front": False})
+        v = load(sheet["layout"])["variants"][0]
+        self.assertEqual((v["pose"], v["pose_how"]), ("idle", "both ankles lowest"))
+        self.assertGreaterEqual(v["pose_frame"], 4)
+        self.assertTrue(all(c["time"] == v["pose_time"] for c in v["cells"] if c["kind"] == "small"))
+        with open(os.path.join(out, "review", "review.stdout.log"), encoding="utf-8", errors="replace") as f:
+            self.assertIn("REVIEW: pose v1 idle frame %d (both ankles lowest)" % v["pose_frame"], f.read())
+        # A pose_frame in model.json wins.
+        anims["idle"]["pose_frame"] = 1
+        write_json(files["model"], model)
+        sheet = local_gpu.run_review([files["glb"]], os.path.join(out, "review2"), CONFIG,
+                                     {"pitch": 60, "directions": 2, "figure_height": 64, "front": False})
+        v = load(sheet["layout"])["variants"][0]
+        self.assertEqual((v["pose_frame"], v["pose_how"]), (1, "pose_frame of the clip"))
+
     def test_feet_sliding_in_declared_stance_are_flagged(self):
         lib = load(self.clips)
         bad = json.loads(json.dumps(lib["anims"]["idle"]))
@@ -276,6 +399,8 @@ class SyntheticExport(unittest.TestCase):
         self.assertEqual(kinds["strip"], 8)  # the walk of the second variant
         self.assertTrue(layout["variants"][2]["failed"])
         self.assertEqual(layout["variants"][1]["pose"], "idle")
+        self.assertEqual(layout["variants"][1]["pose_how"], "both ankles lowest")
+        self.assertGreaterEqual(layout["variants"][1]["pose_frame"], 0)
         self.assertEqual(layout["variants"][0]["pose"], "rest")
         self.assertIn("motion: no report", layout["variants"][0]["flags"])
         self.assertEqual(layout["variants"][1]["flags"], ["no flags"])

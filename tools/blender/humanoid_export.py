@@ -22,7 +22,9 @@ Steps (formats in docs/conventions.md):
 3. The mesh is the painted game mesh of the rig. It is reduced only when it has more than
    --tris triangles (the report says so). The normal map (--tex pixels, tangent space,
    Cycles on --device) is baked from --bake-source (the raw high mesh, in the rig mesh's
-   coordinates) or, without it, from the mesh before the reduction; the relief of the
+   coordinates: checked to line up with the game mesh, fitted by a uniform scale and a
+   translation when it does not, and left out, with a mesh flag, when it still does not)
+   or, without it, from the mesh before the reduction; the relief of the
    painted texture is added to it. The painted texture keeps its size. Weights are limited
    to 4 influences and normalised; <out>/mesh_report.json checks the result.
 4. With --clips, every clip of the library (canonical joints in body coordinates) is
@@ -100,6 +102,62 @@ def finish(code):
 def fail(code, msg):
     print("FAILED", msg, flush=True)
     finish(code)
+
+
+# A bake source lines up with the game mesh when 90 % of the game mesh's vertices lie within
+# this share of the height from its surface (the bake's ray reaches 2 % of the extent).
+BAKE_TOLERANCE = 0.01
+BAKE_SAMPLES = 4000
+
+
+def _bounds(ob):
+    co = np.empty(len(ob.data.vertices) * 3, np.float32)
+    ob.data.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    return co.min(0), co.max(0)
+
+
+def _distances(high, body):
+    """Median and 90th percentile distance (metres) from game-mesh vertices to the bake
+    source's surface."""
+    from mathutils.bvhtree import BVHTree
+    tree = BVHTree.FromObject(high, bpy.context.evaluated_depsgraph_get())
+    verts = body.data.vertices
+    step = max(1, len(verts) // BAKE_SAMPLES)
+    d = []
+    for i in range(0, len(verts), step):
+        hit = tree.find_nearest(verts[i].co)
+        d.append(hit[3] if hit[0] is not None else float("inf"))
+    d = np.array(d)
+    return {"median": round(float(np.median(d)), 5), "p90": round(float(np.percentile(d, 90)), 5)}
+
+
+def fit_bake_source(high, body):
+    """Check that the bake source (in the game mesh's coordinates) lines up with the game
+    mesh; when it does not, fit its bounds to the game mesh's (uniform scale and translation,
+    the change a re-centring or rescaling tool makes) and measure again. Returns (bounds
+    offset in metres after any fit, record for mesh_report.json); record["used"] is False
+    when it still does not line up."""
+    tol = BAKE_TOLERANCE * a.height
+    lo_b, hi_b = _bounds(body)
+    lo_h, hi_h = _bounds(high)
+    offset = float(max(np.abs(lo_h - lo_b).max(), np.abs(hi_h - hi_b).max()))
+    dist = _distances(high, body)
+    rec = {"tolerance_m": round(tol, 4), "bounds_offset_before_m": round(offset, 4), "distance_before_m": dist,
+           "corrected": False, "used": True, "distance_after_m": dist}
+    if dist["p90"] <= tol:
+        return offset, rec
+    eh, eb = hi_h - lo_h, hi_b - lo_b
+    s = float((eh * eb).sum() / max(float((eh * eh).sum()), 1e-12))
+    t = (lo_b + hi_b) / 2.0 - s * (lo_h + hi_h) / 2.0
+    high.data.transform(Matrix.Translation(Vector(t.tolist())) @ Matrix.Scale(s, 4))
+    high.data.update()
+    lo_h, hi_h = _bounds(high)
+    offset = float(max(np.abs(lo_h - lo_b).max(), np.abs(hi_h - hi_b).max()))
+    dist = _distances(high, body)
+    rec.update({"corrected": True, "scale": round(s, 6), "translation_m": [round(float(x), 5) for x in t],
+                "bounds_offset_after_m": round(offset, 4), "distance_after_m": dist, "used": dist["p90"] <= tol})
+    return offset, rec
 
 
 library = {}
@@ -227,6 +285,7 @@ bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
 
 high = None
 bake_offset = None
+BAKE_FROM = None  # the file name of the bake source when it is used
 if a.bake_source:
     before = set(bpy.data.objects)
     ext = os.path.splitext(a.bake_source)[1].lower()
@@ -255,12 +314,23 @@ if a.bake_source:
     high = bpy.context.view_layer.objects.active
     high.matrix_world = TRANSFORM @ high.matrix_world
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    hc = [v.co for v in high.data.vertices]
-    bc = [v.co for v in body.data.vertices]
-    bake_offset = max(abs(min(c[i] for c in hc) - min(c[i] for c in bc)) + abs(max(c[i] for c in hc) - max(c[i] for c in bc))
-                      for i in range(3))
-    if bake_offset > 0.05 * a.height:
-        mesh_report["problems"].append("the bake source does not line up with the game mesh (%.3f m apart)" % bake_offset)
+    bake_offset, bake_fit = fit_bake_source(high, body)
+    mesh_report["bake_source_fit"] = bake_fit
+    if not bake_fit["used"]:
+        # A normal map baked from a mesh that does not line up would be broken: bake
+        # without it (from the mesh before the reduction, or the texture relief only).
+        mesh_report["problems"].append(
+            "the bake source does not line up with the game mesh (90th percentile distance %.3f m, tolerance "
+            "%.3f m, after fitting its bounds): not used for the normal map" % (
+                bake_fit["distance_after_m"]["p90"], bake_fit["tolerance_m"]))
+        print("BAKE SOURCE REJECTED", bake_fit, flush=True)
+        bpy.data.objects.remove(high)
+        high = None
+    else:
+        BAKE_FROM = os.path.basename(a.bake_source)
+        if bake_fit["corrected"]:
+            print("BAKE SOURCE FITTED scale %.4f translation %s" % (bake_fit["scale"], bake_fit["translation_m"]),
+                  flush=True)
 
 REDUCED = tris_in > a.tris
 if REDUCED and high is None:
@@ -348,7 +418,7 @@ if BAKED:
                         max_ray_distance=0.02 * _ext, normal_space="TANGENT", margin=8)
     nt.nodes.remove(bake_node)
     bpy.data.objects.remove(high)
-    print("BAKE", a.tex, "on", DEVICE_USED, "from", "the bake source" if a.bake_source else "the mesh before reduction",
+    print("BAKE", a.tex, "on", DEVICE_USED, "from", "the bake source" if BAKE_FROM else "the mesh before reduction",
           flush=True)
 _nn = nt.nodes.new("ShaderNodeTexImage")
 _nn.image = normal_img
@@ -368,7 +438,8 @@ mesh_report.update({
     "triangles_in": tris_in, "triangles": tris_out, "triangle_budget": a.tris, "reduced": REDUCED,
     "seam_vertices_merged": _merged,
     "normal_map": a.tex, "normal_baked": BAKED, "bake_device": DEVICE_USED,
-    "bake_source": os.path.basename(a.bake_source) if a.bake_source else (None if not BAKED else "mesh before reduction"),
+    "bake_source": BAKE_FROM or (None if not BAKED else "mesh before reduction"),
+    "bake_source_rejected": os.path.basename(a.bake_source) if a.bake_source and not BAKE_FROM else None,
     "bake_source_offset_m": None if bake_offset is None else round(bake_offset, 4),
 })
 mesh_report["valid"] = not mesh_report["problems"]
@@ -851,7 +922,8 @@ for name, anim in (library.get("anims") or {}).items():
         "name": name, "kind": clip_kind, "frames": len(frames), "fps": float(anim.get("fps", 24.0)),
         "loop": bool(anim.get("loop", False)), "seconds": seconds, "holds": kind, "class": cls,
         "follow": pl.get("follow") if pl else None, "hands": hand_targets, "feet": feet,
-        "stance": anim.get("stance"), "travel": anim.get("travel"), "source": anim.get("source")})
+        "stance": anim.get("stance"), "travel": anim.get("travel"), "source": anim.get("source"),
+        "pose_frame": anim.get("pose_frame")})
     print("ANIMATION", name, len(frames), "frames, reach shortfall %.2f cm" % REACH[name], flush=True)
 for mod in body.modifiers:
     mod.show_viewport = True
@@ -945,8 +1017,14 @@ bpy.ops.export_scene.gltf(filepath=GLB, export_format="GLB", use_selection=True,
                           export_animations=True, export_animation_mode="NLA_TRACKS", export_skins=True,
                           export_def_bones=False, export_frame_range=False, export_force_sampling=False,
                           export_optimize_animation_size=False, export_image_format="JPEG",
-                          export_jpeg_quality=92)
+                          export_jpeg_quality=92,
+                          # No Draco: the GLB stays plain (and the exporter does not log the
+                          # missing Draco library as an error).
+                          export_draco_mesh_compression_enable=False)
 print("EXPORTED", GLB, flush=True)
+# Blender's glTF exporter checks for its Draco library whenever it starts and logs "ERROR
+# Draco mesh compression is not available" when the module build has none.
+print("NOTE the Draco line above is harmless: the GLB is written without Draco compression", flush=True)
 info["seconds_export"] = round(time.time() - T0, 1)
 write_json("model.json", info)
 

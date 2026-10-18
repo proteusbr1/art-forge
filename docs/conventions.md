@@ -42,6 +42,7 @@ Clip keys:
 | `stance` | optional: `{"left": frames, "right": frames}` (a list of frame indices or `"all"`): when each foot is planted. The motion report measures foot slide only on these frames |
 | `travel` | optional: `[side, forward]` body heights the figure moves over one pass of the clip (a walk in place); the foot slide is measured in the ground's frame |
 | `source` | optional: where the motion came from (informative) |
+| `pose_frame` | optional: the frame the review sheet's still figures show for this clip (default: the frame where both ankles are lowest); copied to `model.json` |
 
 Canonical joints (24): `pelvis`, `l_hip`, `r_hip`, `spine`, `chest`, `neck`, `head`,
 `head_top`, `l_collar`, `l_shoulder`, `l_elbow`, `l_wrist`, `l_hand`, `r_collar`,
@@ -112,7 +113,7 @@ boxes (`model.json` `classes`).
 `reference`), `classes` (`{class: {items, sockets, box}}`), `items` (`{name: {class}}`),
 `animations` (per clip: `name`, `kind`, `frames`, `fps`, `loop`, `seconds`, `holds`,
 `class`, `follow`, `hands` (`{side: socket}` put on by IK), `feet`, `stance`, `travel`,
-`source`), `mesh` (`triangles`, `reduced`, `normal_map`, `normal_baked`, `report`),
+`source`, `pose_frame`), `mesh` (`triangles`, `reduced`, `normal_map`, `normal_baked`, `report`),
 `regions` (`mask`, mean luminance of `skin` and `hair` in the painted texture, pixel
 counts, `glow_hues`), `seconds_export`.
 
@@ -126,7 +127,7 @@ blue = what glows (bright saturated colour in the `--glow-hues` range, only with
 | Key | Meaning |
 |---|---|
 | `source` | `proposed` (from the tree), `manual` (this file, written by a person) or `order` (`inputs.bone_map`) |
-| `manual` | `true` makes this file win over the proposal on the next run (`roles` is then read) |
+| `manual` | `true` makes this file win over the proposal (`roles` is then read); the file's hash enters the export job's specification, so the next factory run redoes that export, the review and the final copy |
 | `valid`, `problems` | the validation |
 | `roles` | `{role: rig bone name}` when valid, else `null` |
 | `found` | what was found or given, valid or not |
@@ -148,9 +149,23 @@ stays as written and the validation goes to `bone_map_report.json`.
 `weight_sum_error`, `max_influences`, `influence_limit`, `triangles_in`, `triangles`,
 `triangle_budget`, `reduced` (only when the mesh had more than `--tris` triangles),
 `seam_vertices_merged`, `normal_map`, `normal_baked`, `bake_device`, `bake_source`
-(`--bake-source` file name, `mesh before reduction`, or `null`), `bake_source_offset_m`
-(how far its bounds are from the game mesh's), `problems` and `flags` (the same list),
-`valid`. No UV layer or no base-colour texture stops the export (exit code 4).
+(`--bake-source` file name, `mesh before reduction`, or `null`), `bake_source_rejected`
+(the bake source's name when it was left out), `bake_source_offset_m` (how far its bounds
+are from the game mesh's, after any fit), `bake_source_fit`, `problems` and `flags` (the
+same list), `valid`. No UV layer or no base-colour texture stops the export (exit code 4).
+
+The bake source must line up with the game mesh: 90 % of the game mesh's vertices within
+1 % of the height from its surface (`bake_source_fit`: `tolerance_m`,
+`distance_before_m` with the median and 90th percentile, `bounds_offset_before_m`). When
+it does not, its bounds are fitted to the game mesh's by one uniform scale and a
+translation (`corrected`, `scale`, `translation_m`, `distance_after_m`,
+`bounds_offset_after_m`); when it still does not line up it is not used (`used` false, a
+flag): the normal map is baked from the game mesh before its reduction, or, when it was not
+reduced, holds only the painted texture's relief.
+
+Blender's glTF exporter logs `ERROR Draco mesh compression is not available ...` whenever
+it starts in a `bpy` build without the Draco library; the GLB is written without Draco
+compression (the exporter turns it off and logs a `NOTE` line right after).
 
 `<out>/motion_report.json` (`forge-motion-report`, `status` `pending review`), with a
 library only. Every clip is played on the exported GLB, loaded again in a fresh Blender:
@@ -174,12 +189,14 @@ one real rig the stretch was about 0.40 in standing clips and 0.61 kneeling.
 `FAILED: <reason>` with a red cross in place of the figures); the figure in every
 direction of the review camera (orthographic, `pitch` degrees above the horizon, a
 standing figure `figure_height` pixels tall) posed in its first idle (else the rest
-pose), and one large front view; a strip of 8 frames of the walk, then of `start` and
+pose) at the clip's `pose_frame` when it has one, else at the frame where both ankles are
+lowest (the header names the clip and the frame; Godot's log prints it), and one large
+front view; a strip of 8 frames of the walk, then of `start` and
 `stop` when the model has them, from the strip direction; and one line per mesh flag and
 per motion measure over its threshold. Nothing on the sheet marks a candidate approved.
 
 The layout file: `size`, `status`, and per variant `label`, `failed`, `reason`, `pose`,
-`flags` and `cells` (`kind`: `small`, `front`, `strip` or `failure`; `yaw`, `clip`,
+`pose_frame`, `pose_time`, `pose_how`, `flags` and `cells` (`kind`: `small`, `front`, `strip` or `failure`; `yaw`, `clip`,
 `time`, `rect` = `[x, y, width, height]` in pixels).
 
 ## Provenance of the local steps
