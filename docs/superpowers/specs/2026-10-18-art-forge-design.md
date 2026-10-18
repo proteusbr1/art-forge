@@ -109,8 +109,8 @@ The recipe is chosen by how the thing moves, not by what it is:
 | `concept` | 2D concept with background removed | character study, item | core |
 | `illustration` | finished 2D picture | encyclopedia art, portrait, scene | core |
 | `material` | seamless repeating 2D | floor, wall, sky | core |
-| `object_3d`, `prop`, `vehicle` | rigid, no moving parts | crate, rock, weapon, craft seen whole | core |
-| `humanoid` | skinned, human skeleton | soldier, humanoid alien, android | **this phase** |
+| `object_3d`, `prop`, `vehicle` | rigid, no moving parts | crate, rock, weapon, vehicle seen whole | core |
+| `humanoid` | skinned, human skeleton | soldier, humanoid creature, android | **this phase** |
 | `articulated` | rigid parts on pivots | train, tank, turret, door, plated robot | when ordered |
 | `creature` | skinned, own skeleton | quadruped, insectoid, tentacles | when ordered |
 
