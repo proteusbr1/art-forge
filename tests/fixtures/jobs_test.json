@@ -1,0 +1,43 @@
+{
+ "version": 1,
+ "note": "Small order of the factory tests: one piece per recipe and two raw tasks.",
+ "style": {
+  "global": "Test style shared by every concept.",
+  "view_unit": "Full body front view, plain light background.",
+  "view_object": "Single object, three quarter view, plain light background.",
+  "view_prop": "Single prop, plain light background.",
+  "view_vehicle": "Single vehicle, three quarter view, plain light background.",
+  "view_illustration": "Finished illustration.",
+  "material_top": "Seamless texture seen from above.",
+  "material_front": "Seamless texture seen from the front.",
+  "material_look": "High detail.",
+  "material_negative": "perspective, horizon",
+  "emissive": "Turn this picture into an emissive light mask.",
+  "tier_conventional": "Tier: conventional.",
+  "tier_alien": "Tier: alien."
+ },
+ "families": [
+  {"id": "people", "recipe": "unit", "seeds": 2, "assets": [
+   {"id": "pilot", "brief": "A test pilot in a flight suit.", "tier": "conventional", "emissive": true}]},
+  {"id": "craft", "recipe": "vehicle", "seeds": 2, "assets": [
+   {"id": "hauler", "brief": "A boxy cargo hauler.", "tier": "alien"}]},
+  {"id": "things", "seeds": 2, "assets": [
+   {"id": "crate", "recipe": "object_3d", "brief": "A metal crate."},
+   {"id": "sketch", "recipe": "concept", "brief": "A rough sketch of a lamp."},
+   {"id": "scene", "recipe": "illustration", "brief": "A quiet hangar at night."},
+   {"id": "barrel", "recipe": "prop", "brief": "A plastic barrel."},
+   {"id": "poster", "recipe": "prop", "brief": "A blank wall panel.", "3d": false}]},
+  {"id": "surfaces", "recipe": "material", "material_seeds": 2, "assets": [
+   {"id": "gravel", "brief": "Grey gravel."},
+   {"id": "wall", "brief": "Painted concrete wall.", "view": "front"}]}
+ ],
+ "tasks": [
+  {"id": "extra/backdrop/plain", "workflow": "qwen_image_21_turbo_t2i.json",
+   "values": {"$PROMPT$": "A plain backdrop.", "$NEGATIVE$": "", "$SEED$": 42},
+   "roles": {"12": "rgb", "16": "mask"}},
+  {"id": "extra/backdrop/edit", "workflow": "qwen_edit_2511.json",
+   "values": {"$IMAGE1$": "external_input.png", "$PROMPT$": "Make it blue.", "$NEGATIVE$": "",
+              "$SEED$": 7, "$STEPS$": 4, "$CFG$": 1.0, "$LORA$": 1.0},
+   "roles": {"16": "rgb"}, "after": ["extra/backdrop/plain"]}
+ ]
+}

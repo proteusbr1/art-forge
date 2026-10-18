@@ -1,0 +1,20 @@
+{
+ "version": 1,
+ "note": "Generic sample order: one material, one 3D object and one concept family.",
+ "style": {
+  "global": "High detail original concept art, no text, no letters, no logos.",
+  "view_object": "Single object, three quarter view, centred, whole object visible, plain light grey background.",
+  "material_top": "Seamless tileable albedo texture seen straight from above, flat even light.",
+  "material_look": "Crisp fine detail at every scale.",
+  "material_negative": "perspective, horizon, shadows of objects, text"
+ },
+ "families": [
+  {"id": "ground", "recipe": "material", "variants": 2, "assets": [
+   {"id": "stone", "brief": "Rough grey stone slabs with thin moss in the joints."}]},
+  {"id": "objects", "recipe": "object_3d", "variants": 3, "params": {"tris": 20000, "texture": 2048}, "assets": [
+   {"id": "wooden_crate", "brief": "A sturdy wooden crate with iron corner brackets."}]},
+  {"id": "concepts", "recipe": "concept", "variants": 4, "assets": [
+   {"id": "lantern", "brief": "An old iron lantern with a glass chimney and a ring handle."}]}
+ ],
+ "tasks": []
+}

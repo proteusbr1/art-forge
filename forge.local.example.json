@@ -1,0 +1,11 @@
+{
+ "_note": "Copy to forge.local.json (ignored by git) and point each key to this machine's installs. Every key is optional; relative paths are relative to this file. See README.md.",
+ "comfy_url": "http://127.0.0.1:8188",
+ "python": "C:/path/to/python/python.exe",
+ "blender_python": "C:/path/to/bpy-venv/Scripts/python.exe",
+ "unirig_dir": "C:/path/to/UniRig",
+ "unirig_venv": "C:/path/to/unirig-venv",
+ "unirig_hf": "C:/path/to/unirig-hf-cache",
+ "unirig_shim": "C:/path/to/unirig-shim",
+ "godot": "C:/path/to/Godot_v4_console.exe"
+}

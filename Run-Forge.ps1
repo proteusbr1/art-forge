@@ -1,0 +1,161 @@
+# art-forge launcher (python -m forge): fills the local ComfyUI queue with the jobs of an
+# order and keeps it going for hours, detached from this console (it goes on after the
+# terminal that started it is gone).
+#
+#   .\Run-Forge.ps1 -Order <order.json> -Out <folder>            start (or resume) in the background
+#   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Check     check the order (and the server if it answers)
+#   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Estimate  job counts and estimated GPU hours
+#   .\Run-Forge.ps1 -Out <folder> -Status                        progress, failures and the last log lines
+#   .\Run-Forge.ps1 -Out <folder> -Stop                          stop after the prompts already queued
+#   .\Run-Forge.ps1 -Out <folder> -Stop -Now                     stop now (queued prompts are collected on resume)
+#
+# Other parameters: -Foreground (runs in this console), -RetryFailed, -Limit <n>,
+# -Only <families>. The output folder belongs to the game and must be outside this
+# repository. The machine configuration is forge.local.json next to this script.
+#
+# The running factory uses a snapshot of the program, the workflows, the order and the
+# configuration copied to <Out>\program, so editing them does not change a run in progress:
+# edit, then -Stop and start again (finished jobs are skipped by the manifest). Relative
+# input paths of the order still resolve against the order's own folder.
+param(
+    [string]$Order = "",
+    [string]$Out = "",
+    [switch]$Check,
+    [switch]$Estimate,
+    [switch]$Status,
+    [switch]$Stop,
+    [switch]$Now,
+    [switch]$Foreground,
+    [switch]$RetryFailed,
+    [int]$Limit = 6,
+    [string]$Only = ""
+)
+$ErrorActionPreference = "Stop"
+$root = (Resolve-Path $PSScriptRoot).Path
+$configPath = Join-Path $root "forge.local.json"
+
+function Get-FullPath([string]$path) {
+    return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).Path, $path))
+}
+
+function Test-Inside([string]$path, [string]$folder) {
+    $p = $path.TrimEnd("\") + "\"
+    $f = $folder.TrimEnd("\") + "\"
+    return $p.StartsWith($f, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+if ($Out -eq "") { throw "-Out <folder> is required (a folder outside this repository)" }
+$Out = Get-FullPath $Out
+if (Test-Inside $Out $root) { throw "the output folder must be outside this repository: $Out" }
+if (-not ($Status -or $Stop) -and $Order -eq "") { throw "-Order <order.json> is required" }
+
+# Python: the configuration's "python" if set, else the python on the PATH.
+$python = ""
+if (Test-Path $configPath) {
+    $config = Get-Content -Raw $configPath | ConvertFrom-Json
+    if ($config.python) {
+        $python = [string]$config.python
+        if (-not [System.IO.Path]::IsPathRooted($python)) { $python = Join-Path $root $python }
+        if (-not (Test-Path $python)) { throw "python of forge.local.json not found: $python" }
+    }
+}
+if ($python -eq "") { $python = (Get-Command python -ErrorAction Stop).Source }
+
+$pidFile = Join-Path $Out "factory.pid"
+$stopFile = Join-Path $Out "STOP"
+
+function Get-FactoryProcess {
+    if (-not (Test-Path $pidFile)) { return $null }
+    $n = 0
+    if (-not [int]::TryParse((Get-Content -Raw $pidFile).Trim(), [ref]$n)) { return $null }
+    $p = Get-Process -Id $n -ErrorAction SilentlyContinue
+    if ($p -and $p.ProcessName -like "python*") { return $p }
+    return $null
+}
+
+if ($Status) {
+    $p = Get-FactoryProcess
+    if ($p) { Write-Host "Factory running (pid $($p.Id))." } else { Write-Host "Factory not running." }
+    $state = Join-Path $Out "state.json"
+    if (Test-Path $state) { Get-Content -Raw $state | Write-Host }
+    $log = Join-Path $Out "factory.log"
+    if (Test-Path $log) { Get-Content $log -Tail 15 | Write-Host }
+    exit 0
+}
+
+if ($Stop) {
+    if (-not (Test-Path $Out)) { Write-Host "Factory not running (no output folder)."; exit 0 }
+    New-Item -ItemType File -Force -Path $stopFile | Out-Null
+    $p = Get-FactoryProcess
+    if ($Now -and $p) {
+        Stop-Process -Id $p.Id -Force
+        Remove-Item -Force $stopFile -ErrorAction SilentlyContinue
+        Write-Host "Factory stopped now (pid $($p.Id)); prompts already queued are collected on the next start."
+    } elseif ($p) {
+        Write-Host "Stop requested: the factory submits nothing more and exits after its queued prompts."
+    } else {
+        Remove-Item -Force $stopFile -ErrorAction SilentlyContinue
+        Write-Host "Factory not running."
+    }
+    exit 0
+}
+
+$Order = (Resolve-Path $Order).Path
+$common = @("--order", $Order, "--out", $Out)
+if (Test-Path $configPath) { $common += @("--config", $configPath) }
+if ($Only -ne "") { $common += @("--only", $Only) }
+
+if ($Check -or $Estimate) {
+    $mode = "--estimate"
+    if ($Check) { $mode = "--check" }
+    Push-Location $root
+    try { & $python -m forge @common $mode } finally { Pop-Location }
+    exit $LASTEXITCODE
+}
+
+$p = Get-FactoryProcess
+if ($p) { Write-Host "Factory already running (pid $($p.Id)). Use -Status or -Stop."; exit 0 }
+New-Item -ItemType Directory -Force -Path $Out | Out-Null
+# The output folder may be reached through a junction: use the real folder, so that the
+# detached factory does not depend on the junction, and refuse it if it is really inside.
+$Out = (& $python -c "import os,sys; print(os.path.realpath(sys.argv[1]))" $Out).Trim()
+if (Test-Inside $Out $root) { throw "the output folder must be outside this repository: $Out" }
+$pidFile = Join-Path $Out "factory.pid"
+$stopFile = Join-Path $Out "STOP"
+Remove-Item -Force $stopFile -ErrorAction SilentlyContinue
+
+# Snapshot of the program, the workflows, the order and the configuration.
+$program = Join-Path $Out "program"
+$programForge = Join-Path $program "forge"
+$programWorkflows = Join-Path $programForge "workflows"
+if (Test-Path $programForge) { Remove-Item -Recurse -Force $programForge }
+New-Item -ItemType Directory -Force -Path $programWorkflows | Out-Null
+Copy-Item -Force (Join-Path $root "forge\*.py") $programForge
+Copy-Item -Force (Join-Path $root "forge\workflows\*.json") $programWorkflows
+Copy-Item -Force $Order (Join-Path $program "order.json")
+$orderBase = Split-Path -Parent $Order
+
+$factoryArgs = @("-m", "forge", "--order", "$program\order.json", "--order-base", $orderBase,
+    "--out", $Out, "--limit", "$Limit")
+if (Test-Path $configPath) {
+    Copy-Item -Force $configPath (Join-Path $program "forge.local.json")
+    $factoryArgs += @("--config", "$program\forge.local.json")
+}
+if ($Only -ne "") { $factoryArgs += @("--only", $Only) }
+if ($RetryFailed) { $factoryArgs += "--retry-failed" }
+
+if ($Foreground) {
+    Push-Location $program
+    try { & $python @factoryArgs } finally { Pop-Location }
+    exit $LASTEXITCODE
+}
+
+# Detached: created by WMI, so it does not belong to this console or its job object, and
+# with pythonw it has no window. Its own log is <Out>\factory.log.
+$pythonw = Join-Path (Split-Path $python) "pythonw.exe"
+if (-not (Test-Path $pythonw)) { $pythonw = $python }
+$line = "`"$pythonw`" " + (($factoryArgs | ForEach-Object { if ($_ -match "[\s\\]") { "`"$_`"" } else { $_ } }) -join " ")
+$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $line; CurrentDirectory = $program }
+if ($r.ReturnValue -ne 0) { throw "could not start the factory (Win32_Process.Create returned $($r.ReturnValue))" }
+Write-Host "Factory started in the background (pid $($r.ProcessId)). Log: $Out\factory.log"
+Write-Host "Progress: .\Run-Forge.ps1 -Out `"$Out`" -Status    Stop: -Stop"

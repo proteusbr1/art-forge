@@ -1,4 +1,5 @@
 local/
+.superpowers/
 forge.local.json
 __pycache__/
 *.pyc
