@@ -12,5 +12,7 @@
   "11": {"class_type": "Hy3DInPaint", "inputs": {"pipeline": ["10", 0], "albedo": ["10", 1], "albedo_mask": ["10", 2], "mr": ["10", 3], "mr_mask": ["10", 4], "output_mesh_name": "$MESHNAME$"}},
   "12": {"class_type": "SaveImage", "inputs": {"images": ["11", 0], "filename_prefix": "$PREFIX$"}},
   "13": {"class_type": "SaveImage", "inputs": {"images": ["11", 1], "filename_prefix": "$PREFIX$"}},
-  "14": {"class_type": "SaveImage", "inputs": {"images": ["9", 1], "filename_prefix": "$PREFIX$"}}
+  "14": {"class_type": "SaveImage", "inputs": {"images": ["9", 1], "filename_prefix": "$PREFIX$"}},
+  "15": {"class_type": "Hy3D21PostprocessMesh", "inputs": {"trimesh": ["4", 0], "remove_floaters": true, "remove_degenerate_faces": true, "reduce_faces": false, "max_facenum": 40000, "smooth_normals": false}},
+  "16": {"class_type": "Hy3D21ExportMesh", "inputs": {"trimesh": ["15", 0], "filename_prefix": "$PREFIX$", "file_format": "glb"}}
 }

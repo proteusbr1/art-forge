@@ -39,16 +39,17 @@ format in [docs/order.md](docs/order.md) and the design in
 - `forge/config.py`: `load_config` (the machine configuration, `forge.local.json`).
 - `forge/stages.py`: the stage catalogue per recipe (shared `OPTIONS` with their named
   settings), inputs known to be overridden (`OVERRIDDEN`), params, inputs and review keys.
-- `forge/recipes.py`: recipes that expand each piece into jobs (`expand`).
+- `forge/recipes.py`: recipes that expand each piece into jobs (`expand`), including
+  `recipe_humanoid` and its order check (`PIECE_CHECKS`).
 - `forge/factory_core.py`: job states, scheduling, `state.json`, estimate.
 - `forge/comfy_jobs.py`: builds a workflow's prompt, submits it, collects its outputs.
 - `forge/local_steps.py`, `forge/scoring.py`: local steps without GPU (picks, sheets,
-  seamless materials) and the pick scores.
+  seamless materials, a humanoid's cutout and final copy) and the pick scores.
 - `forge/provenance.py`: provenance records and export.
 - `forge/comfy_server.py`, `forge/factory_util.py`: HTTP client and helpers.
 - `forge/local_gpu.py`: runners of the local tools that use the card (`run_rig`,
   `run_export`, `run_review`), their logs and provenance, and `RUNNERS` (the tools of the
-  `local_gpu` job kind).
+  `local_gpu` job kind: `rig`, `export`, `review`).
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
   `humanoid_export.py` (the humanoid export, run by `blender_python`).
@@ -56,7 +57,8 @@ format in [docs/order.md](docs/order.md) and the design in
 - `tools/rig/skintokens_entry.py`: SkinTokens with a fixed seed, run by its own Python.
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
-  orders and `tests/fixtures/humanoid/` the synthetic humanoid (generator, library, item).
+  orders (`order_generic.json`, `order_humanoid.json`) and `tests/fixtures/humanoid/` the
+  synthetic humanoid (generator, library, item).
 
 ## Running
 
@@ -123,7 +125,8 @@ environment not ready) or 3 (environment not verified: the server did not answer
 - Prompts queued when the factory stopped are waited for, not resubmitted; a prompt the
   server lost is resubmitted; with the server down the factory waits and retries.
 - A failed job is tried once more (the Hunyuan mesh with a 2048 texture and 512 views),
-  then marked `failed`; only its dependants wait. `-RetryFailed` tries again.
+  then marked `failed`; only its dependants wait (a humanoid export stopped by an invalid
+  bone map is not tried twice). `-RetryFailed` tries again.
 - `<out>/STOP` (the launcher's `-Stop`): nothing more is sent, queued prompts are
   collected, the file is removed and the factory exits. Running again resumes.
 
@@ -133,7 +136,7 @@ environment not ready) or 3 (environment not verified: the server did not answer
 
 Run from the repository root. They start a fake ComfyUI (`tests/fake_comfy.py`, an
 `http.server` thread that returns small PNGs and a fake `.glb`) and run the real factory
-as a process. No GPU inference and no visible window; about 30 seconds.
+as a process. No GPU inference and no visible window; about a minute.
 
 `tests/test_local_tools_smoke.py` runs the humanoid exporter and the review sheet when
 `forge.local.json` points to `blender_python` and `godot` (skipped otherwise): the fixture

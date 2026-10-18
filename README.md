@@ -2,16 +2,20 @@
 
 A local, game-neutral art factory for ComfyUI. A game hands it an **order**, the list of
 every art piece it wants. The factory queues everything on a local ComfyUI server and
-local tools, then runs unattended overnight and delivers files a game engine can use:
-2D concepts, illustrations, seamless materials and textured 3D objects. Rigged and
-animated humanoid characters are the next milestone and are not implemented yet.
+local tools, then runs unattended overnight: 2D concepts, illustrations, seamless
+materials, textured 3D objects and, with the `humanoid` recipe, rigged and animated
+humanoid characters.
 
-**Status:** the factory core, the order format with its check, the launcher and the
-production workflows are in place and tested against a fake server. The local tools of the
-coming `humanoid` recipe exist and are smoke-tested without GPU inference: the humanoid
-exporter (bone map, Godot humanoid bone names, retarget of a motion library, normal map,
-mesh and motion reports), the Godot review sheet and the rig runners (SkinTokens, UniRig;
-not run while building). The recipe that queues them is not written yet. See the
+**Status: a factory of reproducible candidates for review.** Every output is a candidate
+pending human review, reproducible from its recorded provenance, until a real night
+proves that the whole chain delivers usable characters; no such night has run yet. The
+factory core, the order format with its check, the launcher, the production workflows
+and the `humanoid` recipe (reference, pose, cutout, mesh, paint, rig, export, review
+sheet and final pick, each variant end to end) are in place and tested against a fake
+server with stand-ins for the local tools. The local tools themselves are smoke-tested
+without GPU inference: the humanoid exporter (bone map, Godot humanoid bone names,
+retarget of a motion library, normal map, mesh and motion reports) and the Godot review
+sheet; the rig runners (SkinTokens, UniRig) have not run while building. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).
@@ -21,8 +25,10 @@ not run while building). The recipe that queues them is not written yet. See the
 - **The factory knows recipes, not games.** A recipe is picked by how a thing moves, not by
   what it is. Implemented: `concept`, `illustration`, `material` (seamless), `object_3d`,
   `prop`, `vehicle` (rigid, seen whole) and `unit` (a figure with views and an unrigged
-  mesh). Planned: `humanoid` (skinned, human skeleton), then `articulated` (rigid parts on
-  pivots) and `creature` (skinned, own skeleton) when an order needs them.
+  mesh) and `humanoid` (skinned, human skeleton: every variant goes from a generated
+  reference to an exported, animated GLB, then one review sheet and a provisional final
+  pick). Planned: `articulated` (rigid parts on pivots) and `creature` (skinned, own
+  skeleton) when an order needs them.
 - **The order says everything else**, piece by piece: recipe, prompt, number of variants,
   budgets (triangles, texture size), input files, the model of each stage and its named
   settings (steps, seeds, guidance, sampler...). Format: [docs/order.md](docs/order.md).
@@ -45,7 +51,8 @@ local ComfyUI with the custom nodes and models the workflows use (see the table 
 1. Copy `forge.local.example.json` to `forge.local.json` and point its keys to this
    machine's installs (every key is optional; only the tools an order's stages need must
    be present).
-2. Write an order (start from [tests/fixtures/order_generic.json](tests/fixtures/order_generic.json)).
+2. Write an order (start from [tests/fixtures/order_generic.json](tests/fixtures/order_generic.json),
+   or [tests/fixtures/order_humanoid.json](tests/fixtures/order_humanoid.json) for characters).
 3. Check it and see what it costs, then start it. The output folder must be outside this
    repository:
 
@@ -79,7 +86,7 @@ only `GET /object_info`). More in [AGENTS.md](AGENTS.md); tests:
 | `gpu_busy_mb` | VRAM in MB another process may hold before a local GPU job waits (default 2048) |
 
 Relative paths are relative to the file. The Blender, rig and Godot keys are for the
-humanoid tools; the current recipes need only ComfyUI. `python -m forge.local_gpu` says
+humanoid recipe's rig, export and review stages; the other recipes need only ComfyUI. `python -m forge.local_gpu` says
 which local tools of this machine are ready.
 
 ## Models
@@ -99,7 +106,8 @@ licence text on each model's page is what counts. Check it before using the outp
 | [Hunyuan3D 2.1](https://huggingface.co/tencent/Hunyuan3D-2.1) (shape and Paint) | `hunyuan21_*` | Tencent Hunyuan Community License; its territory excludes the European Union, the United Kingdom and South Korea |
 | [TRELLIS.2](https://huggingface.co/microsoft/TRELLIS.2-4B) | `trellis2_mesh.json` | MIT |
 | [BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet) (background removal) | `klein_t2i.json`, `qwen_*` | MIT |
-| [UniRig](https://huggingface.co/VAST-AI/UniRig) | coming `humanoid` recipe | MIT |
+| [UniRig](https://huggingface.co/VAST-AI/UniRig) | `humanoid` rig option `unirig` | MIT |
+| [SkinTokens](https://huggingface.co/VAST-AI/SkinTokens) | `humanoid` rig (default) | the code is MIT (its repository's LICENSE file); check the model page for the weights |
 
 The text and image encoders and VAEs the workflows load (named in each workflow and
 recorded in every job's provenance) come with their own models' terms too.

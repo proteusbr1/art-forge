@@ -44,8 +44,10 @@ MODEL_EXTENSIONS = (".ckpt", ".safetensors", ".pth", ".pt", ".bin")
 THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "hand_socket_cm": "--max-hand-socket",
               "reach_shortfall_cm": "--max-reach", "stretch_p95": "--max-stretch",
               "penetration_cm": "--max-penetration"}
-# Exit code of the exporter when the bone map is invalid.
+# Exit codes of the exporter when the bone map is invalid and when the mesh cannot be
+# exported (no UV layer or base colour): another try would fail the same way.
 EXIT_BONE_MAP = 3
+EXIT_MESH = 4
 
 
 # Runners of the "local_gpu" job kind: tool name -> function(factory, job, out_dir).
@@ -64,9 +66,13 @@ def _gpu_locked(step):
 
 
 class ToolError(RuntimeError):
-    def __init__(self, message, log=None):
+    """A local tool failed. log: the file that says why; retry False: another try would fail
+    the same way (the scheduler marks the job failed at once)."""
+
+    def __init__(self, message, log=None, retry=True):
         RuntimeError.__init__(self, message)
         self.log = log
+        self.retry = retry
 
 
 def tools_for(step, method=None):
@@ -179,9 +185,15 @@ def _run(cmd, out, step, cwd=None, env=None, timeout=None):
     seconds = round(time.time() - t0, 2)
     with open(so, encoding="utf-8", errors="replace") as f:
         text = f.read()
+    if code == EXIT_BONE_MAP:
+        report = os.path.join(out, "bone_map_report.json")
+        raise ToolError("%s stopped: invalid bone map (see %s and %s)" % (
+            step, report if os.path.exists(report) else os.path.join(out, "bone_map.json"), so), so, retry=False)
+    if code == EXIT_MESH:
+        raise ToolError("%s stopped: the mesh cannot be exported (see %s and %s)" % (
+            step, os.path.join(out, "mesh_report.json"), so), so, retry=False)
     if code != 0:
-        raise ToolError("%s failed (exit %d), see %s" % (step, code, se), se) if code != EXIT_BONE_MAP else \
-            ToolError("%s stopped: invalid bone map (see %s and %s)" % (step, os.path.join(out, "bone_map.json"), so), so)
+        raise ToolError("%s failed (exit %d), see %s" % (step, code, se), se)
     return seconds, text
 
 
@@ -332,7 +344,7 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
             raise ValueError("unknown motion threshold %s (known: %s)" % (k, ", ".join(THRESHOLDS)))
         cmd += [THRESHOLDS[k], str(v)]
         settings.setdefault("thresholds", {})[k] = v
-    for stale in ("model.json", "motion_report.json", "mesh_report.json", name + ".glb"):
+    for stale in ("model.json", "motion_report.json", "mesh_report.json", "bone_map_report.json", name + ".glb"):
         if os.path.exists(os.path.join(out, stale)):
             os.remove(os.path.join(out, stale))
     seconds, text = _run(cmd, out, "export", timeout=timeout)
@@ -430,6 +442,97 @@ def run_review(glbs, out, config, camera=None, labels=None, name="sheet", timeou
     rec["command"] = cmd
     _write_provenance(out, "review", rec, files)
     return files
+
+
+# ---- runners of the local_gpu job kind -------------------------------------------------------
+# A humanoid's jobs (forge/recipes.py recipe_humanoid): "inputs" holds the references
+# ({"ref": job, "role": r} to a factory output, {"file": path} or {"folder": path} the order
+# supplies), "args" the requested arguments.
+
+def _step_record(out, step):
+    try:
+        return provenance(out, step)
+    except (OSError, ValueError):
+        return {}
+
+
+def rig_runner(factory, job, out_dir):
+    """The rig of a variant's painted mesh (args: method, seed, beams, postprocess)."""
+    args = job.get("args", {})
+    mesh, _ = factory.resolve(job["inputs"]["mesh"])
+    kw = {"method": args.get("method", "skintokens"), "seed": args.get("seed", 9001)}
+    if kw["method"] == "skintokens":
+        kw.update(beams=args.get("beams", 10), postprocess=bool(args.get("postprocess", False)))
+    files = run_rig(mesh, out_dir, factory.config, **kw)
+    return {"files": files, "passed": dict(kw), "provenance": _step_record(out_dir, "rig")}
+
+
+def export_runner(factory, job, out_dir):
+    """The humanoid export of a variant's rig, with its raw mesh as the bake source and the
+    order's motion library, held items and bone map (args: name, tris, normal_map, height,
+    head, hands, feet, widen, glow and the motion thresholds). An invalid bone map stops it
+    with the report (ToolError, not retried)."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    rig, _ = factory.resolve(ins["rig"])
+    bake = factory.resolve(ins["bake_source"])[0] if "bake_source" in ins else None
+    params = {k: args[k] for k in EXPORT_PARAMS if k in args}
+    if args.get("normal_map"):
+        params["normal_map"] = args["normal_map"]
+    thresholds = {k: args[k] for k in THRESHOLDS if k in args}
+    files = run_export(rig, out_dir, factory.config, params=params,
+                       clips=ins["clips"]["file"] if "clips" in ins else None,
+                       items=ins["items"]["folder"] if "items" in ins else None,
+                       name=args.get("name", "model"), bake_source=bake,
+                       bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
+                       glow=True if args.get("glow") else None, thresholds=thresholds or None)
+    rec = _step_record(out_dir, "export")
+    settings = rec.get("settings", {})
+    passed = {k: settings[k] for k in args if k in settings}
+    passed.update({k: v for k, v in (settings.get("thresholds") or {}).items() if k in args})
+    if "glow" in args:
+        passed["glow"] = bool(settings.get("glow", False))
+    return {"files": files, "passed": passed, "provenance": rec}
+
+
+def variant_failure(factory, variant):
+    """Why a variant did not finish: the first failed job of its chain and its error."""
+    for jid in variant["chain"]:
+        e = factory.entry(jid)
+        if e.get("status") == "failed":
+            err = (e.get("error") or "").strip().splitlines()
+            stage = factory.by_id[jid].get("stage") or jid.rsplit("/", 1)[-1]
+            return ("%s failed: %s" % (stage, err[0][:120])) if err else "%s failed" % stage
+    return "not finished"
+
+
+def review_variants(factory, job):
+    """(glbs, labels) of a review job: per variant its last stage's GLB, or a failure mark
+    "!<reason>" for a variant that did not finish."""
+    glbs, labels = [], []
+    for v in job["variants"]:
+        labels.append(v["variant"])
+        if factory.done_ok(v["job"]):
+            glbs.append(factory.resolve({"ref": v["job"], "role": v["role"]})[0])
+        else:
+            glbs.append("!" + variant_failure(factory, v))
+    return glbs, labels
+
+
+def review_runner(factory, job, out_dir):
+    """One review sheet of every variant of a piece, failures marked (args: the review
+    camera: pitch, directions, figure_height, front, front_height, strip_frames)."""
+    glbs, labels = review_variants(factory, job)
+    camera = dict(job.get("args", {}))
+    files = run_review(glbs, out_dir, factory.config, camera=camera, labels=labels)
+    rec = _step_record(out_dir, "review")
+    settings = dict(rec.get("settings", {}))
+    if "yaws" in settings:
+        settings["directions"] = len(settings["yaws"])
+    return {"files": files, "passed": {k: settings[k] for k in camera if k in settings}, "provenance": rec}
+
+
+RUNNERS.update({"rig": rig_runner, "export": export_runner, "review": review_runner})
 
 
 if __name__ == "__main__":  # a manual check of this machine's configuration

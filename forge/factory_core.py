@@ -12,7 +12,8 @@ from . import gpu_lock
 from .comfy_jobs import MAX_TRIES, ComfyJobs
 from .comfy_server import Server
 from .config import load_config
-from .factory_util import Log, env_seconds, pid_alive, sha_file, sha_file_cached, sha_obj, slug, write_json
+from .factory_util import (Log, env_seconds, folder_hashes, pid_alive, sha_file, sha_file_cached, sha_obj, slug,
+                           write_json)
 from .local_steps import LocalSteps
 from .order import load_order
 from .provenance import local_gpu_record
@@ -30,9 +31,13 @@ FORBIDDEN_MARKERS = ("Api", "Meshy", "Tripo", "Rodin", "Recraft", "Tencent", "Kl
 # Exact audited native classes; similarly named remote API nodes remain forbidden.
 LOCAL_NATIVE_CLASSES = frozenset(("TripoSplatPreprocessImage", "TripoSplatConditioning", "VAEDecodeTripoSplat"))
 
-# Estimated server seconds per job group (from earlier measurements on one consumer GPU).
-ESTIMATE = {"klein": 13, "qwen_t2i": 8, "qwen_hires": 16, "qwen_inpaint": 30, "qwen_edit": 16,
-            "hy3d": 330, "local": 1}
+# Estimated seconds per job group on one consumer GPU (24 GB). Estimates: from earlier
+# measurements of the same workflows (trellis2 42 s with its bake, hunyuan_paint 89 s,
+# qwen_edit 23 s for a 1024x1536 pose edit), qwen21_base from the Turbo's time per step
+# (60 steps at 1024x1536), local_gpu an average of a rig, an export with its bake and a
+# sheet. Real nights replace them (timings.csv).
+ESTIMATE = {"klein": 13, "qwen_t2i": 8, "qwen_hires": 16, "qwen_inpaint": 30, "qwen_edit": 23,
+            "hy3d": 330, "local": 1, "qwen21_base": 90, "trellis2": 45, "hunyuan_paint": 90, "local_gpu": 60}
 HEAVY_MIN_VRAM_GB = 3.0  # Hunyuan shape + Paint peaked at 7.6 and 8.8 GB; margin for 2048 textures
 SAME_GROUP_BURST = 24  # jobs of one model in a row before others' ready jobs get a turn
 STOP_FILE = "STOP"
@@ -182,6 +187,11 @@ class Factory(ComfyJobs, LocalSteps):
         def subst(v):
             if isinstance(v, dict) and "ref" in v:
                 return {"sha": self.resolve(v)[1]}
+            if isinstance(v, dict) and "folder" in v:
+                # A folder the order supplies: the sorted relative paths and contents of its files.
+                path = v["folder"]
+                files = folder_hashes(path) if os.path.isdir(path) else "missing"
+                return {"folder_files": files, **{k: subst(x) for k, x in v.items() if k != "folder"}}
             if isinstance(v, dict) and "file" in v:
                 # The content of a file the order supplies, not its path: moving the order
                 # redoes nothing, changing the file redoes the jobs that use it.
@@ -200,6 +210,12 @@ class Factory(ComfyJobs, LocalSteps):
             base["candidates"] = {c: self.entry(c).get("files", {}).get(job["role"], [None, None])[1]
                                   for c in job["from"] if self.done_ok(c)}
             base["manual"] = self.manual_choice(job)
+        if job.get("partial"):
+            # A job over the variants that finished (review, final): their files, by hash.
+            base["candidates"] = {c: sorted(sha for _, sha in self.entry(c).get("files", {}).values())
+                                  for c in job["from"] if self.done_ok(c)}
+        if job["kind"] == "final":
+            base["manual"] = self.manual_choice(job)
         return sha_obj(base)
 
     # --- state of a job: done, failed, blocked, waiting, ready, queued
@@ -213,7 +229,8 @@ class Factory(ComfyJobs, LocalSteps):
             return "queued"
         deps = refs_of(job)
         st = None
-        if job["kind"] == "pick":
+        if job["kind"] == "pick" or job.get("partial"):
+            # Over candidates: waits while one still runs, goes with those that finished.
             sts = [self.state(self.by_id[d], cache) for d in deps]
             if any(s in ACTIVE for s in sts):
                 st = "waiting"
@@ -427,7 +444,8 @@ class Factory(ComfyJobs, LocalSteps):
             if running or pending:
                 notes.append("an external ComfyUI prompt started meanwhile (%d running, %d pending)" % (
                     running, pending))
-            status = "failed" if tries >= MAX_TRIES else "retry"
+            # A failure the tool knows another try would repeat (an invalid bone map) is final.
+            status = "failed" if tries >= MAX_TRIES or getattr(ex, "retry", True) is False else "retry"
             self.log("FAILED local GPU job %s (try %d) after %s s: %s%s%s" % (
                 jid, tries, seconds, ex, "; " if notes else "", "; ".join(notes)))
             if status == "retry":
@@ -455,7 +473,7 @@ class Factory(ComfyJobs, LocalSteps):
             count[s] = count.get(s, 0) + 1
             if s in ACTIVE:
                 left += ESTIMATE.get(j["group"], 30)
-        review = sorted(j["id"] for j in self.jobs if j["kind"] == "pick" and states[j["id"]] == "done"
+        review = sorted(j["id"] for j in self.jobs if j["kind"] in ("pick", "final") and states[j["id"]] == "done"
                         and not self.manual_choice(j))
         write_json(os.path.join(self.out, "state.json"), {
             "updated": time.strftime("%Y-%m-%d %H:%M:%S"), "pid": os.getpid(), "counts": count,

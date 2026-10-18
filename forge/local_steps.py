@@ -1,8 +1,10 @@
-"""Local steps of the factory (no GPU): seed picks, view sheets and the roll / unroll of
-seamless materials. Mixed into Factory (factory_core.py)."""
+"""Local steps of the factory (no GPU): seed picks, view sheets, the roll / unroll of
+seamless materials, the cutout of a figure and the final copy of a humanoid's chosen
+variant. Mixed into Factory (factory_core.py)."""
 
 import json
 import os
+import shutil
 import time
 
 import numpy as np
@@ -44,6 +46,11 @@ class LocalSteps:
         elif job["kind"] == "unroll":
             inputs = [self.input_record(job["rolled"]), self.input_record(job["painted"])]
             self.unroll(job, d, files)
+        elif job["kind"] == "cutout":
+            inputs = [self.input_record(r) for r in job["inputs"].values()]
+            self.cutout(job, d, files)
+        elif job["kind"] == "final":
+            inputs = self.final(job, d, rec, files)
         else:
             inputs = []
         rec["files"] = files
@@ -134,3 +141,84 @@ class LocalSteps:
         Image.fromarray(np.clip(prev * 255, 0, 255).astype(np.uint8)).resize((1536, 1536), Image.LANCZOS).save(pv)
         files["rgb"] = [os.path.relpath(p, self.out), sha_file(p)]
         files["preview"] = [os.path.relpath(pv, self.out), sha_file(pv)]
+
+    def cutout(self, job, d, files):
+        """The figure on a transparent background: the picture with the BiRefNet foreground
+        mask its workflow saved as the alpha (white = the figure), or, without a mask, a
+        picture that already has one."""
+        path, _ = self.resolve(job["inputs"]["image"])
+        im = Image.open(path)
+        if "mask" in job["inputs"]:
+            mask = Image.open(self.resolve(job["inputs"]["mask"])[0]).convert("L")
+            if mask.size != im.size:
+                mask = mask.resize(im.size, Image.LANCZOS)
+            out = im.convert("RGB")
+            out.putalpha(mask)
+        else:
+            if "A" not in im.getbands() and "transparency" not in im.info:
+                raise ValueError("cutout of %s: the picture has no alpha channel and no mask" % path)
+            out = im.convert("RGBA")
+            if out.getchannel("A").getextrema()[0] == 255:
+                raise ValueError("cutout of %s: the picture is fully opaque" % path)
+        p = os.path.join(d, "%s_rgba.png" % slug(job["id"]))
+        out.save(p)
+        files["rgba"] = [os.path.relpath(p, self.out), sha_file(p)]
+
+    def variant_flags(self, jid):
+        """Mesh and motion flags of a finished variant (from its export's reports), or None
+        when its last stage wrote no report."""
+        files = self.entry(jid).get("files", {})
+        flags, seen = [], False
+        for role in ("mesh_report", "motion_report"):
+            if role not in files:
+                continue
+            seen = True
+            try:
+                with open(os.path.join(self.out, files[role][0]), encoding="utf-8") as f:
+                    flags += ["%s: %s" % (role, x if isinstance(x, str) else json.dumps(x, sort_keys=True))
+                              for x in (json.load(f).get("flags") or [])]
+            except (OSError, ValueError) as ex:
+                flags.append("%s unreadable: %s" % (role, ex))
+        return flags if seen else None
+
+    def final(self, job, d, rec, files):
+        """The chosen variant of a humanoid piece copied to <piece>/final/. The pick file
+        pick_final.json works as every pick: "manual": true with another candidate in
+        "chosen" changes it. The automatic pick is provisional: the first variant that
+        finished every stage with no mesh or motion flag, else the first that finished;
+        it is always marked pending review."""
+        cands, inputs = [], []
+        for v in job["variants"]:
+            c = v["job"]
+            done = self.done_ok(c)
+            flags = self.variant_flags(c) if done else None
+            cands.append({"job": c, "variant": v["variant"], "complete": done,
+                          "flags": flags, "status": self.entry(c).get("status") or "not run"})
+            if done:
+                inputs += [self.input_record({"ref": c, "role": r}) for r in sorted(self.entry(c)["files"])]
+        manual = self.manual_choice(job)
+        if manual and not self.done_ok(manual):
+            raise ValueError("the manual pick %s in pick_%s.json has not finished" % (manual, slug(job["id"])))
+        finished = [x for x in cands if x["complete"]]
+        clean = [x for x in finished if not x["flags"]]
+        chosen = manual or (clean or finished)[0]["job"]
+        why = "manual" if manual else ("first complete variant without mesh or motion flags" if clean
+                                       else "first complete variant (every one has flags)")
+        dest = os.path.join(d, "final")
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)  # the copy of an earlier pick
+        os.makedirs(dest)
+        for role, (rel, _) in sorted(self.entry(chosen)["files"].items()):
+            src = os.path.join(self.out, rel)
+            p = os.path.join(dest, os.path.basename(src))
+            shutil.copyfile(src, p)
+            files[role] = [os.path.relpath(p, self.out), sha_file(p)]
+        pick_path = os.path.join(d, "pick_%s.json" % slug(job["id"]))
+        write_json(pick_path, {"chosen": chosen, "variant": next(x["variant"] for x in cands if x["job"] == chosen),
+                               "manual": bool(manual), "review": "manual" if manual else "pending",
+                               "metric": why, "candidates": cands,
+                               "how_to_change": "set chosen to another candidate job id and manual to true; "
+                                                "the factory redoes only the copy to final/"})
+        files["pick"] = [os.path.relpath(pick_path, self.out), sha_file(pick_path)]
+        rec["chosen"] = chosen
+        return inputs

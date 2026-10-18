@@ -32,5 +32,7 @@
   "322": {"class_type": "Save3DAdvanced", "inputs": {"filename_prefix": "$PREFIX$", "viewport_state": "", "width": 1024, "height": 1024, "model_3d": ["247", 0]}},
   "401": {"class_type": "InvertMask", "inputs": {"mask": ["122", 1]}},
   "402": {"class_type": "MeshToFile3D", "inputs": {"mesh": ["186", 0]}},
-  "403": {"class_type": "Save3DAdvanced", "inputs": {"model_3d": ["402", 0], "filename_prefix": "$PREFIX$", "viewport_state": "", "width": 1024, "height": 1024}}
+  "403": {"class_type": "Save3DAdvanced", "inputs": {"model_3d": ["402", 0], "filename_prefix": "$PREFIX$", "viewport_state": "", "width": 1024, "height": 1024}},
+  "404": {"class_type": "MeshToFile3D", "inputs": {"mesh": ["241", 0]}},
+  "405": {"class_type": "Save3DAdvanced", "inputs": {"model_3d": ["404", 0], "filename_prefix": "$PREFIX$", "viewport_state": "", "width": 1024, "height": 1024}}
 }

@@ -8,13 +8,18 @@ A new model becomes a new option (OPTIONS) of a stage and is then available to e
 recipe that has that stage.
 
 Option fields (all optional except kind):
-  kind      "comfy" (a ComfyUI workflow), "local" (no GPU) or "local_gpu" (a local tool
-            that uses the card)
+  kind      "comfy" (a ComfyUI workflow), "local" (a step of the factory without the
+            card), "local_gpu" (a local tool that uses the card) or "input" (a file the
+            order supplies: no job)
   workflow  file of forge/workflows (comfy)
   tool      name of the runner in forge.local_gpu.RUNNERS (local_gpu)
   group     scheduling and estimate group
   heavy     True: goes alone in the server queue after /free
   roles     {node id: output role} of the workflow
+  mesh_role role of the mesh a Hy3DInPaint node writes
+  outputs   the roles the option hands to the next stage
+  in_stage  the option adds no job of its own: it changes the job of that stage
+  meaning   what the option does (English, for the documentation)
   params    names of the piece "params" the option reads
   inputs    names of the piece "inputs" the option reads
   tools     configuration keys (forge.config.KEYS) the option needs on this machine
@@ -93,11 +98,158 @@ OPTIONS = {
             "paint_seed": {"type": "seed", "to": ["9.seed"],
                            "meaning": "seed of the Paint stage (its diffusion noise is fixed by the node: see OVERRIDDEN)"},
         }},
+    # TRELLIS.2 shape, remesh and reduction to params.tris (game_mesh, 403); raw_mesh (405)
+    # is the remeshed shape before the reduction. Its own texture bake (painted_mesh, 322)
+    # is kept only when no separate paint stage follows (the humanoid's paint skipped or
+    # "trellis2_texture"); otherwise the job drops TRELLIS2_TEXTURE_NODES.
     "trellis2": {
         "kind": "comfy", "workflow": "trellis2_mesh.json", "group": "trellis2",
-        "roles": {"403": "game_mesh", "322": "textured_mesh"}, "params": ("tris",),
+        "roles": {"403": "game_mesh", "405": "raw_mesh", "322": "painted_mesh"},
+        "outputs": ("game_mesh", "raw_mesh"), "params": ("tris", "texture"),
         "settings": TRELLIS2_SETTINGS},
 }
+
+def _edit_settings(what):
+    """Settings of a Qwen Image Edit 2511 workflow (qwen_edit_2511.json and
+    qwen_edit_character.json share their node ids)."""
+    return {
+        "steps": {"type": "int", "min": 1, "max": 100, "to": ["14.steps"], "meaning": "steps of the %s edit" % what},
+        "guidance": {"type": "number", "min": 0.0, "max": 100.0, "to": ["14.cfg"],
+                     "meaning": "guidance (CFG) of the %s edit" % what},
+        "seed": {"type": "seed", "to": ["14.seed"], "meaning": "seed of the %s edit (default: the variant's seed)" % what},
+        "sampler": {"type": "combo", "to": ["14.sampler_name"], "meaning": "sampler of the %s edit" % what},
+        "scheduler": {"type": "combo", "to": ["14.scheduler"], "meaning": "scheduler of the %s edit" % what},
+        "lora_strength": {"type": "number", "min": 0.0, "max": 2.0, "to": ["4.strength_model"],
+                          "meaning": "strength of the Lightning LoRA of the %s edit" % what},
+    }
+
+
+# Seeds of the local rig tools: whole numbers that numpy and torch both accept.
+RIG_SEED = {"type": "int", "min": 0, "max": 2 ** 32 - 1, "arg": "seed",
+            "meaning": "seed of the rig model (default: the variant's seed)"}
+
+# Options of the humanoid recipe (forge/recipes.py recipe_humanoid). "outputs" are the
+# roles each option hands to the next stage. Kinds besides comfy and local_gpu: "local"
+# (a step of the factory without the card) and "input" (a file of the order, no job).
+HUMANOID_OPTIONS = {
+    "reference": {
+        "qwen21_base": {
+            "kind": "comfy", "workflow": "qwen_image_21_base_t2i.json", "group": "qwen21_base",
+            "roles": {"8": "rgb", "12": "mask"}, "outputs": ("rgb", "mask"),
+            "settings": {
+                "steps": {"type": "int", "min": 1, "max": 200, "to": ["6.steps"], "meaning": "sampling steps"},
+                "guidance": {"type": "number", "min": 0.0, "max": 100.0, "to": ["6.cfg"], "meaning": "guidance (CFG)"},
+                "sampler": {"type": "combo", "to": ["6.sampler_name"], "meaning": "sampler"},
+                "scheduler": {"type": "combo", "to": ["6.scheduler"], "meaning": "scheduler"},
+            }},
+        "qwen21_turbo": {
+            "kind": "comfy", "workflow": "qwen_image_21_turbo_t2i.json", "group": "qwen_t2i",
+            "roles": {"12": "rgb", "16": "mask"}, "outputs": ("rgb", "mask"),
+            "settings": {
+                "guidance": {"type": "number", "min": 0.0, "max": 100.0, "to": ["9.cfg"], "meaning": "guidance (CFG)"},
+                "sampler": {"type": "combo", "to": ["7.sampler_name"], "meaning": "sampler"},
+            }},
+        "klein": dict(OPTIONS["klein"], outputs=("rgb", "rgba")),
+        "input_image": {
+            "kind": "input", "group": "local", "inputs": ("reference",), "outputs": ("image",),
+            "meaning": "the picture in inputs.reference (no generation)"},
+    },
+    "pose": {
+        "qwen_edit_2511": {
+            "kind": "comfy", "workflow": "qwen_edit_2511.json", "group": "qwen_edit",
+            "roles": {"16": "rgb", "20": "mask"}, "outputs": ("rgb", "mask"), "settings": _edit_settings("pose")},
+    },
+    "cutout": {
+        "birefnet": {
+            "kind": "local", "group": "local", "outputs": ("rgba",),
+            "meaning": "the BiRefNet foreground mask the previous workflow saved becomes the alpha"},
+        "qwen_edit_character": {
+            "kind": "comfy", "workflow": "qwen_edit_character.json", "group": "qwen_edit",
+            "roles": {"16": "rgb", "20": "mask", "32": "rgba"}, "outputs": ("rgba",),
+            "settings": _edit_settings("cutout")},
+    },
+    "mesh": {
+        "trellis2": OPTIONS["trellis2"],
+        # Hunyuan3D 2.1 shape only (the Paint nodes of the workflow dropped): the paint
+        # stage paints the reduced mesh. raw_mesh: the shape before the reduction.
+        "hunyuan21": dict(OPTIONS["hunyuan21"], roles={"6": "game_mesh", "16": "raw_mesh"},
+                          outputs=("game_mesh", "raw_mesh"), params=("tris",),
+                          settings={k: v for k, v in OPTIONS["hunyuan21"]["settings"].items()
+                                    if not k.startswith("paint_")}),
+    },
+    "paint": {
+        "hunyuan_paint": {
+            "kind": "comfy", "workflow": "hunyuan21_paint_mesh.json", "group": "hunyuan_paint", "heavy": True,
+            "roles": {"12": "albedo", "13": "metal_roughness", "14": "paint_views"}, "mesh_role": "painted_mesh",
+            "outputs": ("painted_mesh",), "params": ("texture",),
+            "settings": {
+                "steps": {"type": "int", "min": 1, "max": 100, "to": ["9.steps"], "meaning": "steps of the Paint views"},
+                "guidance": {"type": "number", "min": 1.0, "max": 10.0, "to": ["9.guidance_scale"],
+                             "meaning": "guidance of the Paint views"},
+                "seed": {"type": "seed", "to": ["9.seed"],
+                         "meaning": "seed of the Paint stage (its diffusion noise is fixed by the node: see OVERRIDDEN)"},
+                "view_size": {"type": "int", "min": 512, "max": 1024, "step": 256, "to": ["9.view_size"],
+                              "meaning": "size of the Paint views"},
+            }},
+        # TRELLIS.2's own texture: the mesh job keeps its bake (only with mesh trellis2).
+        "trellis2_texture": {
+            "kind": "comfy", "workflow": "trellis2_mesh.json", "group": "trellis2", "roles": {"322": "painted_mesh"},
+            "outputs": ("painted_mesh",), "params": ("texture",), "in_stage": "mesh",
+            "meaning": "the mesh job keeps TRELLIS.2's texture bake (its texture_* settings are mesh settings)"},
+    },
+    "rig": {
+        "skintokens": {
+            "kind": "local_gpu", "tool": "rig", "group": "local_gpu", "outputs": ("rig",),
+            "tools": ("skintokens_dir", "skintokens_python"),
+            "settings": {
+                "seed": RIG_SEED,
+                "beams": {"type": "int", "min": 1, "max": 64, "arg": "beams", "meaning": "beams of the skeleton search"},
+                "postprocess": {"type": "bool", "arg": "postprocess", "meaning": "SkinTokens' own post-processing"},
+            }},
+        "unirig": {
+            "kind": "local_gpu", "tool": "rig", "group": "local_gpu", "outputs": ("rig",),
+            "tools": ("unirig_dir", "unirig_venv", "unirig_hf", "unirig_shim"),
+            "settings": {"seed": RIG_SEED}},
+    },
+    "export": {
+        "humanoid_export": {
+            "kind": "local_gpu", "tool": "export", "group": "local_gpu",
+            "outputs": ("glb", "model", "regions_mask", "bone_map", "mesh_report", "motion_report"),
+            "tools": ("blender_python",), "inputs": ("clips", "items", "bone_map"),
+            "params": ("tris", "texture", "height", "head", "hands", "feet", "widen"),
+            "settings": {
+                "normal_map": {"type": "int", "min": 256, "max": 8192, "arg": "normal_map",
+                               "meaning": "size of the baked normal map (default: params.texture)"},
+                "glow": {"type": "bool", "arg": "glow", "meaning": "also mark what glows in the regions mask"},
+                "foot_slide_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "foot_slide_cm",
+                                  "meaning": "motion report threshold: foot slide in cm"},
+                "hand_socket_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "hand_socket_cm",
+                                   "meaning": "motion report threshold: wrist to socket in cm"},
+                "reach_shortfall_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "reach_shortfall_cm",
+                                       "meaning": "motion report threshold: IK reach shortfall in cm"},
+                "stretch_p95": {"type": "number", "min": 0.0, "max": 10.0, "arg": "stretch_p95",
+                                "meaning": "motion report threshold: 95th percentile of edge stretch"},
+                "penetration_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "penetration_cm",
+                                   "meaning": "motion report threshold: body inside a held item in cm"},
+            }},
+    },
+    "review": {
+        "godot_sheet": {
+            "kind": "local_gpu", "tool": "review", "group": "local_gpu", "outputs": ("sheet", "layout"),
+            "tools": ("godot",),
+            "settings": {
+                "front_height": {"type": "int", "min": 64, "max": 2048, "arg": "front_height",
+                                 "meaning": "height of the large front view in pixels"},
+                "strip_frames": {"type": "int", "min": 1, "max": 32, "arg": "strip_frames",
+                                 "meaning": "frames of each motion strip"},
+            }},
+    },
+}
+HUMANOID_DEFAULTS = {"reference": "qwen21_base", "pose": "qwen_edit_2511", "cutout": "birefnet", "mesh": "trellis2",
+                     "paint": "hunyuan_paint", "rig": "skintokens", "export": "humanoid_export", "review": "godot_sheet"}
+HUMANOID_SKIPPABLE = ("pose", "paint", "rig", "export")
+# Piece params the humanoid recipe uses when the order does not give them.
+HUMANOID_PARAMS = {"tris": 25000, "texture": 2048}
 
 # recipe -> stage -> {"default": option, "skippable": bool, "options": {option: fields}}.
 # The core recipes have one option per stage (the models they always used); the stages
@@ -112,6 +264,8 @@ CATALOGUE = {
     "prop": {"concept": _CONCEPT, "mesh": _MESH},
     "vehicle": {"concept": _CONCEPT, "mesh": _MESH},
     "unit": {"concept": _CONCEPT, "mesh": _MESH},
+    "humanoid": {stage: {"default": HUMANOID_DEFAULTS[stage], "skippable": stage in HUMANOID_SKIPPABLE,
+                         "options": opts} for stage, opts in HUMANOID_OPTIONS.items()},
 }
 
 # Inputs of a workflow that an implementation is known to ignore or override: the
@@ -147,10 +301,18 @@ RECIPE_INPUTS = {
     "object_3d": ("reference",),
     "prop": ("reference",),
 }
+# Inputs that are folders (they enter the job specification by the files inside them);
+# every other input is a file.
+FOLDER_INPUTS = ("items",)
 
 # Nodes of forge/workflows/trellis2_mesh.json that only the texture bake uses: a job that
 # lists them in "drop" makes the untextured mesh alone (the shape for another paint stage).
 TRELLIS2_TEXTURE_NODES = ("12", "93", "98", "118", "147", "196", "210", "238", "247", "322")
+# Nodes of forge/workflows/hunyuan21_shape_paint.json: the Paint branch (dropped when a
+# separate paint stage paints the mesh) and the export of the shape before the reduction
+# (dropped by the recipes that do not use it).
+HUNYUAN21_PAINT_NODES = ("7", "8", "9", "10", "11", "12", "13", "14")
+HUNYUAN21_RAW_NODES = ("15", "16")
 
 # Piece "review" camera: key -> type. Only for recipes with a "review" stage.
 REVIEW_KEYS = {

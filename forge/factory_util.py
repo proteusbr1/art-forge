@@ -54,7 +54,23 @@ def write_json(path, obj):
 
 
 def slug(job_id):
-    return job_id.split("/")[-1]
+    """The step of a job id, unique within its piece: the last part of family/piece/step
+    (or family/step), and variant_stage for family/piece/<variant>/<stage>."""
+    parts = job_id.split("/")
+    return "_".join(parts[2:]) if len(parts) > 3 else parts[-1]
+
+
+def folder_hashes(folder):
+    """[[relative path, sha256], ...] of every file under a folder the order supplies,
+    sorted by path ("/" separators): a folder input enters a job's specification by the
+    contents of its files, not by its own path."""
+    out = []
+    for base, dirs, files in os.walk(folder):
+        dirs.sort()
+        for fn in files:
+            path = os.path.join(base, fn)
+            out.append([os.path.relpath(path, folder).replace(os.sep, "/"), sha_file_cached(path)])
+    return sorted(out)
 
 
 def seeds_for(key, n):

@@ -131,7 +131,7 @@ class FakeComfy:
                 src = wf[ins["images"][0]]["class_type"]
                 mode = "RGBA" if src == "JoinImageWithAlpha" else "L" if src == "MaskToImage" else "RGB"
                 data, ext, key = png_bytes(picture(seed + int(nid), mode)), ".png", "images"
-            elif cls in ("Hy3D21ExportMesh", "SaveGLB"):
+            elif cls in ("Hy3D21ExportMesh", "SaveGLB", "Save3DAdvanced"):
                 data, ext, key = FAKE_GLB, ".glb", "3d"
             else:
                 if cls == "Hy3DInPaint":

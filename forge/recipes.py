@@ -14,6 +14,10 @@ per-piece keys (variants, stages, skip, params, inputs, review) into each piece.
   prop          object_3d with the prop view, or concept when the piece has "3d": false
   material      Qwen-Image 2.1 Turbo seamless texture at 1024, N seeds -> pick -> 2K
                 repaint -> rolled by half -> seam band repainted (inpaint) -> rolled back
+  humanoid      per variant: reference (Qwen Image 2.1 base) -> pose (Qwen Image Edit 2511)
+                -> cutout (BiRefNet) -> mesh (TRELLIS.2, reduced; raw mesh kept) -> paint
+                (Hunyuan3D Paint) -> rig (SkinTokens) -> export (Blender); then one review
+                sheet (Godot) of every variant and a final copy of the chosen one
 Raw jobs may also be listed under "tasks" (any workflow of the workflows folder, with values).
 
 N is the piece's "variants" (the inherited "seeds" is still read when variants is absent).
@@ -21,6 +25,9 @@ params.tris and params.texture set the mesh's face budget and texture size (the 
 "faces" and "texture_size" are still read when they are absent).
 """
 
+import os
+
+from . import stages
 from .factory_util import seeds_for
 from .stages import apply_settings
 
@@ -84,6 +91,8 @@ def hy3d_job(fam, a, pick_id, faces, texture=2048, view=768):
             "set": {"9.texture_size": param(a, "texture", "texture_size", texture),
                     "9.view_size": a.get("paint_view_size", view)},
             "set_on_failure": {"9.texture_size": 2048, "9.view_size": 512},
+            # The shape before the reduction (the humanoid's bake source) is not used here.
+            "drop": list(stages.HUNYUAN21_RAW_NODES),
             "roles": {"6": "shape", "12": "albedo", "13": "metal_roughness", "14": "paint_views"},
             "mesh_role": "painted_mesh"}
 
@@ -202,9 +211,184 @@ def recipe_material(fam, a, st):
     return jobs
 
 
+# --- humanoid: every variant goes through every stage; review and final see them all
+
+HUMANOID_SIZE = (1024, 1536)
+# Qwen Image Edit 2511 with the Lightning LoRA: 4 steps, CFG 1.
+EDIT_VALUES = {"$NEGATIVE$": "", "$STEPS$": 4, "$CFG$": 1.0, "$LORA$": 1.0}
+REVIEW_DEFAULTS = {"pitch": 60, "directions": 8, "figure_height": 96, "front": True}
+EXPORT_PARAMS = ("height", "head", "hands", "feet", "widen")
+
+
+def humanoid_texts(st, fam, a):
+    """(reference prompt, pose edit text, cutout edit text) of a humanoid piece. The pose and
+    cutout edits describe what the result shows: style.pose_humanoid and
+    style.cutout_humanoid when the order gives them, else style.view_humanoid."""
+    view = a.get("view", fam.get("view", "view_humanoid"))
+    text = prompt_of(st, fam, a, view)
+    return text, st.get("pose_humanoid") or st["view_humanoid"], st.get("cutout_humanoid") or st["view_humanoid"]
+
+
+def recipe_humanoid(fam, a, st):
+    """A skinned figure with a human skeleton. For each seed of seeds_for(family/piece,
+    variants) a chain of jobs <family>/<piece>/v<seed>/<stage>: reference -> pose ->
+    cutout -> mesh (game_mesh reduced to params.tris, raw_mesh before the reduction) ->
+    paint (painted_mesh) -> rig -> export (raw_mesh as the bake source) ; then one review
+    sheet of every variant and one final copy of the chosen variant. Stage options and
+    skips come from the piece (forge/stages.py HUMANOID_OPTIONS)."""
+    fid, aid = fam["id"], a["id"]
+    opts = stages.chosen_options("humanoid", a)
+    fields = {stage: stages.option("humanoid", stage, o) for stage, o in opts.items()}
+    inputs = a.get("inputs") or {}
+    tris = param(a, "tris", "faces", stages.HUMANOID_PARAMS["tris"])
+    tex = param(a, "texture", "texture_size", stages.HUMANOID_PARAMS["texture"])
+    w, h = a.get("size", fam.get("size", HUMANOID_SIZE))
+    text, pose_text, cutout_text = humanoid_texts(st, fam, a)
+    keep_texture = opts.get("paint", "trellis2_texture") == "trellis2_texture"
+    jobs, variants = [], []
+    for s in seeds_for(fid + "/" + aid, variants_of(fam, a, 4)):
+        v = "v%d" % s
+        chain = []
+
+        def add(stage, job):
+            job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, stage), "stage": stage, "variant": v})
+            job.setdefault("group", fields[stage]["group"])
+            jobs.append(job)
+            chain.append(job["id"])
+            return job["id"]
+
+        def comfy(stage, values, **extra):
+            f = fields[stage]
+            job = {"kind": "comfy", "workflow": f["workflow"], "values": values, "roles": dict(f["roles"])}
+            if f.get("heavy"):
+                job["heavy"] = True
+            job.update(extra)
+            return add(stage, job)
+
+        # reference: a picture of the figure (rgb, and its mask or rgba), or the order's file
+        mask = rgba = None
+        if opts["reference"] == "input_image":
+            image = {"file": inputs.get("reference")}
+            rgba = image
+        else:
+            values = {"$PROMPT$": text, "$SEED$": s}
+            if opts["reference"] != "qwen21_turbo":
+                values.update({"$WIDTH$": w, "$HEIGHT$": h})
+            if opts["reference"] != "klein":
+                values["$NEGATIVE$"] = ""
+            ref = comfy("reference", values)
+            image = {"ref": ref, "role": "rgb"}
+            if "mask" in fields["reference"]["outputs"]:
+                mask = {"ref": ref, "role": "mask"}
+            else:
+                rgba = {"ref": ref, "role": "rgba"}
+        # pose: Qwen Image Edit corrects the pose of the reference
+        if "pose" in opts:
+            pose = comfy("pose", dict(EDIT_VALUES, **{"$IMAGE1$": image, "$PROMPT$": pose_text, "$SEED$": s}))
+            image, mask, rgba = {"ref": pose, "role": "rgb"}, {"ref": pose, "role": "mask"}, None
+        # cutout: the figure on a transparent background (rgba)
+        if opts["cutout"] == "birefnet":
+            ins = {"image": image, "mask": mask} if mask else {"image": rgba or image}
+            cut = add("cutout", {"kind": "cutout", "inputs": ins})
+        else:
+            cut = comfy("cutout", dict(EDIT_VALUES, **{"$IMAGE1$": image, "$PROMPT$": cutout_text, "$SEED$": s}))
+        cut_ref = {"ref": cut, "role": "rgba"}
+        # mesh: game_mesh (reduced to params.tris) and raw_mesh (before the reduction)
+        if opts["mesh"] == "trellis2":
+            roles = {"403": "game_mesh", "405": "raw_mesh"}
+            extra = {}
+            if keep_texture:
+                roles["322"] = "painted_mesh"
+                extra["set"] = {"147.texture_size": tex, "196.resolution": tex}
+            else:
+                extra["drop"] = list(stages.TRELLIS2_TEXTURE_NODES)
+            mesh = comfy("mesh", {"$IMAGE$": cut_ref, "$SEED$": s, "$TRIS$": tris}, roles=roles, **extra)
+        else:
+            mesh = comfy("mesh", {"$IMAGE$": cut_ref, "$SEED$": s, "$FACES$": tris},
+                         drop=list(stages.HUNYUAN21_PAINT_NODES))
+        last, role = mesh, "painted_mesh"
+        # paint: Hunyuan3D Paint over game_mesh (else TRELLIS.2's own texture stays)
+        if opts.get("paint") == "hunyuan_paint":
+            last = comfy("paint", {"$IMAGE$": cut_ref, "$SEED$": s, "$TEXTURE$": tex,
+                                   "$MESH$": {"ref": mesh, "role": "game_mesh", "transport": "local_path"}},
+                         mesh_role="painted_mesh",
+                         set_on_failure={"9.texture_size": min(tex, 2048), "9.view_size": 512})
+        painted = {"ref": last, "role": "painted_mesh"}
+        # rig, export: local tools on the card (forge/local_gpu.py RUNNERS)
+        if "rig" in opts:
+            args = {"method": opts["rig"], "seed": s}
+            if opts["rig"] == "skintokens":
+                args.update(beams=10, postprocess=False)
+            last, role = add("rig", {"kind": "local_gpu", "tool": "rig", "inputs": {"mesh": painted}, "args": args}), "rig"
+        if "export" in opts:
+            ins = {"rig": {"ref": last, "role": "rig"}, "bake_source": {"ref": mesh, "role": "raw_mesh"}}
+            for name, key in (("clips", "file"), ("items", "folder"), ("bone_map", "file")):
+                if inputs.get(name):
+                    ins[name] = {key: inputs[name]}
+            args = {"name": aid, "tris": tris, "normal_map": tex}
+            args.update({k: v for k, v in (a.get("params") or {}).items() if k in EXPORT_PARAMS})
+            last, role = add("export", {"kind": "local_gpu", "tool": "export", "inputs": ins, "args": args}), "glb"
+        variants.append({"variant": v, "job": last, "role": role, "chain": list(chain)})
+    last_ids = [x["job"] for x in variants]
+    # review: one sheet of every variant (failures marked), once none is still running
+    jobs.append({"id": "%s/%s/review" % (fid, aid), "kind": "local_gpu", "tool": "review", "stage": "review",
+                 "group": fields["review"]["group"], "partial": True, "from": last_ids, "variants": variants,
+                 "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))})
+    # final: the chosen variant copied to final/ (automatic pick provisional, pending review)
+    jobs.append({"id": "%s/%s/final" % (fid, aid), "kind": "final", "group": "local", "partial": True,
+                 "from": last_ids, "variants": variants})
+    return jobs
+
+
+def _alpha_problem(path):
+    """Why a picture cannot be its own cutout (no transparent background), or None."""
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            if "A" not in im.getbands() and "transparency" not in im.info:
+                return "has no alpha channel"
+            lo, _ = im.convert("RGBA").getchannel("A").getextrema()
+            return None if lo < 255 else "is fully opaque"
+    except Exception as ex:
+        return "cannot be read (%s)" % ex
+
+
+def check_humanoid(where, piece, problems):
+    """The stage combinations and inputs a humanoid piece needs."""
+    opts = stages.chosen_options("humanoid", piece)
+    inputs = piece.get("inputs") or {}
+    params = piece.get("params") or {}
+    if opts["mesh"] != "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture":
+        problems.append("%s: %s keeps TRELLIS.2's own texture, which needs mesh trellis2 (mesh %s has none: "
+                        "use paint hunyuan_paint)" % (
+                            where, "skipping paint" if "paint" not in opts else "paint trellis2_texture",
+                            opts["mesh"]))
+    if "rig" not in opts and "export" in opts:
+        problems.append("%s: export needs the rig: skip export too (a statue: the sheet shows the painted mesh)" % where)
+    if opts["reference"] == "input_image":
+        path = inputs.get("reference")
+        if not path:
+            problems.append("%s: reference input_image needs inputs.reference (a picture of the figure)" % where)
+        elif "pose" not in opts and opts["cutout"] == "birefnet" and os.path.isfile(path):
+            why = _alpha_problem(path)
+            if why:
+                problems.append("%s: inputs.reference %s: with pose skipped and cutout birefnet it must have a "
+                                "transparent background (or use cutout qwen_edit_character)" % (where, why))
+    tex = params.get("texture")
+    if isinstance(tex, int) and not isinstance(tex, bool):
+        if opts.get("paint") == "hunyuan_paint" and not (512 <= tex <= 4096 and tex % 512 == 0):
+            problems.append("%s: params.texture %d: Hunyuan3D Paint takes 512 to 4096, a multiple of 512" % (where, tex))
+        elif opts["mesh"] == "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture" \
+                and not (256 <= tex <= 8192 and tex % 256 == 0):
+            problems.append("%s: params.texture %d: TRELLIS.2's bake takes 256 to 8192, a multiple of 256" % (where, tex))
+
+
 RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "unit": recipe_unit,
            "object_3d": recipe_object_3d, "concept": recipe_concept, "prop": recipe_prop,
-           "material": recipe_material}
+           "material": recipe_material, "humanoid": recipe_humanoid}
+# Recipe-specific checks of a piece, called by forge.order.check_order with the piece's
+# valid stages and skips: check(where, piece, problems).
+PIECE_CHECKS = {"humanoid": check_humanoid}
 
 
 def expand(job_list, only=None):

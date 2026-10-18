@@ -198,6 +198,9 @@ def _check_piece(where, recipe, piece, config, problems):
             problems.append("%s: input %s must be a path" % (where, name))
         elif not os.path.exists(path):
             problems.append("%s: input %s not found: %s" % (where, name, path))
+        elif (name in stages.FOLDER_INPUTS) != os.path.isdir(path):
+            problems.append("%s: input %s must be a %s: %s" % (
+                where, name, "folder" if name in stages.FOLDER_INPUTS else "file", path))
     review = piece.get("review")
     if review is not None:
         if "review" not in stages.chosen_options(recipe, piece):
@@ -213,6 +216,9 @@ def _check_piece(where, recipe, piece, config, problems):
                     problems.append("%s: review %s must be %s, not %r" % (where, k, _type_text(stages.REVIEW_KEYS[k]), v))
     for p in missing_tools(config, stages.tools_needed(recipe, piece)):
         problems.append("%s: %s" % (where, p))
+    from .recipes import PIECE_CHECKS
+    if recipe in PIECE_CHECKS:
+        PIECE_CHECKS[recipe](where, piece, problems)
 
 
 def _check_files(where, v, problems):
@@ -251,6 +257,7 @@ def check_order(order, config, server=None):
         problems.append("families must be a list")
         fams = []
     fam_ids = set()
+    humanoids = False
     for i, fam in enumerate(fams):
         if not isinstance(fam, dict):
             problems.append("families[%d] must be an object" % i)
@@ -278,6 +285,13 @@ def check_order(order, config, server=None):
                 problems.append("family %s: piece %s appears twice" % (fid, pid))
             ids.add(pid)
             _check_piece("%s/%s" % (fid, pid), piece.get("recipe"), piece, config, problems)
+            if piece.get("recipe") == "humanoid":
+                humanoids = True
+    style = order.get("style") if isinstance(order.get("style"), dict) else {}
+    if humanoids and not (isinstance(style.get("view_humanoid"), str) and style["view_humanoid"].strip()):
+        problems.append("style.view_humanoid is required when the order has a humanoid: the view of every "
+                        "humanoid reference (full body in an A-pose, open empty hands held away from the body, "
+                        "plain grey background, even light)")
     tasks = order.get("tasks", [])
     if not isinstance(tasks, list):
         problems.append("tasks must be a list")
