@@ -127,7 +127,7 @@ blue = what glows (bright saturated colour in the `--glow-hues` range, only with
 | Key | Meaning |
 |---|---|
 | `source` | `proposed` (from the tree), `manual` (this file, written by a person) or `order` (`inputs.bone_map`) |
-| `manual` | `true` makes this file win over the proposal (`roles` is then read); the file's hash enters the export job's specification, so the next factory run redoes that export, the review and the final copy |
+| `manual` | `true` makes this file win over the proposal (`roles` is then read); the file's hash enters the export job's specification, so the next factory run redoes that export, the review and the final copy. A file with `source` `order` is the exporter's own copy of the order's map and never counts as a correction; to correct it by hand, set `source` to `manual` |
 | `valid`, `problems` | the validation |
 | `roles` | `{role: rig bone name}` when valid, else `null` |
 | `found` | what was found or given, valid or not |

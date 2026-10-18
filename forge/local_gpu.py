@@ -162,7 +162,9 @@ def tool_fingerprint(job, config):
 
 def manual_bone_map(out_dir):
     """SHA-256 of <out_dir>/bone_map.json when a person marked it "manual": true (it then
-    wins over the proposal: a changed manual map redoes the export), else None."""
+    wins over the proposal: a changed manual map redoes the export), else None. The file the
+    exporter itself writes from the order's map ("source": "order") is not a correction: the
+    order's file is already in the job's inputs, and counting it again would redo the export."""
     path = os.path.join(out_dir, "bone_map.json")
     if not os.path.isfile(path):
         return None
@@ -171,7 +173,7 @@ def manual_bone_map(out_dir):
             doc = json.load(f)
     except (OSError, ValueError):
         return None
-    if isinstance(doc, dict) and doc.get("manual"):
+    if isinstance(doc, dict) and doc.get("manual") and doc.get("source") != "order":
         return sha_file_cached(path)
     return None
 

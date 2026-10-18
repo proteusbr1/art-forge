@@ -726,6 +726,11 @@ class NightTest(Base):
         tools.calls.clear()
         self.run_night(tools)
         self.assertEqual(tools.calls, [])
+        # The copy the exporter writes from the order's map is manual too, but not a correction.
+        with open(os.path.join(folder, "bone_map.json"), "w", encoding="utf-8") as fh:
+            json.dump({"source": "order", "manual": True, "roles": {"hips": "bone_0"}}, fh)
+        self.run_night(tools)
+        self.assertEqual(tools.calls, [])
         # Marked manual: that variant's export, the review and the final copy are redone.
         with open(os.path.join(folder, "bone_map.json"), "w", encoding="utf-8") as fh:
             json.dump({"manual": True, "roles": {"hips": "bone_1"}}, fh)
