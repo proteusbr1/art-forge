@@ -316,18 +316,29 @@ class Factory(ComfyJobs, LocalSteps):
                 cache[jid] = "failed"
                 return "failed"
             self.spec_errors.pop(jid, None)
-            if e.get("status") == "done" and e.get("spec") == sp and self.files_present(e):
+            if e.get("status") == "done" and e.get("spec") == sp and self.files_present(e, job):
                 st = "done"
-            elif e.get("status") == "failed" and e.get("spec") == sp and not self.a.retry_failed:
+            elif e.get("status") == "failed" and e.get("spec") == sp:
                 st = "failed"
             else:
                 st = "ready"
         cache[jid] = st
         return st
 
-    def files_present(self, e):
-        for rel, sha in e.get("files", {}).values():
-            if not os.path.exists(os.path.join(self.out, rel)):
+    def files_present(self, e, job=None):
+        # The export's bone_map.json is also an editable control file. Its meaningful
+        # manual changes already enter spec(); proposals and order copies are ignored.
+        editable_map = (job or {}).get("kind") == "local_gpu" and job.get("tool") == "export"
+        for role, (rel, sha) in e.get("files", {}).items():
+            path = os.path.join(self.out, rel)
+            try:
+                if not os.path.isfile(path):
+                    return False
+                if editable_map and role == "bone_map" and os.path.basename(path) == "bone_map.json":
+                    continue
+                if sha_file_cached(path) != sha:
+                    return False
+            except OSError:
                 return False
         return True
 
@@ -640,6 +651,18 @@ class Factory(ComfyJobs, LocalSteps):
         self.log("factory started (pid %d), %d jobs in the list, limit %d" % (os.getpid(), len(self.jobs), self.a.limit))
         errors = 0
         try:
+            if self.a.retry_failed:
+                # Reopen only failures present at startup, once. Leaving the CLI flag
+                # in state() would also reopen each new failure forever.
+                retried = False
+                for job in self.jobs:
+                    entry = self.entry(job["id"])
+                    if entry.get("status") == "failed":
+                        entry.update(status="retry", tries=0)
+                        self.log("retry requested: %s (new attempt cycle)" % job["id"])
+                        retried = True
+                if retried:
+                    self.save_manifest()
             while True:
                 try:
                     res = self.pass_once()

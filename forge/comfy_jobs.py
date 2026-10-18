@@ -166,12 +166,12 @@ class ComfyJobs:
             return
         files = self.collect_outputs(job, e, h)
         missing = sorted(r for r in self.needed_roles(job) if r not in files)
-        if missing:
-            # A finished prompt without an output that a later job (or the job's own mesh
-            # download) needs counts as a failure: tried once more, then failed, so that only
-            # its own dependants wait.
+        if missing or not files:
+            # No files, or a missing output that a later job (or the job's own mesh
+            # download) needs, counts as failure: retry once, then only its dependants wait.
             tries = e.get("tries", 1)
-            err = "finished without the output(s) %s" % ", ".join(missing)
+            err = ("finished without the output(s) %s" % ", ".join(missing) if missing
+                   else "finished without any output files")
             self.log("FAILED %s (try %d): %s" % (job["id"], tries, err))
             e.update({"status": "failed" if tries >= MAX_TRIES else "retry", "error": err,
                       "exec_seconds": exec_s, "files": files})

@@ -716,6 +716,19 @@ class NightTest(Base):
         with open(os.path.join(self.out, "factory.log"), encoding="utf-8") as fh:
             self.assertEqual(fh.read().count("FAILED %s: its specification" % export), 1)  # logged once
 
+    def test_a_changed_glb_redoes_only_its_export(self):
+        tools = FakeTools()
+        manifest = self.run_night(tools)
+        jid = "crew/tech/%s/export" % self.v[1]
+        rel, _ = manifest[jid]["files"]["glb"]
+        with open(os.path.join(self.out, rel), "wb") as stream:
+            stream.write(b"truncated mesh")
+        tools.calls.clear()
+        self.fake.reset_log()
+        self.run_night(tools)
+        self.assertEqual([(c[0], c[1]) for c in tools.calls], [("export", self.v[1])])
+        self.assertEqual(self.fake.submitted, [])
+
     def test_a_manual_bone_map_redoes_its_export(self):
         tools = FakeTools()
         self.run_night(tools)

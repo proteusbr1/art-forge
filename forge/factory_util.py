@@ -33,7 +33,7 @@ _SHA_CACHE = {}
 
 
 def sha_file_cached(path):
-    """sha_file of a file the order supplies, hashed again only when its size or modification
+    """sha_file of an input or output, hashed again only when its size or modification
     time changes (the state of every job is worked out on every pass)."""
     st = os.stat(path)
     key = (os.path.realpath(path), st.st_size, st.st_mtime_ns)

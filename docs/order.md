@@ -375,6 +375,19 @@ The hash of a job's specification covers its workflow file, its values and the c
 changed input file redoes only the jobs that use it (and what depends on them); moving
 the order and its files elsewhere redoes nothing.
 
+Resume also compares each output's SHA-256 with its manifest entry. A missing or changed
+output makes its producer ready again, before a dependant can use it. Hashes are cached
+while file size and modification time stay unchanged; each new process checks them
+again. To supply an edited asset, use an order input rather than overwriting an output.
+The export's editable `bone_map.json` is an exception: manual corrections change the
+export specification, while proposals and copies of the order's map do not trigger it.
+Its GLB, reports and other generated files still get the integrity check.
+
+A ComfyUI job that returns no output files fails even if no later job uses it. As with
+other execution failures it is tried once more, then left failed. `-RetryFailed` (CLI
+`--retry-failed`) gives failures already present at startup a fresh attempt cycle; newly
+failed jobs are not retried indefinitely. Only jobs selected for this run are reopened.
+
 ## Local GPU jobs and the card
 
 A job of kind `local_gpu` runs a local tool that uses the card (its runner,

@@ -25,7 +25,8 @@ Behaviour:
   /free, because the Paint stage runs out of VRAM next to other models.
 - Resumable and idempotent: <out>/manifest.json records each job with the hash of its
   full specification (workflow, values, hashes of its input files) and the hashes of the
-  files it produced. A job whose specification did not change is never run again. Prompts
+  files it produced. A job whose specification did not change and whose output hashes
+  still match is never run again. Prompts
   still in the server's queue when the factory stopped are waited for, not resubmitted. A
   prompt the server lost (restart, crash) is resubmitted; while the server does not answer
   the factory waits and retries. A failed job is retried once; then it is marked failed and

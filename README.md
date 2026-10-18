@@ -33,9 +33,9 @@ sheet; the rig runners (SkinTokens, UniRig) have not run while building. See the
   budgets (triangles, texture size), input files, the model of each stage and its named
   settings (steps, seeds, guidance, sampler...). Format: [docs/order.md](docs/order.md).
 - **One night, no stops.** Every job is resumable: a job whose specification (workflow,
-  values, hashes of its inputs) did not change never runs again; a failed job is retried
-  once and only its dependants wait. Picks are automatic and marked for review; changing
-  a pick redoes only what depends on it.
+  values, hashes of its inputs) did not change and whose output hashes still match never
+  runs again; a failed job is retried once and only its dependants wait. Picks are
+  automatic and marked for review; changing a pick redoes only what depends on it.
 - **Local only.** Only the HTTP API of a local ComfyUI and local tools; workflows with
   paid API nodes are refused. Provenance (models, prompt, seeds, inputs, hashes, and each
   input as requested and as the server ran it) is kept for every output.

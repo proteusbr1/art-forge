@@ -134,6 +134,17 @@ class ArtFactoryTest(unittest.TestCase):
         self.assertEqual(sorted(set(j.rsplit("/", 1)[0] for j in redone)), ["things/crate"])
         self.assertEqual(len(redone), 3)  # two concepts and the mesh
 
+    def test_corrupt_output_redoes_only_its_producer(self):
+        m = self.start_finished()
+        jid = "things/crate/mesh"
+        rel, expected = m[jid]["files"]["painted_mesh"]
+        path = os.path.join(self.out, rel)
+        with open(path, "wb") as f:
+            f.write(b"truncated mesh")
+        self.run_to_end()
+        self.assertEqual(self.submitted(), [jid])
+        self.assertEqual(sha(path), expected)
+
     def test_manual_pick_redoes_only_dependants(self):
         self.start_finished()
         path = os.path.join(self.out, "people", "pilot", "pick_pick.json")

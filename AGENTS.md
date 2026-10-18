@@ -130,16 +130,21 @@ environment not ready) or 3 (environment not verified: the server did not answer
 
 - Each job's manifest entry holds the hash of its full specification (workflow and its
   hash, values, hashes of its input files, including files the order supplies). A job
-  whose specification did not change and whose files exist never runs again.
+  whose specification did not change and whose files still match their recorded SHA-256
+  never runs again. Missing or changed outputs make their producer ready again.
+  The export's editable `bone_map.json` follows the manual-correction rule instead:
+  only a manual correction (not a proposal or the order's copy) changes its specification.
 - Prompts queued when the factory stopped are waited for, not resubmitted; a prompt the
   server lost is resubmitted; with the server down the factory waits and retries.
 - A failed job is tried once more (the Hunyuan mesh with a 2048 texture and 512 views),
   then marked `failed`; only its dependants wait (a humanoid export stopped by an invalid
   bone map is not tried twice). A prompt that finishes without an output a later job
-  reads (or without its painted mesh) counts as a failure too. A job whose specification
-  cannot be worked out (an input missing from a finished job's record, a vanished file)
+  reads (or without its painted mesh), or without any output files, counts as a failure
+  too. A job whose specification cannot be worked out (an input missing from a finished
+  job's record, a vanished file)
   is `failed` in `state.json` (`specification_errors`) and only its dependants wait.
-  `-RetryFailed` tries again.
+  `-RetryFailed` reopens only already-failed jobs selected for this run, once at startup,
+  with a fresh attempt budget. It does not keep reopening new failures indefinitely.
 - `<out>/STOP` (the launcher's `-Stop`): nothing more is sent, queued prompts are
   collected, the file is removed and the factory exits. Running again resumes.
 
