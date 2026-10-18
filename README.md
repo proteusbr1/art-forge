@@ -36,4 +36,5 @@ using the outputs. A licence table will be added together with the workflows.
 
 ## Licence
 
-Not chosen yet.
+Licensed under the [Apache License 2.0](LICENSE). The licence covers this repository's
+code and documents, not the models the workflows call, nor the art you generate with them.
