@@ -198,9 +198,41 @@ recipe before spending a night on a full art list.
 1. A first real humanoid order from a game, with its adapter in that game's repository.
 2. Full art lists in the existing recipes.
 3. `articulated`, with the first order that has a vehicle or a plated robot.
-4. A `motion` stage option with HY-Motion Lite: the order describes each movement in
-   text and the factory generates and retargets it.
+4. The order's `motions` list (section 13): each movement a piece needs, from the game's
+   library, generated from text with HY-Motion Lite, or read from a BVH capture.
 5. `creature`, with the first order that has a non-humanoid creature (including where its
    animation comes from).
 6. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
+
+## 13. Next phase: the `motions` list in the order
+
+Today the order can only hand over finished movements (a motion library in `inputs`).
+In the next phase a humanoid piece (or its family, as a default) lists the movements it
+needs, one entry per movement, and each entry says where the movement comes from. The
+factory never decides which movements a character has; with no list and no library the
+character keeps its rest pose.
+
+| Key | Meaning |
+|---|---|
+| `name` | the clip name the game will look up (e.g. `walk_rifle`) |
+| `source` | `library`, `text` or `bvh` |
+| `library` | for `library`: the library file and the clip name inside it (defaults to the order's `inputs.clips` and `name`) |
+| `prompt` | for `text`: what the movement is, described plainly (e.g. "throws a grenade overhand and steps forward") |
+| `file` | for `bvh`: the capture file, plus the frame range to take |
+| `frames`, `fps` | length and rate the game wants; a generated or captured clip is resampled to them |
+| `loop` | the clip must close on itself (walk cycles, idles) |
+| `holds` | what the hands hold during the clip (a held-item class) and where |
+| `contacts` | the frames where each foot is planted (stance), used by retargeting and by the motion report |
+| `settings` | per-source settings, e.g. steps and seed for HY-Motion Lite, recorded with their effective values |
+
+Every source ends in the same canonical-joint format the motion library uses today, so
+retargeting, foot planting, hand placement and the motion report work the same whatever
+the source. A `text` clip is generated once per piece family (not per variant) and keeps
+its own provenance (model, prompt, seed, effective settings), so the same movement can be
+reviewed and reused across variants. The library of today becomes one source among three.
+
+Open points for that phase's design: HY-Motion Lite runs through its own ComfyUI node and
+a separate server instance; generated motion needed contact, hip and cycle corrections in
+earlier research, so the correction steps and their acceptance thresholds have to be
+part of the stage, not manual work.
