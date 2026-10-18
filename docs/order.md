@@ -12,13 +12,29 @@ Check an order before a night's run:
     .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Check
     .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Estimate
 
-`-Check` lists every problem it finds (and exits with 1) or says the order has none. It
-checks the format, known recipes and stage options, valid `skip` names, `variants`,
-`params` types, that `inputs` files exist, that the style texts the recipes need are
-present, that the tools the chosen stages need are set in `forge.local.json` and exist,
-and, when the ComfyUI server answers, that the server has every node class the workflows
-use (a read-only `GET /object_info`; nothing is sent). A complete sample that passes the
-check is [tests/fixtures/order_generic.json](../tests/fixtures/order_generic.json).
+`-Check` prints two results.
+
+1. **The order** (`forge.order.check_order`, without the server): `order: valid`, or every
+   problem it finds. It checks the format, known recipes and stage options, stage settings
+   (known names, types and ranges, settings that land on no job), valid `skip` names,
+   `variants`, `params` types, that `inputs` files exist, that the style texts the recipes
+   need are present, that the tools the chosen stages need are set in `forge.local.json`
+   and exist, and that every `set` lands on a node the job keeps.
+2. **The environment** (`forge.readiness.check_environment`), only when the order is
+   valid: `environment: verified`; `environment: not ready` with the list of what is
+   missing; or `environment: not verified` when the server does not answer (local
+   validation done, environment not checked; never reported as ready). It checks that the
+   server has every node class the jobs' workflows use; that every model file a workflow
+   names is in its loader's option list; that every setting or `set` value that lands on a
+   list input (a sampler, a scheduler) is in the server's list; that the local tools the
+   chosen stages need are present with their weight files (SkinTokens checkpoints, UniRig
+   weights); and it records the versions of Blender (`bpy`) and Godot when they are
+   configured, and who holds the GPU lock.
+
+The server is only asked for `GET /object_info`; nothing is sent and nothing is loaded.
+Exit code: 0 (valid and verified), 1 (order problems or not ready), 3 (not verified). A
+complete sample that passes the check is
+[tests/fixtures/order_generic.json](../tests/fixtures/order_generic.json).
 
 ## Top level
 
@@ -92,14 +108,64 @@ New keys:
 | Key | Meaning |
 |---|---|
 | `variants` | how many variants (seeds) run; a whole number of at least 1 |
-| `stages` | per-stage model choice `{stage: option}` from the recipe's catalogue |
+| `stages` | per-stage choice: `{stage: option}` or `{stage: {"option": option, "settings": {setting: value}}}` from the recipe's catalogue (below) |
 | `skip` | list of stages to skip (only stages the catalogue marks skippable) |
 | `params` | piece settings (table below) |
 | `inputs` | files the game supplies `{name: path}`; paths are absolute or relative to the order file |
 | `review` | review-sheet camera, for recipes with a review stage (table below) |
 
-The core recipes have no swappable stages: their `stages` and `skip` must be empty, and
-`review` does not apply to them. The stage catalogue is `forge/stages.py`.
+`review` does not apply to the core recipes. The stage catalogue is `forge/stages.py`.
+
+### Stages and settings
+
+A `stages` entry is an option name, or an object with the option (default: the stage's
+default) and its named settings:
+
+    "stages": {"mesh": {"option": "hunyuan21", "settings": {"shape_steps": 40, "paint_guidance": 2.5}},
+               "concept": {"settings": {"steps": 6, "sampler": "euler"}}}
+
+A family may set `stages` for its pieces; a piece's entry for a stage replaces the
+family's entry for that stage whole. Each setting lands on `<node>.<input>` of the
+option's workflow (the job's `set`) or on an argument of its tool (the job's `args`), so
+it enters the job's specification hash like any value: changing one setting redoes only
+the jobs of that stage and what depends on them. An unknown setting, a value of the wrong
+type or out of range, settings of a skipped stage and settings that land on no job of the
+piece are problems of the order. A `combo` setting (a sampler or scheduler name) is
+checked against the server's list by the environment check.
+
+Types: `int` (whole number in its range, sometimes a multiple of a step), `number`,
+`seed` (whole number from 0 to 2^64 - 1), `bool`, `combo` (a name).
+
+The core recipes have one option per stage (the models they always used): stage
+`concept` (option `klein`) in `concept`, `illustration`, `object_3d`, `prop`, `vehicle`
+and `unit`; stage `mesh` (option `hunyuan21`) in `object_3d`, `prop`, `vehicle` and
+`unit`. `material` has no stages. No core stage can be skipped.
+
+| Option | Workflow | Setting | Type and range | Lands on |
+|---|---|---|---|---|
+| `klein` | `klein_t2i.json` | `steps` | int 1-50 | `10.steps` |
+| | | `guidance` | number 0-30 | `8.cfg` |
+| | | `sampler` | combo | `9.sampler_name` |
+| `hunyuan21` | `hunyuan21_shape_paint.json` | `shape_steps` | int 1-100 | `3.steps` |
+| | | `shape_guidance` | number 1-30 | `3.guidance_scale` |
+| | | `shape_seed` | seed | `3.seed` |
+| | | `octree_resolution` | int 64-1024, multiple of 8 | `4.octree_resolution` |
+| | | `paint_steps` | int 1-100 | `9.steps` |
+| | | `paint_guidance` | number 1-10 | `9.guidance_scale` |
+| | | `paint_seed` | seed | `9.seed` (overridden: see below) |
+| `trellis2` | `trellis2_mesh.json` | `structure_steps`, `shape_steps`, `upsample_steps`, `texture_steps` | int 1-200 | `3.steps`, `18.steps`, `23.steps`, `12.steps` |
+| | | `structure_seed`, `shape_seed`, `upsample_seed`, `texture_seed` | seed | `3.seed`, `18.seed`, `23.seed`, `12.seed` |
+| | | `structure_guidance`, `shape_guidance`, `upsample_guidance`, `texture_guidance` | number 0-100 | `<sampler>.cfg` |
+| | | `structure_scheduler`, `shape_scheduler`, `upsample_scheduler`, `texture_scheduler` | combo | `<sampler>.scheduler` |
+| | | `sampler` | combo | `sampler_name` of the four samplers |
+| | | `resolution` | int 1024-2048, multiple of 128 | `94.target_resolution` |
+
+TRELLIS.2 has four samplers, one per stage of the model: sparse structure (node 3), shape
+at 512 (18), shape upsampled (23) and texture (12); without a setting each keeps the
+workflow's value and the variant's seed. The `trellis2` option is declared but no recipe
+offers it yet. A texture setting on a job that drops the texture bake is refused.
+
+Without settings a piece's jobs are the same as before (no hash changes).
 
 `params` (an unknown name, a name the recipe does not read, or a wrong type is a problem):
 
@@ -159,14 +225,43 @@ Job ids: `family/piece/step`, with steps `concept_s<seed>`, `pick`, `view_90`,
 | `roles` | `{"<node>": "<role>"}` names the outputs |
 | `after` | job ids that must finish first |
 | `heavy` | `true`: goes alone in the queue after `/free` |
+| `stage` | the recipe stage the job belongs to (settings land on it) |
+| `tool` | `local_gpu` jobs: the runner in `forge.local_gpu.RUNNERS` (the order check refuses an unknown one) |
+| `args` | `local_gpu` jobs: the requested arguments of the tool |
+| `ignored` | `local_gpu` jobs: `{argument: reason}` the tool is known to ignore or override |
 | `mesh_role` | role of the mesh a Hy3DInPaint node writes |
 | `group` | scheduling group (default `other`) |
-| `kind` | default `comfy` |
+| `kind` | default `comfy`; `local_gpu` for a local tool that uses the card (below) |
 
 The hash of a job's specification covers its workflow file, its values and the content
 (SHA-256) of every input, whether produced by another job or supplied by the order. A
 changed input file redoes only the jobs that use it (and what depends on them); moving
 the order and its files elsewhere redoes nothing.
+
+## Local GPU jobs and the card
+
+A job of kind `local_gpu` runs a local tool that uses the card (its runner,
+`forge.local_gpu.RUNNERS[tool](factory, job, out_dir)`, returns the files, the arguments
+it actually passed and its provenance record). Such a job runs alone:
+
+- only when the whole ComfyUI queue is empty, prompts of any client included
+  (`queue_running` and `queue_pending`), then after `/free`;
+- the processes `nvidia-smi` lists are logged; while one holds more than `gpu_busy_mb`
+  of VRAM (default 2048) the job waits, up to `gpu_wait` seconds (default 300), then goes.
+  Without `nvidia-smi`, or when the driver reports no amount per process (Windows display
+  drivers report `[N/A]`), the log says so and the job goes;
+- from the moment it is ready until it has run, nothing is sent to ComfyUI;
+- a failure is tried once more, again only once the queue is empty; the log names an
+  out-of-memory cause (from the error or the tool's log) and an external prompt that
+  started meanwhile. After the second failure it is `failed` and only its dependants wait.
+
+Every factory run holds the machine-wide GPU lock file (`%LOCALAPPDATA%\art-forge\gpu.lock`,
+or the `FORGE_LOCK_DIR` folder) for its whole length, and each local GPU job and each
+runner of `forge/local_gpu.py` takes it too, so two factories never share the card: the
+second refuses to start ("another art-forge process holds the GPU lock", exit 2). It is
+an operating-system lock: it is released when its process ends, even when the process is
+killed; a lock file left by a process that is gone is taken over and the log says so.
+`-Status` shows who holds it.
 
 ## Workflows
 
@@ -232,11 +327,23 @@ workflow name and SHA-256, the model files the workflow names (every input endin
 full prompt and negative, the seeds, the settings applied (`set`) and the inputs (file,
 SHA-256, the factory job that produced it and the pick it went through, or
 `"order_input": true` for a file the order supplied; images a raw job names directly on
-the server appear with `"factory_output": false`).
+the server appear with `"factory_output": false`) and `parameters`.
+
+`parameters` is the record of what each job was asked to use and what it really used.
+For a ComfyUI job, per node of the submitted prompt (`{node: {"class", "inputs"}}`, links
+between nodes left out), each input has `requested` (what the factory sent) and
+`effective` (read back from the prompt the server ran, in its `/history`), with
+`"changed": true` when they differ. `effective` is `null` with a `reason` when it cannot
+be known: an input the catalogue marks as ignored or overridden by its implementation
+(`forge.stages.OVERRIDDEN`: the Hunyuan3D Paint seed, `9.seed`, because the Paint
+pipeline draws its diffusion noise from a generator fixed at seed 0), a history that holds
+no prompt, or an input missing from it. For a local GPU job, per argument: `requested`
+(the job's `args`) and `effective` (what the runner reports it passed), `null` with a
+reason when the runner does not report it or the job's `ignored` names it.
 
     python -m forge --out <folder> --provenance <file.json>
 
 writes one record per output file of every finished job: `asset`, `family`, `job`,
 `step`, `role`, `file` (relative to `<out>`), `sha256`, `present`, `finished`,
 `workflow`, `workflow_sha256`, `models`, `prompt`, `negative`, `seeds`, `settings`,
-`inputs` (and `chosen` for picks). It needs no server and no GPU.
+`inputs`, `parameters` (and `chosen` for picks). It needs no server and no GPU.

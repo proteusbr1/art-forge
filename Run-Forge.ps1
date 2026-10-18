@@ -3,9 +3,9 @@
 # terminal that started it is gone).
 #
 #   .\Run-Forge.ps1 -Order <order.json> -Out <folder>            start (or resume) in the background
-#   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Check     check the order (and the server if it answers)
+#   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Check     check the order, then the environment
 #   .\Run-Forge.ps1 -Order <order.json> -Out <folder> -Estimate  job counts and estimated GPU hours
-#   .\Run-Forge.ps1 -Out <folder> -Status                        progress, failures and the last log lines
+#   .\Run-Forge.ps1 -Out <folder> -Status                        progress, failures, GPU lock, last log lines
 #   .\Run-Forge.ps1 -Out <folder> -Stop                          stop after the prompts already queued
 #   .\Run-Forge.ps1 -Out <folder> -Stop -Now                     stop now (queued prompts are collected on resume)
 #
@@ -17,6 +17,14 @@
 # order and the configuration copied to <Out>\program, so editing them does not change a
 # run in progress: edit, then -Stop and start again (finished jobs are skipped by the
 # manifest). Relative input paths of the order still resolve against the order's own folder.
+#
+# -Check prints two results: "order: valid" or its problems, then the environment as
+# "verified", "not ready" (with the list) or "not verified" (the server did not answer:
+# local validation done, environment not checked). It reads only GET /object_info from the
+# server. Exit code 0 (valid and verified), 1 (problems or not ready), 3 (not verified).
+#
+# A run holds the machine-wide GPU lock (FORGE_LOCK_DIR, else %LOCALAPPDATA%\art-forge\gpu.lock):
+# a second factory on this machine refuses to start while one runs.
 param(
     [string]$Order = "",
     [string]$Out = "",
@@ -73,9 +81,31 @@ function Get-FactoryProcess {
     return $null
 }
 
+function Get-LockPath {
+    $dir = $env:FORGE_LOCK_DIR
+    if (-not $dir) { $dir = Join-Path $env:LOCALAPPDATA "art-forge" }
+    return (Join-Path $dir "gpu.lock")
+}
+
 if ($Status) {
     $p = Get-FactoryProcess
     if ($p) { Write-Host "Factory running (pid $($p.Id))." } else { Write-Host "Factory not running." }
+    # Who took the machine-wide GPU lock (the file may be left by a process that is gone).
+    $lockPath = Get-LockPath
+    if (Test-Path $lockPath) {
+        # Opened sharing read and write: the holder keeps the file open.
+        $fs = New-Object System.IO.FileStream($lockPath, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $reader = New-Object System.IO.StreamReader($fs)
+        try { $info = $reader.ReadToEnd().Trim() } finally { $reader.Close() }
+        if ($info -ne "") {
+            $holder = $info | ConvertFrom-Json
+            $alive = Get-Process -Id ([int]$holder.pid) -ErrorAction SilentlyContinue
+            $state = "process gone: stale"
+            if ($alive) { $state = "running" }
+            Write-Host "GPU lock: pid $($holder.pid) ($($holder.what), since $($holder.since), $state)."
+        } else { Write-Host "GPU lock: free." }
+    } else { Write-Host "GPU lock: free." }
     $state = Join-Path $Out "state.json"
     if (Test-Path $state) { Get-Content -Raw $state | Write-Host }
     $log = Join-Path $Out "factory.log"

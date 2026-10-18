@@ -108,8 +108,10 @@ class OrderTest(unittest.TestCase):
         self.assertProblem(self.problems({"recipe": "spaceship"}), "unknown recipe 'spaceship'")
 
     def test_missing_stage_option(self):
-        # The core recipes have no swappable stages.
-        self.assertProblem(self.problems({"stages": {"mesh": "hunyuan21"}}), "has no stage 'mesh'")
+        # The core recipes have one option per stage (concept, mesh); material has none.
+        self.assertProblem(self.problems({"stages": {"rig": "unirig"}}), "has no stage 'rig'")
+        self.assertProblem(self.problems({"stages": {"mesh": "trellis2"}}), "stage mesh of recipe object_3d has no option 'trellis2'")
+        self.assertEqual(self.problems({"stages": {"mesh": "hunyuan21", "concept": "klein"}}), [])
         fake = {"mesh": {"default": "a", "skippable": False, "options": {"a": {"kind": "comfy"}}}}
         with patch.dict(stages.CATALOGUE, {"object_3d": fake}):
             self.assertProblem(self.problems({"stages": {"mesh": "b"}}), "stage mesh of recipe object_3d has no option 'b'")
@@ -195,7 +197,8 @@ class ConfigTest(unittest.TestCase):
             cfg = load_config(path)
             self.assertEqual(set(cfg), {"comfy_url", "python", "blender_python", "unirig_dir", "unirig_venv",
                                         "unirig_hf", "unirig_shim", "skintokens_dir", "skintokens_python",
-                                        "godot", "bake_device"})
+                                        "godot", "bake_device", "gpu_wait", "gpu_busy_mb"})
+            self.assertEqual((cfg["gpu_wait"], cfg["gpu_busy_mb"]), (300, 2048))
             self.assertEqual(cfg["bake_device"], "GPU")
             self.assertEqual(cfg["comfy_url"], "http://127.0.0.1:9999")
             self.assertEqual(cfg["godot"], os.path.join(tmp, "tools", "godot.exe"))

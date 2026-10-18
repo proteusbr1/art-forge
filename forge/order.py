@@ -134,13 +134,31 @@ def _check_piece(where, recipe, piece, config, problems):
     if not isinstance(picks, dict):
         problems.append("%s: stages must be an object {stage: option}" % where)
         picks = {}
-    for stage, opt in picks.items():
+    valid = {}
+    for stage, entry in picks.items():
         if stage not in cat:
             problems.append("%s: recipe %s has no stage %r%s" % (
-                where, recipe, stage, " (stages: %s)" % ", ".join(cat) if cat else " (it has no swappable stages)"))
-        elif opt not in cat[stage]["options"]:
+                where, recipe, stage, " (stages: %s)" % ", ".join(cat) if cat else " (it has no stages)"))
+            continue
+        if isinstance(entry, dict):
+            extra = sorted(k for k in entry if k not in ("option", "settings"))
+            if extra:
+                problems.append("%s: stage %s: unknown keys %s (a stage entry is an option name or "
+                                "{\"option\": name, \"settings\": {...}})" % (where, stage, extra))
+            opt = entry.get("option", cat[stage]["default"])
+            settings = entry.get("settings", {})
+            if not isinstance(settings, dict):
+                problems.append("%s: stage %s: settings must be an object {setting: value}" % (where, stage))
+                settings = {}
+        else:
+            opt, settings = entry, {}
+        if not isinstance(opt, str) or opt not in cat[stage]["options"]:
             problems.append("%s: stage %s of recipe %s has no option %r (options: %s)" % (
                 where, stage, recipe, opt, ", ".join(sorted(cat[stage]["options"]))))
+            continue
+        for name, text in stages.settings_problems(cat[stage]["options"][opt], settings):
+            problems.append("%s: setting %s.%s of option %s: %s" % (where, stage, name, opt, text))
+        valid[stage] = {"option": opt, "settings": settings}
     skip = piece.get("skip", [])
     if not isinstance(skip, list) or not all(isinstance(s, str) for s in skip):
         problems.append("%s: skip must be a list of stage names" % where)
@@ -150,8 +168,10 @@ def _check_piece(where, recipe, piece, config, problems):
         if s not in skippable:
             problems.append("%s: stage %r cannot be skipped in recipe %s (skippable: %s)" % (
                 where, s, recipe, ", ".join(skippable) or "none"))
-    piece = dict(piece, stages={k: v for k, v in picks.items() if k in cat and v in cat[k]["options"]},
-                 skip=[s for s in skip if s in skippable])
+    piece = dict(piece, stages=valid, skip=[s for s in skip if s in skippable])
+    for s in piece["skip"]:
+        if stages.entry_settings(picks.get(s)):
+            problems.append("%s: stage %s is skipped; its settings would do nothing" % (where, s))
     params = piece.get("params", {})
     if not isinstance(params, dict):
         problems.append("%s: params must be an object" % where)
@@ -286,6 +306,20 @@ def _check_jobs(order, server):
     except Exception as ex:
         return ["the order cannot be expanded: %s" % ex]
     ids = set(j["id"] for j in jobs)
+    # Settings that land on no job of their piece would do nothing (for example concept
+    # settings of a piece that goes straight from its reference image to the mesh).
+    landed = set((j["family"], j["asset"], j.get("stage")) for j in jobs)
+    for fam in order.get("families", []):
+        for piece in fam.get("assets", []):
+            for stage in stages.chosen_settings(piece.get("recipe"), piece):
+                if (fam["id"], piece["id"], stage) not in landed:
+                    problems.append("%s/%s: the settings of stage %s land on no job of this piece" % (
+                        fam["id"], piece["id"], stage))
+    from . import local_gpu
+    for j in jobs:
+        if j.get("kind") == "local_gpu" and j.get("tool") not in local_gpu.RUNNERS:
+            problems.append("job %s: unknown local GPU tool %r (known: %s)" % (
+                j["id"], j.get("tool"), ", ".join(sorted(local_gpu.RUNNERS)) or "none"))
     for j in jobs:
         for r in refs_of(j):
             if r not in ids:
@@ -310,6 +344,11 @@ def _check_jobs(order, server):
         except Exception as ex:
             problems.append("job %s: %s" % (j["id"], ex))
             continue
+        for key in sorted(set(j.get("set", {})) | set(j.get("set_on_failure", {}))):
+            nid = key.split(".", 1)[0]
+            if nid not in wf:
+                problems.append("job %s: %s lands on node %s, which %s" % (
+                    j["id"], key, nid, "this job drops" if nid in j.get("drop", []) else "%s does not have" % name))
         if classes is None:
             continue
         for node in wf.values():

@@ -22,6 +22,7 @@ params.tris and params.texture set the mesh's face budget and texture size (the 
 """
 
 from .factory_util import seeds_for
+from .stages import apply_settings
 
 SIGMAS_HIRES = "0.704534, 0.414568, 0"
 
@@ -213,8 +214,9 @@ def expand(job_list, only=None):
         if only and fam["id"] not in only:
             continue
         for a in fam["assets"]:
-            rec = RECIPES[a.get("recipe", fam.get("recipe"))]
-            for j in rec(fam, a, st):
+            recipe = a.get("recipe", fam.get("recipe"))
+            # The piece's stage settings land in its jobs ("set" or "args"): see forge/stages.py.
+            for j in apply_settings(recipe, a, RECIPES[recipe](fam, a, st)):
                 j["family"], j["asset"] = fam["id"], a["id"]
                 jobs.append(j)
     for t in job_list.get("tasks", []):

@@ -76,6 +76,94 @@ def comfy_record(job, workflow_sha, wf, sets, inputs):
             "settings": sets, "inputs": inputs}
 
 
+def _is_link(v):
+    return isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and isinstance(v[1], int)
+
+
+def requested_parameters(wf):
+    """The inputs a built prompt submits, node by node (links between nodes left out):
+    {node: {"class": class, "inputs": {input: {"requested": value}}}}."""
+    out = {}
+    for nid, node in node_order(wf):
+        ins = {k: {"requested": v} for k, v in sorted(node.get("inputs", {}).items()) if not _is_link(v)}
+        out[nid] = {"class": node.get("class_type"), "inputs": ins}
+    return out
+
+
+def executed_prompt(history_entry):
+    """The prompt the server ran, from its /history entry ([number, prompt id, prompt,
+    extra, outputs]), or None when the history does not hold it."""
+    p = (history_entry or {}).get("prompt")
+    if isinstance(p, (list, tuple)) and len(p) > 2 and isinstance(p[2], dict):
+        return p[2]
+    if isinstance(p, dict) and all(isinstance(v, dict) and "inputs" in v for v in p.values()):
+        return p
+    return None
+
+
+def effective_parameters(requested, executed, overridden=None):
+    """Each requested input with its effective value: what the server's executed prompt
+    holds for it, or null with a reason (an input the catalogue knows the implementation
+    ignores or overrides, an executed prompt that is missing or lacks the input). An input
+    the server ran with another value is marked "changed"."""
+    overridden = overridden or {}
+    out = {}
+    for nid, node in requested.items():
+        ran = (executed or {}).get(nid)
+        ins = {}
+        for name, rec in node.get("inputs", {}).items():
+            r = {"requested": rec.get("requested")}
+            key = "%s.%s" % (nid, name)
+            if key in overridden:
+                r.update(effective=None, reason="ignored or overridden by the implementation: " + overridden[key])
+            elif executed is None:
+                r.update(effective=None, reason="the server's history holds no executed prompt")
+            elif ran is None or name not in ran.get("inputs", {}):
+                r.update(effective=None, reason="not in the executed prompt")
+            else:
+                r["effective"] = ran["inputs"][name]
+                if r["effective"] != r["requested"]:
+                    r["changed"] = True
+            ins[name] = r
+        out[nid] = {"class": node.get("class"), "inputs": ins}
+    return out
+
+
+def tool_parameters(requested, passed, ignored=None):
+    """The arguments of a local tool: requested (the job's args) and effective (what the
+    runner reports it passed), null with a reason when the runner does not report it or the
+    catalogue knows the tool ignores it."""
+    ignored = ignored or {}
+    passed = passed or {}
+    out = {}
+    for name in sorted(set(requested) | set(passed)):
+        r = {"requested": requested.get(name)}
+        if name in ignored:
+            r.update(effective=None, reason="ignored or overridden by the tool: " + ignored[name])
+        elif name not in passed:
+            r.update(effective=None, reason="the runner did not report this argument")
+        else:
+            r["effective"] = passed[name]
+            if name in requested and passed[name] != requested[name]:
+                r["changed"] = True
+        out[name] = r
+    return out
+
+
+def local_gpu_record(job, result, ignored=None):
+    """Provenance of a local GPU job: the record its runner wrote (tool, versions, script
+    hashes, settings, inputs), plus the requested and effective arguments."""
+    rec = dict(result.get("provenance") or {})
+    rec.pop("outputs", None)
+    rec.update({"family": job["family"], "asset": job["asset"], "kind": job["kind"], "group": job["group"],
+                "tool": job.get("tool")})
+    for k, default in (("workflow", None), ("workflow_sha256", None), ("models", []), ("prompt", None),
+                       ("negative", None), ("seeds", []), ("settings", {}), ("inputs", [])):
+        rec.setdefault(k, default)
+    rec["parameters"] = tool_parameters(job.get("args", {}), result.get("passed"), ignored)
+    return rec
+
+
 def local_record(job, inputs):
     """Provenance of a local step (pick, sheet, roll, unroll): no model, only its inputs."""
     return {"family": job["family"], "asset": job["asset"], "kind": job["kind"], "group": job["group"],

@@ -6,6 +6,7 @@ stage that needs it (forge.order.check_order names it). Relative paths are resol
 the folder of the configuration file.
 """
 
+import glob
 import json
 import os
 
@@ -24,15 +25,28 @@ KEYS = {
     "skintokens_python": "Python of SkinTokens' own environment",
     "godot": "Godot 4 executable (the review sheets; the console build on Windows)",
     "bake_device": "Cycles device for normal-map baking: GPU (default) or CPU",
+    "gpu_wait": "seconds a local GPU job waits while another process holds the card (default 300)",
+    "gpu_busy_mb": "VRAM in MB another process may hold before a local GPU job waits (default 2048)",
 }
-# Keys that are values, not paths on this machine.
-VALUE_KEYS = ("comfy_url", "bake_device")
+# Keys that are values, not paths on this machine; NUMBER_KEYS are numbers of at least 0.
+VALUE_KEYS = ("comfy_url", "bake_device", "gpu_wait", "gpu_busy_mb")
+NUMBER_KEYS = {"gpu_wait": 300, "gpu_busy_mb": 2048}
 TOOL_KEYS = tuple(k for k in KEYS if k not in VALUE_KEYS)
 # Files that must exist inside a tool folder for the tool to run.
 TOOL_FILES = {
     "skintokens_dir": ("demo.py",),
     "unirig_dir": ("run.py",),
     "unirig_venv": (os.path.join("Scripts", "python.exe") if os.name == "nt" else os.path.join("bin", "python"),),
+}
+# Weight files a tool needs, relative to its configured folder (glob patterns): the
+# environment check (forge.readiness) reports the missing ones.
+TOOL_WEIGHTS = {
+    "skintokens_dir": ("experiments/skin_vae_2_10_32768/last.ckpt",
+                       "experiments/articulation_xl_quantization_256_token_4/grpo_1400.ckpt",
+                       "models/Qwen3-0.6B/config.json"),
+    "unirig_hf": ("hub/models--VAST-AI--UniRig/snapshots/*/skeleton/articulation-xl_quantization_256/model.ckpt",
+                  "hub/models--VAST-AI--UniRig/snapshots/*/skin/articulation-xl/model.ckpt",
+                  "hub/models--facebook--opt-350m/snapshots/*/config.json"),
 }
 BAKE_DEVICES = ("GPU", "CPU")
 
@@ -43,6 +57,7 @@ def load_config(path=None):
     cfg = {k: None for k in KEYS}
     cfg["comfy_url"] = DEFAULT_SERVER
     cfg["bake_device"] = "GPU"
+    cfg.update(NUMBER_KEYS)
     if not path or not os.path.exists(path):
         return cfg
     with open(path, encoding="utf-8-sig") as f:
@@ -57,6 +72,11 @@ def load_config(path=None):
         v = data.get(k)
         if v in (None, ""):
             continue
+        if k in NUMBER_KEYS:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                raise ValueError("%s: %s must be a number of at least 0" % (path, k))
+            cfg[k] = v
+            continue
         if not isinstance(v, str):
             raise ValueError("%s: %s must be a string" % (path, k))
         if k == "bake_device":
@@ -67,6 +87,19 @@ def load_config(path=None):
             v = os.path.normpath(os.path.join(base, os.path.expandvars(os.path.expanduser(v))))
         cfg[k] = v
     return cfg
+
+
+def missing_weights(config, keys):
+    """Problems for the weight files (TOOL_WEIGHTS) of the tool keys that are set."""
+    out = []
+    for k in keys:
+        folder = config.get(k)
+        if not folder or not os.path.isdir(folder):
+            continue
+        for pattern in TOOL_WEIGHTS.get(k, ()):
+            if not glob.glob(os.path.join(folder, *pattern.split("/"))):
+                out.append("%s has no weight file %s: %s" % (k, pattern, folder))
+    return out
 
 
 def missing_tools(config, keys):

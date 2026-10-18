@@ -21,6 +21,8 @@ from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+import fake_comfy  # noqa: E402,F401  (a GPU lock folder of the tests' own: FORGE_LOCK_DIR)
 
 from forge import local_gpu  # noqa: E402
 from forge.config import load_config  # noqa: E402

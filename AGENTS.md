@@ -31,9 +31,14 @@ format in [docs/order.md](docs/order.md) and the design in
 - `Run-Forge.ps1`: the launcher (Windows).
 - `forge/__main__.py`: the command line (`python -m forge`).
 - `forge/order.py`: `load_order` (family defaults merged into pieces, input paths
-  resolved) and `check_order` (every problem of an order).
+  resolved) and `check_order` (every problem of an order, without the server).
+- `forge/readiness.py`: `check_environment` (the second result of `-Check`: node classes,
+  model files in the loaders' lists, local tools and weight files, Blender and Godot
+  versions; `verified`, `not ready` or `not verified`).
+- `forge/gpu_lock.py`: the machine-wide GPU lock file and the nvidia-smi process list.
 - `forge/config.py`: `load_config` (the machine configuration, `forge.local.json`).
-- `forge/stages.py`: the stage catalogue per recipe, params, inputs and review keys.
+- `forge/stages.py`: the stage catalogue per recipe (shared `OPTIONS` with their named
+  settings), inputs known to be overridden (`OVERRIDDEN`), params, inputs and review keys.
 - `forge/recipes.py`: recipes that expand each piece into jobs (`expand`).
 - `forge/factory_core.py`: job states, scheduling, `state.json`, estimate.
 - `forge/comfy_jobs.py`: builds a workflow's prompt, submits it, collects its outputs.
@@ -42,7 +47,8 @@ format in [docs/order.md](docs/order.md) and the design in
 - `forge/provenance.py`: provenance records and export.
 - `forge/comfy_server.py`, `forge/factory_util.py`: HTTP client and helpers.
 - `forge/local_gpu.py`: runners of the local tools that use the card (`run_rig`,
-  `run_export`, `run_review`), their logs and provenance.
+  `run_export`, `run_review`), their logs and provenance, and `RUNNERS` (the tools of the
+  `local_gpu` job kind).
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
   `humanoid_export.py` (the humanoid export, run by `blender_python`).
@@ -75,7 +81,14 @@ The server address is `--server`, else the `COMFY_SERVER` environment variable, 
 `comfy_url` of the configuration (default `http://127.0.0.1:8188`). Waiting times (the
 tests shorten them): `FORGE_PASS_SLEEP` (4 s between passes), `FORGE_ERROR_SLEEP` (30 s
 after an error or with the server down), `FORGE_LOST_AFTER` (20 s before resubmitting a
-prompt the server lost), `FORGE_HEAVY_WAIT` (300 s waiting for VRAM for a heavy job).
+prompt the server lost), `FORGE_HEAVY_WAIT` (300 s waiting for VRAM for a heavy job),
+`FORGE_GPU_WAIT` (the configuration's `gpu_wait`, 300 s: a local GPU job waiting while
+another process holds the card). `FORGE_LOCK_DIR` moves the GPU lock file (the tests use
+a temporary folder; `tests/fake_comfy.py` sets it on import) and `FORGE_NVIDIA_SMI`
+replaces the `nvidia-smi` program.
+
+`-Check` exits with 0 (order valid, environment verified), 1 (order problems or
+environment not ready) or 3 (environment not verified: the server did not answer).
 
 ## GPU rules
 
@@ -85,6 +98,18 @@ prompt the server lost), `FORGE_HEAVY_WAIT` (300 s waiting for VRAM for a heavy 
   else of the factory is sent.
 - Never run Hunyuan outside the ComfyUI server while the server is open (both compete for
   the VRAM).
+- Machine-wide lock: a factory run holds `%LOCALAPPDATA%\art-forge\gpu.lock` (an
+  operating-system lock, released when the process ends) for its whole run, and each local
+  GPU job and each runner of `forge/local_gpu.py` takes it too (re-entrant in one process).
+  A second factory refuses to start (exit 2); a lock left by a process that is gone is
+  taken over and logged.
+- Local GPU jobs (kind `local_gpu`) run alone: only when the whole ComfyUI queue is empty
+  (`queue_running` and `queue_pending`, any client), after `/free`, after logging the
+  processes `nvidia-smi` lists (waiting up to `gpu_wait` while one holds more than
+  `gpu_busy_mb`; without `nvidia-smi`, or when the driver reports no per-process amount,
+  it logs that and goes). While one is ready or running nothing is sent to ComfyUI. A
+  failure is tried once more after the queue is empty again; the log names an
+  out-of-memory cause and an external prompt that started meanwhile.
 - Interactive users jump the queue by posting to `/prompt` with `"front": true`; the
   factory never keeps more than `--limit` prompts in the queue for that reason.
 - The same model goes in bursts (up to 24 jobs of one group in a row), then the first

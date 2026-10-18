@@ -1,8 +1,14 @@
 """A fake ComfyUI HTTP server for the factory tests: the endpoints the factory calls,
-answered from memory, with small generated pictures for every save node."""
+answered from memory, with small generated pictures for every save node.
 
+Importing it also points FORGE_LOCK_DIR to a temporary folder (when it is not set), so the
+tests and the factories they start never touch this user's machine-wide GPU lock."""
+
+import copy
 import io
 import json
+import os
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -13,14 +19,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 from PIL import Image
 
+if not os.environ.get("FORGE_LOCK_DIR"):
+    os.environ["FORGE_LOCK_DIR"] = tempfile.mkdtemp(prefix="forge_test_lock_")
+
 SIZE = 96
+# Inputs that name files rather than settings: left out of the picture's seed.
+NAME_INPUTS = ("filename_prefix", "output_mesh_name")
 FAKE_GLB = b"glTF\x02\x00\x00\x00" + b"\x00" * 16
 
 
 def seed_of(wf):
-    """The seed of a prompt, mixed with its texts so that a changed text changes the picture."""
+    """The seed of a prompt, mixed with its texts and every other setting, so that a changed
+    text or setting (steps, guidance, an input image) changes the picture."""
     texts = [n["inputs"].get(k) for n in wf.values() for k in ("text", "prompt")]
     mix = zlib.crc32(json.dumps([t for t in texts if isinstance(t, str)]).encode())
+    rest = sorted((nid, k, json.dumps(v)) for nid, n in wf.items() for k, v in n["inputs"].items()
+                  if k not in NAME_INPUTS + ("text", "prompt", "seed", "noise_seed"))
+    mix = zlib.crc32(json.dumps(rest).encode(), mix)
     for node in wf.values():
         for name in ("seed", "noise_seed"):
             v = node["inputs"].get(name)
@@ -61,6 +76,10 @@ class FakeComfy:
         self.submitted = []    # (job id from the save prefix, workflow, others pending at submit)
         self.frees = 0
         self.counter = 0
+        self.requests = []         # (time, method, path) of every request
+        self.history_changes = {}  # {"<node>.<input>": value} the executed prompt holds instead
+        self.history_prompt = True  # False: /history entries hold no prompt
+        self.object_info = None     # the /object_info answer (None: 404)
         handler = self.handler()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.url = "http://127.0.0.1:%d" % self.httpd.server_address[1]
@@ -74,6 +93,29 @@ class FakeComfy:
     def reset_log(self):
         with self.lock:
             self.submitted = []
+
+    def external(self, delay):
+        """A prompt of another client (no factory job), queued for delay seconds."""
+        with self.lock:
+            pid = "external-" + uuid.uuid4().hex[:8]
+            self.prompts[pid] = {"wf": {}, "done_at": time.time() + delay, "outputs": {}}
+            self.order.append(pid)
+            return self.prompts[pid]["done_at"]
+
+    def requests_between(self, t0, t1):
+        """Requests strictly between two times (the clock may tick coarsely: a request that
+        shares t0's tick came before)."""
+        with self.lock:
+            return [r for r in self.requests if t0 < r[0] < t1]
+
+    def executed(self, wf):
+        """The prompt as the fake server "ran" it: history_changes applied."""
+        wf = copy.deepcopy(wf)
+        for key, v in self.history_changes.items():
+            nid, name = key.split(".", 1)
+            if nid in wf:
+                wf[nid]["inputs"][name] = v
+        return wf
 
     def pending(self):
         now = time.time()
@@ -132,6 +174,7 @@ class FakeComfy:
             def do_GET(self):
                 url = urllib.parse.urlparse(self.path)
                 with fake.lock:
+                    fake.requests.append((time.time(), "GET", url.path))
                     now = time.time()
                     if url.path == "/queue":
                         pend = fake.pending()
@@ -146,13 +189,19 @@ class FakeComfy:
                         status = {"status_str": "success", "completed": True,
                                   "messages": [["execution_start", {"timestamp": t - 1500}],
                                                ["execution_success", {"timestamp": t}]]}
-                        return self.send(200, {pid: {"status": status, "outputs": p["outputs"]}})
+                        entry = {"status": status, "outputs": p["outputs"]}
+                        if fake.history_prompt:
+                            entry["prompt"] = [fake.order.index(pid), pid, fake.executed(p["wf"]),
+                                               {"client_id": "fake"}, sorted(p["outputs"])]
+                        return self.send(200, {pid: entry})
                     if url.path == "/view":
                         q = urllib.parse.parse_qs(url.query)
                         key = (q.get("type", ["output"])[0], q.get("subfolder", [""])[0], q["filename"][0])
                         if key not in fake.files:
                             return self.send(404, {"error": "not found"})
                         return self.send(200, fake.files[key], "application/octet-stream")
+                    if url.path == "/object_info" and fake.object_info is not None:
+                        return self.send(200, fake.object_info)
                     if url.path == "/system_stats":
                         return self.send(200, {"devices": [{"name": "fake", "vram_free": 16 * 2 ** 30}]})
                 return self.send(404, {"error": "unknown path"})
@@ -161,6 +210,7 @@ class FakeComfy:
                 url = urllib.parse.urlparse(self.path)
                 data = self.body()
                 with fake.lock:
+                    fake.requests.append((time.time(), "POST", url.path))
                     if url.path == "/prompt":
                         wf = json.loads(data)["prompt"]
                         left = [s for s in json.dumps(wf).split('"') if s.startswith("$") and s.endswith("$") and len(s) > 2]

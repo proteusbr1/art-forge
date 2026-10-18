@@ -8,7 +8,8 @@ import urllib.error
 import urllib.parse
 
 from .factory_util import sha_file, slug
-from .provenance import comfy_record
+from .provenance import comfy_record, effective_parameters, executed_prompt, requested_parameters
+from .stages import OVERRIDDEN
 
 PREFIX_ROOT = "forge"
 SAVE_CLASSES = ("SaveImage", "SaveGLB", "Hy3D21ExportMesh", "Save3DAdvanced")
@@ -83,6 +84,9 @@ class ComfyJobs:
             sets.update(job.get("set_on_failure", {}))
         for key, v in sets.items():
             nid, name = key.split(".", 1)
+            if nid not in wf:
+                raise ValueError("%s: %s lands on node %s, which the workflow (after drop) does not have"
+                                 % (job["workflow"], key, nid))
             wf[nid]["inputs"][name] = v
         left = [s for s in json.dumps(wf).split('"') if s.startswith("$") and s.endswith("$") and len(s) > 2]
         if left:
@@ -106,6 +110,9 @@ class ComfyJobs:
             return
         prov = comfy_record(job, self.workflow(job["workflow"])[1], wf, self.last_build["sets"],
                             self.last_build["inputs"])
+        # What was requested, node by node; the effective values are read back from the
+        # server's history when the prompt finishes (poll).
+        prov["parameters"] = requested_parameters(wf)
         self.manifest[job["id"]] = {"status": "queued", "spec": sp, "prompt_id": pid, "submitted": time.time(),
                                     "tries": tries + 1, "mesh_name": mesh_name if job.get("mesh_role") else None,
                                     "provenance": prov}
@@ -154,7 +161,11 @@ class ComfyJobs:
                "wall_seconds": wall, "tries": e.get("tries", 1),
                "finished": time.strftime("%Y-%m-%d %H:%M:%S")}
         if "provenance" in e:
-            rec["provenance"] = e["provenance"]
+            prov = dict(e["provenance"])
+            if "parameters" in prov:
+                prov["parameters"] = effective_parameters(prov["parameters"], executed_prompt(h),
+                                                          OVERRIDDEN.get(job["workflow"], {}))
+            rec["provenance"] = prov
         self.manifest[job["id"]] = rec
         self.save_manifest()
         self.record(job, rec, exec_s, wall)

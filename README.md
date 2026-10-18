@@ -24,15 +24,18 @@ not run while building). The recipe that queues them is not written yet. See the
   mesh). Planned: `humanoid` (skinned, human skeleton), then `articulated` (rigid parts on
   pivots) and `creature` (skinned, own skeleton) when an order needs them.
 - **The order says everything else**, piece by piece: recipe, prompt, number of variants,
-  budgets (triangles, texture size), input files, and, for recipes with swappable stages,
-  which model to use at each stage. Format: [docs/order.md](docs/order.md).
+  budgets (triangles, texture size), input files, the model of each stage and its named
+  settings (steps, seeds, guidance, sampler...). Format: [docs/order.md](docs/order.md).
 - **One night, no stops.** Every job is resumable: a job whose specification (workflow,
   values, hashes of its inputs) did not change never runs again; a failed job is retried
   once and only its dependants wait. Picks are automatic and marked for review; changing
   a pick redoes only what depends on it.
 - **Local only.** Only the HTTP API of a local ComfyUI and local tools; workflows with
-  paid API nodes are refused. Provenance (models, prompt, seeds, inputs, hashes) is kept
-  for every output.
+  paid API nodes are refused. Provenance (models, prompt, seeds, inputs, hashes, and each
+  input as requested and as the server ran it) is kept for every output.
+- **One card, one user.** A run holds a machine-wide lock, so a second factory refuses to
+  start; local GPU jobs wait for the whole ComfyUI queue (any client) to empty and send
+  nothing while they run.
 
 ## Quick start
 
@@ -52,8 +55,10 @@ local ComfyUI with the custom nodes and models the workflows use (see the table 
         .\Run-Forge.ps1 -Out D:\art\night1 -Status
         .\Run-Forge.ps1 -Out D:\art\night1 -Stop
 
-`-Check` reads the server's node classes (`GET /object_info`) when it answers and checks
-without them otherwise. More in [AGENTS.md](AGENTS.md); tests:
+`-Check` prints two results: the order (valid, or its problems) and the environment:
+`verified`, `not ready` (node classes, model files missing from the loaders' lists, local
+tools or their weight files) or `not verified` when the server does not answer (it reads
+only `GET /object_info`). More in [AGENTS.md](AGENTS.md); tests:
 `python -m unittest discover -s tests` (the smoke tests of the humanoid tools run when
 `forge.local.json` points to Blender and Godot, and skip otherwise).
 
@@ -70,6 +75,8 @@ without them otherwise. More in [AGENTS.md](AGENTS.md); tests:
 | `skintokens_dir`, `skintokens_python` | the SkinTokens checkout and the Python of its own environment |
 | `godot` | Godot 4 executable (on Windows the console build) |
 | `bake_device` | Cycles device of the normal-map bake: `GPU` (default; falls back to the CPU when Cycles finds no GPU) or `CPU` |
+| `gpu_wait` | seconds a local GPU job waits while another process holds more than `gpu_busy_mb` of VRAM (default 300; then it goes) |
+| `gpu_busy_mb` | VRAM in MB another process may hold before a local GPU job waits (default 2048) |
 
 Relative paths are relative to the file. The Blender, rig and Godot keys are for the
 humanoid tools; the current recipes need only ComfyUI. `python -m forge.local_gpu` says

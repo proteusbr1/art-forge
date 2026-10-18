@@ -6,14 +6,23 @@ to its output (<out>/<step>.stdout.log, <out>/<step>.stderr.log), writes the pro
 the step (<out>/<step>.provenance.json: tool, its version, script hashes, settings, seeds,
 input and output hashes) and returns the files it produced {role: path}, or raises
 ToolError naming the log. The scheduler decides when they may run (only with the ComfyUI
-queue empty and after /free); the runners do not talk to ComfyUI.
+queue empty and after /free); the runners do not talk to ComfyUI. Each runner holds the
+machine-wide GPU lock (forge.gpu_lock) while it runs: re-entrant inside a factory run,
+refused (GpuBusy) when another process holds it.
+
+A job of kind "local_gpu" names its runner in "tool": RUNNERS[tool](factory, job, out_dir)
+returns {"files": {role: path}, "passed": {argument: value}, "provenance": record}. "passed"
+are the arguments the runner actually gave the tool (the effective parameters; the job's
+"args" are the requested ones) and "provenance" the record the runner wrote.
 """
 
+import functools
 import json
 import os
 import subprocess
 import time
 
+from . import gpu_lock
 from .config import missing_tools
 from .factory_util import sha_file, sha_file_cached, write_json
 
@@ -37,6 +46,21 @@ THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "hand_socket_cm": "--max-hand
               "penetration_cm": "--max-penetration"}
 # Exit code of the exporter when the bone map is invalid.
 EXIT_BONE_MAP = 3
+
+
+# Runners of the "local_gpu" job kind: tool name -> function(factory, job, out_dir).
+RUNNERS = {}
+
+
+def _gpu_locked(step):
+    """The runner holds the machine-wide GPU lock while it runs."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            with gpu_lock.hold("local tool " + step):
+                return fn(*args, **kwargs)
+        return wrapper
+    return deco
 
 
 class ToolError(RuntimeError):
@@ -188,6 +212,7 @@ def _record(workflow, scripts, tools, settings, inputs, seeds=(), models=()):
 
 # ---- rig -----------------------------------------------------------------------------------
 
+@_gpu_locked("rig")
 def run_rig(mesh, out, config, seed=9001, method="skintokens", beams=10, postprocess=False, timeout=3600):
     """Skeleton and weights for a painted mesh. skintokens: the configured SkinTokens checkout
     run by its own Python through tools/rig/skintokens_entry.py (fixed seed, `beams` beams,
@@ -258,6 +283,7 @@ EXPORT_PARAMS = {"tris": "--tris", "height": "--height", "head": "--head", "hand
                  "feet": "--feet", "widen": "--widen"}
 
 
+@_gpu_locked("export")
 def run_export(rig, out, config, params=None, clips=None, items=None, name="model", bake_source=None,
                bone_map=None, glow=None, device=None, thresholds=None, timeout=7200):
     """The humanoid export (tools/blender/humanoid_export.py in blender_python).
@@ -341,6 +367,7 @@ def _failure(g):
     return None
 
 
+@_gpu_locked("review")
 def run_review(glbs, out, config, camera=None, labels=None, name="sheet", timeout=900):
     """One review sheet of a piece's variants (tools/review_godot in Godot, off screen).
 

@@ -11,8 +11,12 @@ The order format is documented in docs/order.md.
 
 Behaviour:
 - Only the HTTP API of the server is used (/prompt, /queue, /history, /view,
-  /upload/image, /free, /system_stats, and /object_info for --check). Nothing in ComfyUI is
-  installed, changed or restarted.
+  /upload/image, /free, /system_stats; --check reads only /object_info). Nothing in
+  ComfyUI is installed, changed or restarted.
+- Machine-wide GPU coordination (forge/gpu_lock.py): a run holds a lock file under the
+  user's local application data for its whole length, so a second factory refuses to
+  start. Local GPU jobs run alone: the whole server queue empty, /free, other processes
+  on the card listed from nvidia-smi; nothing is sent while they run.
 - At most --limit (6) of the factory's own prompts are in the server's queue at a time, so
   prompts of other users never wait behind hundreds of factory jobs. An interactive user
   that needs the GPU now posts its prompt with "front": true in the body of /prompt and is
@@ -60,23 +64,26 @@ def server_url(a, config):
 
 
 def run_check(a, config):
+    """Two results: the order (valid, or its problems) and the environment (verified, not
+    ready with the list, or not verified when the server does not answer). Exit code 0
+    when the order is valid and the environment verified, 1 when either has problems, 3
+    when the environment could not be verified. Only GET /object_info is sent."""
     from .comfy_server import Server
     from .order import check_order, load_order
+    from .readiness import NOT_READY, VERIFIED, check_environment
     order = load_order(a.order, a.order_base or None)
-    server = Server(server_url(a, config))
-    info = None
-    try:
-        info = server.get_json("/object_info", timeout=10)
-    except Exception as ex:
-        print("server %s not answering (%s): node classes not checked" % (server.url, ex))
-    problems = check_order(order, config, info)
-    for p in problems:
-        print("PROBLEM " + p)
+    problems = check_order(order, config)
     if problems:
-        print("%d problem(s) in %s" % (len(problems), a.order))
+        print("order: %d problem(s) in %s" % (len(problems), a.order))
+        for p in problems:
+            print("  PROBLEM " + p)
+        print("environment: not verified (the order has problems)")
         return 1
-    print("order %s: no problems%s" % (a.order, "" if info is not None else " (without the server)"))
-    return 0
+    print("order: valid (%s)" % a.order)
+    env = check_environment(order, config, Server(server_url(a, config)))
+    for line in env.lines():
+        print(line)
+    return 0 if env.status == VERIFIED else 1 if env.status == NOT_READY else 3
 
 
 def main(argv=None):
@@ -90,7 +97,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=6, help="max factory prompts in the server queue")
     ap.add_argument("--only", default="", help="only these families (comma separated)")
     ap.add_argument("--estimate", action="store_true", help="print job counts and GPU hours, run nothing")
-    ap.add_argument("--check", action="store_true", help="check the order (and the server if it answers), run nothing")
+    ap.add_argument("--check", action="store_true",
+                    help="check the order, then the environment (server read-only, local tools), run nothing")
     ap.add_argument("--retry-failed", action="store_true", help="try failed jobs again")
     ap.add_argument("--one-pass", action="store_true", help="one scheduling pass, then exit")
     ap.add_argument("--provenance", default="", metavar="FILE",

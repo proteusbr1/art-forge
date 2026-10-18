@@ -8,11 +8,14 @@ import time
 import traceback
 import urllib.error
 
-from .comfy_jobs import ComfyJobs
+from . import gpu_lock
+from .comfy_jobs import MAX_TRIES, ComfyJobs
 from .comfy_server import Server
-from .factory_util import Log, env_seconds, pid_alive, sha_file_cached, sha_obj, write_json
+from .config import load_config
+from .factory_util import Log, env_seconds, pid_alive, sha_file, sha_file_cached, sha_obj, slug, write_json
 from .local_steps import LocalSteps
 from .order import load_order
+from .provenance import local_gpu_record
 from .recipes import expand, refs_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +37,24 @@ HEAVY_MIN_VRAM_GB = 3.0  # Hunyuan shape + Paint peaked at 7.6 and 8.8 GB; margi
 SAME_GROUP_BURST = 24  # jobs of one model in a row before others' ready jobs get a turn
 STOP_FILE = "STOP"
 ACTIVE = ("ready", "waiting", "queued")
+# Words of an out-of-memory failure in a local tool's error or log.
+OOM_MARKERS = ("out of memory", "outofmemoryerror", "cuda_error_out_of_memory", "cudaerrormemoryallocation",
+               "failed to allocate", "not enough memory")
+
+
+def out_of_memory(ex):
+    """True when a failure's message or the tail of its log says the card ran out of memory."""
+    texts = [str(ex)]
+    log = getattr(ex, "log", None)
+    if log and os.path.exists(log):
+        try:
+            with open(log, encoding="utf-8", errors="replace") as f:
+                f.seek(max(0, os.path.getsize(log) - 65536))
+                texts.append(f.read())
+        except OSError:
+            pass
+    text = "\n".join(texts).lower()
+    return any(m in text for m in OOM_MARKERS)
 
 
 def forbidden_class(cls):
@@ -64,6 +85,7 @@ class Factory(ComfyJobs, LocalSteps):
         os.makedirs(self.out, exist_ok=True)
         self.log = Log(os.path.join(self.out, "factory.log"))
         self.server = Server(server_url)
+        self.config = load_config(getattr(a, "config", "") or None)
         self.manifest_path = os.path.join(self.out, "manifest.json")
         self.manifest = {}
         if os.path.exists(self.manifest_path):
@@ -79,6 +101,13 @@ class Factory(ComfyJobs, LocalSteps):
         self.error_sleep = env_seconds("FORGE_ERROR_SLEEP", 30)
         self.lost_after = env_seconds("FORGE_LOST_AFTER", 20)
         self.heavy_wait = env_seconds("FORGE_HEAVY_WAIT", 300)
+        # Local GPU jobs: how long they wait while another process holds more than
+        # gpu_busy_mb of VRAM (forge.local.json; FORGE_GPU_WAIT for the tests).
+        self.gpu_wait = env_seconds("FORGE_GPU_WAIT", self.config["gpu_wait"])
+        self.gpu_busy_mb = self.config["gpu_busy_mb"]
+        self.gpu_since = None
+        self.gpu_waiting = None
+        self.gpu_processes = gpu_lock.gpu_processes
 
     # --- order and workflows
     def load(self):
@@ -259,7 +288,7 @@ class Factory(ComfyJobs, LocalSteps):
         while ran:
             ran = False
             for j in self.jobs:
-                if states[j["id"]] == "ready" and j["kind"] != "comfy":
+                if states[j["id"]] == "ready" and j["kind"] not in ("comfy", "local_gpu"):
                     try:
                         self.run_local(j)
                     except Exception as ex:
@@ -282,6 +311,12 @@ class Factory(ComfyJobs, LocalSteps):
         heavy_inflight = any(j.get("heavy") for j in inflight)
         stopping = os.path.exists(os.path.join(self.out, STOP_FILE))
         ready = [j for j in self.jobs if states[j["id"]] == "ready" and j["kind"] == "comfy"]
+        gpu_ready = [j for j in self.jobs if states[j["id"]] == "ready" and j["kind"] == "local_gpu"]
+        if gpu_ready and not stopping:
+            # A local GPU job has the card to itself: nothing more is sent to ComfyUI until
+            # it has run (it waits for the whole queue, /free and the other processes).
+            self.local_gpu_turn(gpu_ready[0], inflight, running, pending)
+            ready = []
         while not stopping and not heavy_inflight and len(inflight) < self.a.limit and ready:
             j = self.choose(ready)
             if j.get("heavy") and inflight:
@@ -313,6 +348,105 @@ class Factory(ComfyJobs, LocalSteps):
             return "finished"
         return None
 
+    # --- local GPU jobs
+    def local_gpu_turn(self, job, inflight, running, pending):
+        """Run a ready local GPU job when the card is free: no prompt of any client in the
+        ComfyUI queue (queue_running and queue_pending), then /free, then the other processes
+        on the card listed from nvidia-smi and logged (it waits up to gpu_wait seconds while
+        one holds more than gpu_busy_mb of VRAM, then goes). Returns True when it ran."""
+        jid = job["id"]
+        if inflight or running or pending:
+            why = "%d running, %d pending" % (running, pending)
+            if self.gpu_waiting != (jid, why):
+                self.log("local GPU job %s waits for an empty ComfyUI queue (%s)" % (jid, why))
+                self.gpu_waiting = (jid, why)
+            self.gpu_since = None
+            return False
+        now = time.time()
+        if self.gpu_since is None:
+            self.server.free()
+            self.gpu_since = now
+            procs = self.gpu_processes()
+            self.log("local GPU job %s: /free sent; %s" % (jid, gpu_lock.describe_processes(procs)))
+        else:
+            procs = self.gpu_processes()
+        busy = gpu_lock.busy_processes(procs, self.gpu_busy_mb)
+        if busy and now - self.gpu_since < self.gpu_wait:
+            why = "busy: " + ", ".join("%s (%d, %d MB)" % (p["name"], p["pid"], p["mb"]) for p in busy)
+            if self.gpu_waiting != (jid, why):
+                self.log("local GPU job %s waits (up to %d s) while other processes hold the card: %s" % (
+                    jid, self.gpu_wait, why))
+                self.gpu_waiting = (jid, why)
+            return False
+        if busy:
+            self.log("local GPU job %s goes after %d s although other processes hold the card" % (
+                jid, now - self.gpu_since))
+        # The queue again, right before the job takes the card (another client may have sent
+        # a prompt since the start of this pass).
+        _, running, pending = self.server.queue_ids()
+        if running or pending:
+            self.gpu_since = None
+            return False
+        self.gpu_since = None
+        self.gpu_waiting = None
+        self.run_local_gpu(job)
+        return True
+
+    def run_local_gpu(self, job):
+        """One local GPU job, synchronously: nothing is sent to the server while it runs.
+        Its runner is forge.local_gpu.RUNNERS[job["tool"]](factory, job, out_dir), which
+        returns {"files": {role: path}, "passed": {argument: value}, "provenance": record}.
+        A failure is tried once more (after the queue is empty again); the log names an
+        out-of-memory cause and an external prompt that started meanwhile."""
+        from . import local_gpu
+        jid = job["id"]
+        sp = self.spec(job)
+        prev = self.entry(jid)
+        tries = (prev.get("tries", 0) if prev.get("spec") == sp else 0) + 1
+        out_dir = os.path.join(self.asset_dir(job), slug(jid))
+        t0 = time.time()
+        self.log("local GPU job %s started (try %d, %s)" % (jid, tries, job.get("tool")))
+        try:
+            runner = local_gpu.RUNNERS.get(job.get("tool"))
+            if runner is None:
+                raise ValueError("unknown local GPU tool %r (known: %s)" % (
+                    job.get("tool"), ", ".join(sorted(local_gpu.RUNNERS)) or "none"))
+            with gpu_lock.hold("local GPU job %s" % jid, log=self.log):
+                res = runner(self, job, out_dir)
+            files = {role: [os.path.relpath(p, self.out), sha_file(p)] for role, p in res["files"].items()}
+        except Exception as ex:
+            seconds = round(time.time() - t0, 1)
+            oom = out_of_memory(ex)
+            try:
+                _, running, pending = self.server.queue_ids()
+            except Exception:
+                running = pending = 0
+            notes = []
+            if oom:
+                notes.append("cause: out of memory on the card")
+            if running or pending:
+                notes.append("an external ComfyUI prompt started meanwhile (%d running, %d pending)" % (
+                    running, pending))
+            status = "failed" if tries >= MAX_TRIES else "retry"
+            self.log("FAILED local GPU job %s (try %d) after %s s: %s%s%s" % (
+                jid, tries, seconds, ex, "; " if notes else "", "; ".join(notes)))
+            if status == "retry":
+                self.log("local GPU job %s will be tried again once the ComfyUI queue is empty" % jid)
+            self.manifest[jid] = {"status": status, "spec": sp, "error": str(ex)[:2000], "tries": tries,
+                                  "out_of_memory": oom, "exec_seconds": seconds,
+                                  "log": getattr(ex, "log", None)}
+            self.save_manifest()
+            self.record(job, {"status": "failed"}, seconds)
+            return
+        seconds = round(time.time() - t0, 1)
+        rec = {"status": "done", "spec": sp, "kind": "local_gpu", "files": files, "exec_seconds": seconds,
+               "tries": tries, "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
+               "provenance": local_gpu_record(job, res, job.get("ignored"))}
+        self.manifest[jid] = rec
+        self.save_manifest()
+        self.record(job, rec, seconds)
+        self.log("done local GPU job %s in %s s (%d files)" % (jid, seconds, len(files)))
+
     def write_state(self, states, running, pending):
         count = {}
         left = 0.0
@@ -334,12 +468,19 @@ class Factory(ComfyJobs, LocalSteps):
         lock = os.path.join(self.out, "factory.pid")
         if os.path.exists(lock):
             try:
-                other = int(open(lock).read().strip() or 0)
+                with open(lock) as f:
+                    other = int(f.read().strip() or 0)
             except ValueError:
                 other = 0
             if other != os.getpid() and pid_alive(other):
                 print("another factory is running (pid %d); stop it first" % other)
                 return 2
+        try:
+            gpu = gpu_lock.acquire("art-forge run of %s" % self.out, log=self.log)
+        except gpu_lock.GpuBusy as ex:
+            print("another art-forge process holds the GPU lock (%s, lock file %s); stop it first" % (
+                gpu_lock.describe(ex.info), ex.path))
+            return 2
         with open(lock, "w") as f:
             f.write(str(os.getpid()))
         self.log("factory started (pid %d), %d jobs in the list, limit %d" % (os.getpid(), len(self.jobs), self.a.limit))
@@ -376,8 +517,11 @@ class Factory(ComfyJobs, LocalSteps):
             self.log("factory crashed:\n" + traceback.format_exc())
             raise
         finally:
+            gpu_lock.release(path=gpu)
             try:
-                if open(lock).read().strip() == str(os.getpid()):
+                with open(lock) as f:
+                    mine = f.read().strip() == str(os.getpid())
+                if mine:
                     os.remove(lock)
             except Exception:
                 pass

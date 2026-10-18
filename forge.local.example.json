@@ -10,5 +10,7 @@
  "skintokens_dir": "C:/path/to/SkinTokens",
  "skintokens_python": "C:/path/to/skintokens-env/Scripts/python.exe",
  "godot": "C:/path/to/Godot_v4_win64_console.exe",
- "bake_device": "GPU"
+ "bake_device": "GPU",
+ "gpu_wait": 300,
+ "gpu_busy_mb": 2048
 }
