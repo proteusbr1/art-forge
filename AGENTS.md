@@ -96,7 +96,7 @@ format in [docs/order.md](docs/order.md) and the design in
 ## Running
 
     .\Run-Forge.ps1 -Order <order.json> -Out <folder> [-Check] [-Estimate] [-Foreground]
-                    [-RetryFailed] [-Only <families>] [-Limit <n>]
+                    [-RetryFailed] [-Only <families>] [-Limit <n>] [-Server <url>]
     .\Run-Forge.ps1 -Out <folder> -Status
     .\Run-Forge.ps1 -Out <folder> -Stop [-Now]
 
@@ -110,6 +110,7 @@ Without the launcher:
 
     python -m forge --order <order.json> --out <folder> [--config forge.local.json] [--config-base DIR]
                     [--check] [--estimate] [--limit 6] [--only F1,F2] [--retry-failed] [--one-pass]
+                    [--server URL] [--lock-dir DIR]
     python -m forge --out <folder> --provenance <file.json>
 
 The server address is `--server`, else the `COMFY_SERVER` environment variable, else
@@ -121,7 +122,7 @@ prompt the server lost), `FORGE_HEAVY_WAIT` (300 s waiting for VRAM for a heavy 
 another process holds the card), `FORGE_QUEUE_WAIT_WARN` (the configuration's
 `queue_wait_warn`, 3600 s: a waiting local GPU job is called stalled) and
 `FORGE_WAIT_LOG_EVERY` (900 s between the log lines of a waiting local GPU job).
-`FORGE_LOCK_DIR` moves the GPU lock file (the tests use a temporary folder;
+`FORGE_LOCK_DIR` (or `--lock-dir`) moves the GPU lock file (the tests use a temporary folder;
 `tests/fake_comfy.py` sets it on import) and `FORGE_NVIDIA_SMI` replaces the `nvidia-smi`
 program (`tests/fake_comfy.py` points it to a missing file, so tests never ask the card).
 
@@ -136,11 +137,18 @@ environment not ready) or 3 (environment not verified: the server did not answer
   else of the factory is sent.
 - Never run Hunyuan outside the ComfyUI server while the server is open (both compete for
   the VRAM).
-- Machine-wide lock: a factory run holds `%LOCALAPPDATA%\art-forge\gpu.lock` (an
+- Machine-wide lock: a factory run holds `%USERPROFILE%\.art-forge\gpu.lock` (an
   operating-system lock, released when the process ends) for its whole run, and each local
   GPU job and each runner of `forge/local_gpu.py` takes it too (re-entrant in one process).
   A second factory refuses to start (exit 2); a lock left by a process that is gone is
-  taken over and logged.
+  taken over and logged. The folder is outside AppData on purpose: a packaged (MSIX)
+  desktop application redirects the AppData writes of the processes it starts (an agent's
+  shell, the tests) into a private copy, so a detached night and such a process locked two
+  different files (found on 2026-10-19); a lock file that resolves elsewhere than its path
+  is refused. The launcher passes its lock folder (`FORGE_LOCK_DIR` or the default) and its
+  server (`-Server`, else `COMFY_SERVER`) to the detached factory on the command line
+  (`--lock-dir`, `--server`): a process started through WMI does not inherit the console's
+  environment.
 - Local GPU jobs (kind `local_gpu`) run alone: only when the whole ComfyUI queue is empty
   (`queue_running` and `queue_pending`, any client), after `/free` and one more pass (the
   server unloads its models), after logging the processes `nvidia-smi` lists (waiting up

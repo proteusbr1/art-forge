@@ -678,6 +678,10 @@ class Factory(ComfyJobs, LocalSteps):
             print("another art-forge process holds the GPU lock (%s, lock file %s); stop it first" % (
                 gpu_lock.describe(ex.info), ex.path))
             return 2
+        except gpu_lock.GpuLockError as ex:
+            print("the GPU lock cannot be taken: %s" % ex)
+            self.log("the GPU lock cannot be taken: %s" % ex)
+            return 2
         with open(lock, "w") as f:
             f.write(str(os.getpid()))
         self.log("factory started (pid %d), %d jobs in the list, limit %d" % (os.getpid(), len(self.jobs), self.a.limit))

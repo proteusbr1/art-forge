@@ -11,7 +11,8 @@
 #   .\Run-Forge.ps1 -Out <folder> -Stop -Now                     stop now (queued prompts are collected on resume)
 #
 # Other parameters: -Foreground (runs in this console), -RetryFailed, -Limit <n>,
-# -Only <families>. The output folder belongs to the game and must be outside this
+# -Only <families>, -Server <url> (the ComfyUI address; default: COMFY_SERVER, else the
+# configuration's comfy_url). The output folder belongs to the game and must be outside this
 # repository. The machine configuration is forge.local.json next to this script.
 #
 # The running factory uses a snapshot of the program, the workflows, the local tools, the
@@ -25,8 +26,10 @@
 # local validation done, environment not checked). It reads only GET /object_info from the
 # server. Exit code 0 (valid and verified), 1 (problems or not ready), 3 (not verified).
 #
-# A run holds the machine-wide GPU lock (FORGE_LOCK_DIR, else %LOCALAPPDATA%\art-forge\gpu.lock):
-# a second factory on this machine refuses to start while one runs.
+# A run holds the machine-wide GPU lock (FORGE_LOCK_DIR, else %USERPROFILE%\.art-forge\gpu.lock):
+# a second factory on this machine refuses to start while one runs. A detached process does
+# not inherit this console's environment (WMI gives it the user's stored one), so the lock
+# folder and the server address are passed on its command line (--lock-dir, --server).
 param(
     [string]$Order = "",
     [string]$Out = "",
@@ -38,7 +41,8 @@ param(
     [switch]$Foreground,
     [switch]$RetryFailed,
     [int]$Limit = 6,
-    [string]$Only = ""
+    [string]$Only = "",
+    [string]$Server = ""
 )
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path $PSScriptRoot).Path
@@ -93,10 +97,17 @@ function Get-FactoryProcess {
     return $null
 }
 
+# The lock folder as the factory resolves it (forge/gpu_lock.py lock_dir): FORGE_LOCK_DIR,
+# else this user's default folder.
+function Get-LockDir {
+    $code = "import sys; sys.path.insert(0, sys.argv[1]); from forge import gpu_lock; print(gpu_lock.lock_dir())"
+    $dir = (& $python -c $code $root | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $dir -eq "") { throw "could not resolve the GPU lock folder" }
+    return $dir
+}
+
 function Get-LockPath {
-    $dir = $env:FORGE_LOCK_DIR
-    if (-not $dir) { $dir = Join-Path $env:LOCALAPPDATA "art-forge" }
-    return (Join-Path $dir "gpu.lock")
+    return (Join-Path (Get-LockDir) "gpu.lock")
 }
 
 if ($Status) {
@@ -165,6 +176,8 @@ $Order = (Resolve-Path $Order).Path
 $common = @("--order", $Order, "--out", $Out)
 if (Test-Path $configPath) { $common += @("--config", $configPath) }
 if ($Only -ne "") { $common += @("--only", $Only) }
+if ($Server -eq "" -and $env:COMFY_SERVER) { $Server = $env:COMFY_SERVER }
+if ($Server -ne "") { $common += @("--server", $Server) }
 
 if ($Check -or $Estimate) {
     $mode = "--estimate"
@@ -201,20 +214,31 @@ foreach ($sub in @("blender", "rig", "review_godot")) {
 }
 Copy-Item -Force (Join-Path $root "tools\blender\*.py") (Join-Path $programTools "blender")
 Copy-Item -Force (Join-Path $root "tools\rig\*.py") (Join-Path $programTools "rig")
-foreach ($f in @("project.godot", "main.tscn", "main.gd")) {
-    Copy-Item -Force (Join-Path $root "tools\review_godot\$f") (Join-Path $programTools "review_godot")
+# Every file of the Godot review project (the humanoid's sheet, the layout sheet, the item
+# sheet), not its .godot cache folder.
+Get-ChildItem -File (Join-Path $root "tools\review_godot") | ForEach-Object {
+    Copy-Item -Force $_.FullName (Join-Path $programTools "review_godot")
 }
+# The text-to-motion entry and the motion data the factory ships.
+if (Test-Path (Join-Path $root "tools\motion")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $programTools "motion") | Out-Null
+    Copy-Item -Force (Join-Path $root "tools\motion\*.py") (Join-Path $programTools "motion")
+}
+$programData = Join-Path $program "data"
+if (Test-Path $programData) { Remove-Item -Recurse -Force $programData }
+if (Test-Path (Join-Path $root "data")) { Copy-Item -Recurse -Force (Join-Path $root "data") $programData }
 Copy-Item -Force $Order (Join-Path $program "order.json")
 $orderBase = Split-Path -Parent $Order
 
 $factoryArgs = @("-m", "forge", "--order", "$program\order.json", "--order-base", $orderBase,
-    "--out", $Out, "--limit", "$Limit")
+    "--out", $Out, "--limit", "$Limit", "--lock-dir", (Get-LockDir))
 if (Test-Path $configPath) {
     Copy-Item -Force $configPath (Join-Path $program "forge.local.json")
     # Relative paths of the copy still resolve against this repository, as with -Check.
     $factoryArgs += @("--config", "$program\forge.local.json", "--config-base", $root)
 }
 if ($Only -ne "") { $factoryArgs += @("--only", $Only) }
+if ($Server -ne "") { $factoryArgs += @("--server", $Server) }
 if ($RetryFailed) { $factoryArgs += "--retry-failed" }
 
 if ($Foreground) {

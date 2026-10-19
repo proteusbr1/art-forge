@@ -194,6 +194,9 @@ def check_environment(order, config, server):
         who = gpu_lock.holder()
         if who is not None:
             env.notes.append("the GPU lock is held now by %s" % gpu_lock.describe(who))
+        why = gpu_lock.redirected(gpu_lock.lock_path())
+        if why:
+            env.problems.append(why)
     except OSError:
         pass
     info = None

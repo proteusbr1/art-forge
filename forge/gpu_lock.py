@@ -8,8 +8,15 @@ killed); the file also holds who took it (pid, what, since). A lock file whose o
 gone is taken over, and the taker logs it.
 
 The lock file is <folder>/gpu.lock, the folder being the FORGE_LOCK_DIR environment
-variable (the tests use a temporary folder), else %LOCALAPPDATA%\\art-forge on Windows,
+variable (the tests use a temporary folder; the launcher passes its own folder to the
+detached factory with --lock-dir, which sets it), else %USERPROFILE%\\.art-forge on Windows,
 else ~/.local/state/art-forge.
+
+Not under %LOCALAPPDATA%: a packaged (MSIX) desktop application redirects the AppData writes
+of every process it starts into its own private copy of AppData, while a factory started
+detached (WMI) writes the real one, so the same path named two different files and two
+processes could both "hold" the lock. A lock file that resolves to another file than the
+path asked for is refused (GpuLockError).
 
 gpu_processes() lists the processes on the card from nvidia-smi (None when nvidia-smi is
 missing or fails: the caller logs that they could not be listed and goes on).
@@ -37,6 +44,10 @@ class GpuBusy(RuntimeError):
         RuntimeError.__init__(self, "the GPU lock %s is held by %s" % (path, describe(self.info)))
 
 
+class GpuLockError(RuntimeError):
+    """The lock file cannot serve as the machine-wide lock (it is redirected elsewhere)."""
+
+
 def lock_dir(folder=None):
     if folder:
         return folder
@@ -46,14 +57,34 @@ def lock_dir(folder=None):
 
 
 def default_lock_dir():
-    """The lock folder without FORGE_LOCK_DIR: this user's machine-wide one."""
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        return os.path.join(os.environ["LOCALAPPDATA"], "art-forge")
+    """The lock folder without FORGE_LOCK_DIR: this user's machine-wide one, outside AppData
+    (see the module's note)."""
+    if os.name == "nt":
+        home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        return os.path.join(home, ".art-forge")
     return os.path.join(os.path.expanduser("~"), ".local", "state", "art-forge")
 
 
 def lock_path(folder=None):
     return os.path.join(lock_dir(folder), LOCK_NAME)
+
+
+def redirected(path):
+    """Why the existing file at `path` is not the file its folder names (a packaged
+    application's file system redirection), or None. Windows only: the file's final path
+    (what the system opened) against its folder's final path joined with its name."""
+    if os.name != "nt" or not os.path.exists(path):
+        return None
+    try:
+        got = os.path.realpath(path)
+        want = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+    except (OSError, ValueError):
+        return None
+    if os.path.normcase(got) != os.path.normcase(want):
+        return ("the lock file %s is redirected to %s (file system redirection of a packaged application): "
+                "processes started elsewhere would lock another file; use a folder outside AppData "
+                "(FORGE_LOCK_DIR)" % (path, got))
+    return None
 
 
 def describe(info):
@@ -119,6 +150,10 @@ def acquire(what, folder=None, log=None):
         return path
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    why = redirected(path)
+    if why:
+        os.close(fd)
+        raise GpuLockError(why)
     if not _try_lock(fd):
         info = _read_fd(fd)
         os.close(fd)

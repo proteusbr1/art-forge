@@ -3,6 +3,7 @@ anyone watching it.
 
   python -m forge --order <order.json> --out <dir> [--config forge.local.json] [--config-base DIR] [--limit 6]
                   [--estimate] [--check] [--only FAMILY[,FAMILY]] [--retry-failed] [--one-pass]
+                  [--server URL] [--lock-dir DIR]
   python -m forge --out <dir> --provenance <file.json>
 
 The order holds art-direction briefs per family and per piece and a recipe for each piece;
@@ -13,9 +14,9 @@ Behaviour:
 - Only the HTTP API of the server is used (/prompt, /queue, /history, /view,
   /upload/image, /free, /system_stats; --check reads only /object_info). Nothing in
   ComfyUI is installed, changed or restarted.
-- Machine-wide GPU coordination (forge/gpu_lock.py): a run holds a lock file under the
-  user's local application data for its whole length, so a second factory refuses to
-  start. Local GPU jobs run alone: the whole server queue empty, /free, other processes
+- Machine-wide GPU coordination (forge/gpu_lock.py): a run holds a lock file in the
+  user's profile (--lock-dir or FORGE_LOCK_DIR move it) for its whole length, so a second
+  factory refuses to start. Local GPU jobs run alone: the whole server queue empty, /free, other processes
   on the card listed from nvidia-smi; nothing is sent while they run.
 - At most --limit (6) of the factory's own prompts are in the server's queue at a time, so
   prompts of other users never wait behind hundreds of factory jobs. An interactive user
@@ -106,7 +107,13 @@ def main(argv=None):
     ap.add_argument("--one-pass", action="store_true", help="one scheduling pass, then exit")
     ap.add_argument("--provenance", default="", metavar="FILE",
                     help="write the provenance file of <out>/manifest.json, run nothing")
+    ap.add_argument("--lock-dir", default="", help="folder of the machine-wide GPU lock (sets FORGE_LOCK_DIR; the "
+                                                   "launcher passes its own to the detached factory)")
     a = ap.parse_args(argv)
+    if a.lock_dir:
+        # A detached process does not inherit the launcher's environment: the folder comes
+        # on the command line and the whole process (local GPU runners included) uses it.
+        os.environ["FORGE_LOCK_DIR"] = os.path.abspath(a.lock_dir)
     if a.provenance:
         # Reads <out> and writes only FILE: allowed for any folder (the smoke tests keep
         # theirs under local/).

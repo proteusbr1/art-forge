@@ -718,8 +718,9 @@ it actually passed and its provenance record). Such a job runs alone:
   A failure the tool says another try would repeat (the export's invalid bone map or a mesh
   it cannot export) is `failed` at once.
 
-Every factory run holds the machine-wide GPU lock file (`%LOCALAPPDATA%\art-forge\gpu.lock`,
-or the `FORGE_LOCK_DIR` folder) for its whole length, and each local GPU job and each
+Every factory run holds the machine-wide GPU lock file (`%USERPROFILE%\.art-forge\gpu.lock`,
+or the `FORGE_LOCK_DIR` folder, which the launcher passes to the detached factory with
+`--lock-dir`) for its whole length, and each local GPU job and each
 runner of `forge/local_gpu.py` takes it too, so two factories never share the card: the
 second refuses to start ("another art-forge process holds the GPU lock", exit 2). It is
 an operating-system lock: it is released when its process ends, even when the process is
