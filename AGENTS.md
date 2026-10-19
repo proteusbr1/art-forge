@@ -25,6 +25,11 @@ format in [docs/order.md](docs/order.md) and the design in
 - The workflows are stored byte for byte (`.gitattributes`): their SHA-256 enters every
   job's specification and provenance. Changing a workflow redoes the jobs that use it.
 - Documents describe only what exists and was verified.
+- **One working folder per agent.** More than one agent may work on this repository at the
+  same time. Each works in its own git worktree (`git worktree add <folder> <branch>`),
+  never in a folder another agent has checked out: do not switch, reset, stash or commit
+  on another agent's branch or checkout. Bring work into `main` with a fast-forward or a
+  merge made from your own worktree, and say in your report which commits you brought in.
 
 ## Layout
 
