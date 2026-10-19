@@ -14,9 +14,15 @@ from .config import missing_tools
 
 # Per-piece keys a family may set as defaults for its pieces. Dictionaries merge key by key
 # (the piece wins); the other keys are taken from the family when the piece has none.
-PIECE_KEYS = ("recipe", "variants", "stages", "skip", "params", "inputs", "review", "accept", "reserve")
+PIECE_KEYS = ("recipe", "variants", "stages", "skip", "params", "inputs", "review", "accept", "reserve",
+              "parts", "body", "motions")
 DICT_KEYS = ("stages", "params", "inputs", "review", "accept")
 FORMAT_VERSION = 1
+# The view each of these recipes needs in style (the text of its reference).
+VIEWS = {"articulated": "the view of every articulated reference (the whole object in its rest pose, "
+                        "plain background, even light)",
+         "creature": "the view of every creature reference (the whole body, limbs held away from the "
+                     "body, plain background, even light)"}
 
 
 def _resolve(path, base):
@@ -74,6 +80,12 @@ def merge_order(order, base):
             p = merge_piece(fam, piece)
             if isinstance(p.get("inputs"), dict):
                 p["inputs"] = {k: _resolve_input(v, base) for k, v in p["inputs"].items()}
+            if isinstance(p.get("motions"), list):
+                # A motion library named by a motions entry, like an input, is relative to the order.
+                for m in p["motions"]:
+                    lib = m.get("library") if isinstance(m, dict) else None
+                    if isinstance(lib, dict) and isinstance(lib.get("file"), str):
+                        lib["file"] = _resolve(lib["file"], base)
             pieces.append(p)
         fam["assets"] = pieces
         if isinstance(fam.get("inputs"), dict):
@@ -236,9 +248,13 @@ def _check_piece(where, recipe, piece, config, problems):
                     problems.append("%s: review %s must be %s, not %r" % (where, k, _type_text(stages.REVIEW_KEYS[k]), v))
     # Acceptance criteria and reserve variants: only a recipe with a final decision (humanoid).
     decides = "review" in stages.stages_of(recipe)
+    for key, users in stages.RECIPE_KEYS.items():
+        if key in piece and recipe not in users:
+            problems.append("%s: recipe %s does not use %s (used by: %s); remove it" % (
+                where, recipe, key, ", ".join(users)))
     if "accept" in piece:
         if decides:
-            acceptance.check(where, piece["accept"], problems)
+            acceptance.check(where, piece["accept"], problems, recipe)
         else:
             problems.append("%s: recipe %s has no acceptance criteria; remove accept" % (where, recipe))
     if "reserve" in piece:
@@ -290,6 +306,7 @@ def check_order(order, config, server=None):
         fams = []
     fam_ids = set()
     humanoids = False
+    recipes_used = set()
     for i, fam in enumerate(fams):
         if not isinstance(fam, dict):
             problems.append("families[%d] must be an object" % i)
@@ -319,11 +336,18 @@ def check_order(order, config, server=None):
             _check_piece("%s/%s" % (fid, pid), piece.get("recipe"), piece, config, problems)
             if piece.get("recipe") == "humanoid":
                 humanoids = True
+            if piece.get("recipe") in VIEWS:
+                recipes_used.add(piece["recipe"])
     style = order.get("style") if isinstance(order.get("style"), dict) else {}
     if humanoids and not (isinstance(style.get("view_humanoid"), str) and style["view_humanoid"].strip()):
         problems.append("style.view_humanoid is required when the order has a humanoid: the view of every "
                         "humanoid reference (full body in an A-pose, open empty hands held away from the body, "
                         "plain grey background, even light)")
+    for recipe in sorted(recipes_used):
+        key = "view_" + recipe
+        if not (isinstance(style.get(key), str) and style[key].strip()):
+            problems.append("style.%s is required when the order has a piece of recipe %s: %s" % (
+                key, recipe, VIEWS[recipe]))
     tasks = order.get("tasks", [])
     if not isinstance(tasks, list):
         problems.append("tasks must be a list")

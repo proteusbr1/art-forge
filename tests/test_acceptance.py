@@ -94,6 +94,8 @@ class ResponsibleStageTest(unittest.TestCase):
         ("the bake source does not line up with the game mesh (90th percentile ...)", "mesh"),
         ("the mesh has no UV layer", "unknown"),
         ("the mesh has 2 materials, 1 is expected", "unknown"),
+        ("part turret is empty: its region holds no geometry", "unknown"),
+        ("part turret has 3 open edges after its cut was closed", "parts"),
         ("something new", "unknown"),
     )
 

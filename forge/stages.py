@@ -251,6 +251,76 @@ HUMANOID_SKIPPABLE = ("pose", "paint", "rig", "export")
 # Piece params the humanoid recipe uses when the order does not give them.
 HUMANOID_PARAMS = {"tris": 25000, "texture": 2048}
 
+# The review sheet of the articulated and creature recipes: the factory lays the sheet out
+# (forge/sheet_layout.py) and Godot renders the cells (tools/review_godot/sheet.gd).
+LAYOUT_SHEET = {
+    "kind": "local_gpu", "tool": "sheet", "group": "local_gpu", "outputs": ("sheet", "layout"), "tools": ("godot",),
+    "settings": {
+        "front_height": {"type": "int", "min": 64, "max": 2048, "arg": "front_height",
+                         "meaning": "height of the large front view in pixels"},
+        "strip_frames": {"type": "int", "min": 1, "max": 32, "arg": "strip_frames",
+                         "meaning": "frames of each strip (a joint's sweep or a clip)"},
+    }}
+_FRONT_STAGES = {stage: dict(HUMANOID_OPTIONS[stage]) for stage in ("reference", "cutout", "mesh", "paint")}
+
+# Options of the articulated recipe (forge/recipes.py recipe_articulated): the whole object
+# is generated, then split into parts on pivots.
+ARTICULATED_OPTIONS = dict(_FRONT_STAGES, **{
+    "parts": {
+        "region_split": {
+            "kind": "local_gpu", "tool": "parts", "group": "local_gpu",
+            "outputs": ("glb", "model", "mesh_report", "frame"), "tools": ("blender_python",),
+            "params": ("tris", "height", "length", "front", "image_format"),
+            "meaning": "the painted mesh turned to face +Z, scaled, cut into the order's parts by their regions, "
+                       "each cut closed, each part's origin at its pivot, one node per part",
+            "settings": {
+                "min_share": {"type": "number", "min": 0.0, "max": 0.5, "arg": "min_share",
+                              "meaning": "a part with less of the surface than this share is flagged as tiny "
+                                         "(default 0.002)"},
+                "snap": {"type": "bool", "arg": "snap",
+                         "meaning": "square a footprint that came out turned by up to 30 degrees (default true)"},
+            }},
+    },
+    "review": {"layout_sheet": LAYOUT_SHEET},
+})
+ARTICULATED_DEFAULTS = {"reference": "qwen21_base", "cutout": "birefnet", "mesh": "trellis2", "paint": "hunyuan_paint",
+                        "parts": "region_split", "review": "layout_sheet"}
+ARTICULATED_SKIPPABLE = ("paint",)
+
+# Options of the creature recipe (forge/recipes.py recipe_creature): as the humanoid's up to
+# the rig; the export maps the predicted bones onto the order's body plan and makes the
+# order's motions.
+CREATURE_OPTIONS = dict(_FRONT_STAGES, **{
+    "pose": HUMANOID_OPTIONS["pose"],
+    "rig": HUMANOID_OPTIONS["rig"],
+    "export": {
+        "creature_export": {
+            "kind": "local_gpu", "tool": "creature_export", "group": "local_gpu",
+            "outputs": ("glb", "model", "bone_map", "mesh_report", "motion_report", "clips"),
+            "tools": ("blender_python",), "inputs": ("clips", "bone_map"),
+            "params": ("tris", "height", "length", "front", "image_format"),
+            "settings": {
+                "foot_slide_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "foot_slide_cm",
+                                  "meaning": "motion report threshold: foot slide in cm"},
+                "reach_shortfall_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "reach_shortfall_cm",
+                                       "meaning": "motion report threshold: IK reach shortfall in cm"},
+                "stretch_p95": {"type": "number", "min": 0.0, "max": 10.0, "arg": "stretch_p95",
+                                "meaning": "motion report threshold: 95th percentile of edge stretch"},
+                "below_ground_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "below_ground_cm",
+                                    "meaning": "motion report threshold: deepest vertex below the ground in cm"},
+            }},
+    },
+    "review": {"layout_sheet": LAYOUT_SHEET},
+})
+CREATURE_DEFAULTS = {"reference": "qwen21_base", "pose": "qwen_edit_2511", "cutout": "birefnet", "mesh": "trellis2",
+                     "paint": "hunyuan_paint", "rig": "skintokens", "export": "creature_export",
+                     "review": "layout_sheet"}
+CREATURE_SKIPPABLE = ("pose", "paint")
+STAGE_ORDER = {
+    "articulated": ("reference", "cutout", "mesh", "paint", "parts", "review"),
+    "creature": ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "review"),
+}
+
 # recipe -> stage -> {"default": option, "skippable": bool, "options": {option: fields}}.
 # The core recipes have one option per stage (the models they always used); the stages
 # exist so that an order can give their settings.
@@ -266,6 +336,10 @@ CATALOGUE = {
     "figure": {"concept": _CONCEPT, "mesh": _MESH},
     "humanoid": {stage: {"default": HUMANOID_DEFAULTS[stage], "skippable": stage in HUMANOID_SKIPPABLE,
                          "options": opts} for stage, opts in HUMANOID_OPTIONS.items()},
+    "articulated": {stage: {"default": ARTICULATED_DEFAULTS[stage], "skippable": stage in ARTICULATED_SKIPPABLE,
+                            "options": ARTICULATED_OPTIONS[stage]} for stage in STAGE_ORDER["articulated"]},
+    "creature": {stage: {"default": CREATURE_DEFAULTS[stage], "skippable": stage in CREATURE_SKIPPABLE,
+                         "options": CREATURE_OPTIONS[stage]} for stage in STAGE_ORDER["creature"]},
 }
 
 # Inputs of a workflow that an implementation is known to ignore or override: the
@@ -291,8 +365,11 @@ PARAMS = {
     "widen": ("number", "body width scale"),
     "image_format": ("choice", "image formats of an exported GLB: lossless (every map PNG) or compact "
                                "(base colour JPEG at quality 92, the technical maps PNG)"),
+    "length": ("number", "length of an object or creature in metres, front to back (scales it instead of height)"),
+    "front": ("choice", "the glTF axis the generated mesh's front points along (+z: toward the reference's camera); "
+                        "the exported model faces +Z"),
 }
-PARAM_CHOICES = {"image_format": ("lossless", "compact")}
+PARAM_CHOICES = {"image_format": ("lossless", "compact"), "front": ("+z", "-z", "+x", "-x")}
 
 # Params and inputs a recipe reads itself (besides those of its stage options).
 RECIPE_PARAMS = {
@@ -305,6 +382,8 @@ RECIPE_INPUTS = {
     "object_3d": ("reference",),
     "prop": ("reference",),
 }
+# Piece keys only some recipes read (the order check refuses them elsewhere).
+RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("creature",)}
 # Inputs that are folders (they enter the job specification by the files inside them);
 # every other input is a file.
 FOLDER_INPUTS = ("items",)

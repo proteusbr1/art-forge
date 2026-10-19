@@ -1,0 +1,53 @@
+{
+ "version": 1,
+ "note": "Generic sample order of the articulated recipe: a tracked vehicle with a turning turret and an elevating barrel, a hovering disc whose plates open, and a transport with tilting rotor nacelles, spinning rotors, a rear ramp and a sliding side door. Regions are boxes in normalised object coordinates [side, forward, up].",
+ "style": {
+  "global": "Original vehicle design, clean readable shapes, believable engineering, high detail.",
+  "view_articulated": "The whole machine standing in its rest position, front three-quarter view from slightly above, the entire machine in frame with a margin, plain neutral grey background, even soft light."
+ },
+ "families": [
+  {"id": "machines", "recipe": "articulated", "variants": 3,
+   "params": {"tris": 30000, "texture": 2048, "front": "+z"},
+   "review": {"pitch": 30, "directions": 8, "figure_height": 96, "front": true},
+   "assets": [
+    {"id": "tracked_vehicle", "params": {"length": 6.5},
+     "brief": "A tracked armoured vehicle with a low hull on two tracks and a turret with a long barrel pointing forward.",
+     "parts": [
+      {"id": "hull"},
+      {"id": "turret", "parent": "hull", "find": {"box": [[-0.42, -0.4, [0.45, 0.7]], [0.42, null, null]]},
+       "joint": {"kind": "turn", "axis": "up", "pivot": "cut", "range": [-180, 180]}},
+      {"id": "barrel", "parent": "turret", "find": {"box": [[-0.08, 0.25, 0.55], [0.08, null, 0.95]]},
+       "joint": {"kind": "hinge", "axis": "-side", "pivot": "back", "range": [-8, 20]}}
+     ]},
+    {"id": "hover_disc", "params": {"height": 1.6},
+     "brief": "A hovering disc-shaped machine with two armoured side plates around a central core and a small emitter at the front.",
+     "parts": [
+      {"id": "core"},
+      {"id": "plate_left", "parent": "core", "find": {"box": [[0.2, null, 0.2], [null, null, null]]},
+       "joint": {"kind": "hinge", "axis": "forward", "pivot": "cut", "range": [0, 70]}},
+      {"id": "plate_right", "parent": "core", "find": {"box": [[null, null, 0.2], [-0.2, null, null]]},
+       "joint": {"kind": "hinge", "axis": "-forward", "pivot": "cut", "range": [0, 70]}},
+      {"id": "emitter", "parent": "core", "find": {"box": [[-0.12, 0.35, 0.3], [0.12, null, 0.7]]},
+       "joint": {"kind": "slide", "axis": "forward", "pivot": "cut", "range": [0, 0.3]}}
+     ]},
+    {"id": "transport", "params": {"length": 14.0},
+     "brief": "A twin-rotor transport aircraft with a boxy fuselage, short wings ending in rotor nacelles, a rear loading ramp and a side door.",
+     "parts": [
+      {"id": "fuselage"},
+      {"id": "nacelle_left", "parent": "fuselage", "find": {"box": [[0.38, -0.2, 0.4], [null, 0.2, null]]},
+       "joint": {"kind": "hinge", "axis": "side", "pivot": "cut", "range": [0, 90]}},
+      {"id": "rotor_left", "parent": "nacelle_left", "find": {"box": [[0.38, -0.2, 0.85], [null, 0.2, null]]},
+       "joint": {"kind": "spin", "axis": "up", "pivot": "center"}},
+      {"id": "nacelle_right", "parent": "fuselage", "find": {"box": [[null, -0.2, 0.4], [-0.38, 0.2, null]]},
+       "joint": {"kind": "hinge", "axis": "side", "pivot": "cut", "range": [0, 90]}},
+      {"id": "rotor_right", "parent": "nacelle_right", "find": {"box": [[null, -0.2, 0.85], [-0.38, 0.2, null]]},
+       "joint": {"kind": "spin", "axis": "-up", "pivot": "center"}},
+      {"id": "ramp", "parent": "fuselage", "find": {"box": [[-0.15, null, 0.0], [0.15, -0.44, 0.45]]},
+       "joint": {"kind": "hinge", "axis": "side", "pivot": "top", "range": [0, 60]}},
+      {"id": "door", "parent": "fuselage", "find": {"box": [[0.12, 0.15, 0.1], [0.2, 0.3, 0.4]]},
+       "joint": {"kind": "slide", "axis": "-forward", "pivot": "center", "range": [0, 1.2]}}
+     ]}
+   ]}
+ ],
+ "tasks": []
+}

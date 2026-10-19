@@ -593,15 +593,17 @@ def make_collapse(rig, plan, p, t, ctx):
     R[rig.root] = rot(axis, p["tilt"] * e)
     for role in _mapped(rig, ctx["groups"]["other"]):
         _bend(R, rig, rig.roles[role], p["limp"] * e, flex_axis)
-    # The drop that puts the lowest bone `lie` body heights above the ground at the end.
-    if "drop" not in ctx:
-        Rf = {rig.root: rot(axis, p["tilt"])}
-        for role in _mapped(rig, ctx["groups"]["other"]):
-            _bend(Rf, rig, rig.roles[role], p["limp"], flex_axis)
-        _, _, heads, tails = rig.fk(Rf, np.zeros(3))
-        low = min(float(heads[:, 2].min()), float(tails[:, 2].min()))
-        ctx["drop"] = low - p["lie"] * rig.height
-    return R, UP * (-ctx["drop"] * e)
+    # The body is lowered (or raised) every frame so that its lowest bone stays on a floor
+    # going from the rest pose's lowest bone to `lie` body heights at the end: it never sinks
+    # through the ground while it turns.
+    if "low_rest" not in ctx:
+        _, _, heads, tails = rig.fk({}, np.zeros(3))
+        ctx["low_rest"] = min(float(heads[:, 2].min()), float(tails[:, 2].min()))
+    _, _, heads, tails = rig.fk(R, np.zeros(3))
+    low = min(float(heads[:, 2].min()), float(tails[:, 2].min()))
+    floor = ctx["low_rest"] + (p["lie"] * rig.height - ctx["low_rest"]) * e
+    ctx["drop"] = low - floor
+    return R, UP * (floor - low)
 
 
 # ---- gait ----------------------------------------------------------------------------------
@@ -783,9 +785,18 @@ def generate(rig, plan, clip):
         poses, offsets, extra = make_gait_clip(rig, plan, clip, p, ctx, n, loop)
     else:
         poses, offsets = [], []
+        _, _, heads, tails = rig.fk({}, np.zeros(3))
+        low_rest = min(float(heads[:, 2].min()), float(tails[:, 2].min()))
         for i in range(n):
             t = i / n if loop else i / max(n - 1, 1)
             R, off = MAKERS[kind](rig, plan, p, t, ctx)
+            if kind != "collapse":
+                # No pose sinks below the rest pose's lowest bone (a bend that would push a
+                # leg into the ground lifts the body instead).
+                _, _, heads, tails = rig.fk(R, off)
+                low = min(float(heads[:, 2].min()), float(tails[:, 2].min()))
+                if low < low_rest:
+                    off = np.asarray(off, dtype=np.float64) + UP * (low_rest - low)
             poses.append(R)
             offsets.append(off)
         if kind == "undulate" and p["travel"]:

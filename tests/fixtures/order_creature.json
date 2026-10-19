@@ -1,0 +1,79 @@
+{
+ "version": 1,
+ "note": "Generic sample order of the creature recipe: a serpent with a humanoid torso (body plan), a four-legged beast (body plan, one clip from a role-space library), a two-legged walker with reverse ankles (a skeleton template), and two limbless blobs made by the figure recipe (no skeleton: the game animates them). Motions follow the motions list: name, source, frames, fps, loop, settings.",
+ "style": {
+  "global": "Original creature design, clean readable shapes, believable anatomy, high detail.",
+  "view_creature": "The whole creature standing in a neutral pose, front view facing the camera, limbs held slightly away from the body, the entire body in frame with a margin, plain neutral grey background, even soft light.",
+  "view_figure": "A single subject seen from the front, the entire subject in frame, plain neutral grey background, even soft light."
+ },
+ "families": [
+  {"id": "fauna", "recipe": "creature", "variants": 3, "reserve": 1,
+   "params": {"tris": 25000, "texture": 2048},
+   "review": {"pitch": 30, "directions": 8, "figure_height": 96, "front": true},
+   "motions": [
+    {"name": "idle_none", "source": "procedural", "kind": "breathe", "frames": 40, "fps": 20},
+    {"name": "walk_none", "source": "procedural", "kind": "gait", "frames": 24, "fps": 24},
+    {"name": "attack", "source": "procedural", "kind": "strike", "frames": 20, "fps": 20},
+    {"name": "hit", "source": "procedural", "kind": "flinch", "frames": 12, "fps": 20},
+    {"name": "collapse", "source": "procedural", "kind": "collapse", "frames": 40, "fps": 20}
+   ],
+   "assets": [
+    {"id": "serpent", "params": {"height": 1.9},
+     "brief": "A serpent-bodied creature with a scaled humanoid torso, two arms and a long tail lying on the ground behind it.",
+     "body": {"chains": [{"id": "spine", "from": "root", "toward": "up"},
+                         {"id": "neck", "from": "spine", "toward": "up", "optional": true},
+                         {"id": "tail", "from": "root", "toward": "back"},
+                         {"id": "arm", "from": "spine", "toward": "side", "pairs": 1, "joints": 3,
+                          "bends": ["front", "front", "none"]}],
+              "holds": {"right": "arm_r0"}},
+     "motions": [
+      {"name": "idle_none", "source": "procedural", "kind": "breathe", "frames": 40, "fps": 20},
+      {"name": "walk_none", "source": "procedural", "kind": "undulate", "frames": 24, "fps": 24,
+       "settings": {"waves": 1.2, "amplitude": 20, "travel": 0.3}},
+      {"name": "aim_rifle", "source": "procedural", "kind": "aim", "frames": 11, "fps": 20, "holds": "rifle"},
+      {"name": "hit", "source": "procedural", "kind": "flinch", "frames": 12, "fps": 20},
+      {"name": "collapse", "source": "procedural", "kind": "collapse", "frames": 40, "fps": 20,
+       "settings": {"fall": "left"}}
+     ]},
+    {"id": "beast", "params": {"length": 2.2},
+     "brief": "A four-legged predator with a long neck, a heavy jaw and a short tail.",
+     "inputs": {"clips": "creature/clips.json"},
+     "body": {"chains": [{"id": "spine", "from": "root", "toward": "front"},
+                         {"id": "neck", "from": "spine", "toward": "front"},
+                         {"id": "foreleg", "from": "spine", "toward": "down", "pairs": 1, "joints": 3,
+                          "bends": ["back", "front", "none"]},
+                         {"id": "hindleg", "from": "root", "toward": "down", "pairs": 1, "joints": 3,
+                          "bends": ["front", "back", "none"]},
+                         {"id": "tail", "from": "root", "toward": "back", "optional": true}]},
+     "motions": [
+      {"name": "idle_none", "source": "library", "library": {"clip": "idle"}, "frames": 24, "fps": 12, "loop": true},
+      {"name": "walk_none", "source": "procedural", "kind": "gait", "frames": 24, "fps": 24},
+      {"name": "attack", "source": "procedural", "kind": "strike", "frames": 20, "fps": 20,
+       "settings": {"chains": ["neck"], "windup": 15, "reach": 30}},
+      {"name": "collapse", "source": "procedural", "kind": "collapse", "frames": 40, "fps": 20,
+       "settings": {"fall": "right"}}
+     ]},
+    {"id": "walker", "params": {"height": 2.1},
+     "brief": "A tall two-legged creature with reverse-jointed legs, long feet and a forward-leaning body.",
+     "body": {"template": {"bones": [
+      {"name": "pelvis", "parent": null, "head": [0, 0, 0.55], "tail": [0, 0, 0.6], "role": "root"},
+      {"name": "chest", "parent": "pelvis", "head": [0, 0, 0.6], "tail": [0, 0.12, 0.85], "role": "spine"},
+      {"name": "head", "parent": "chest", "head": [0, 0.12, 0.85], "tail": [0, 0.25, 0.97], "role": "neck"},
+      {"name": "thigh_l", "parent": "pelvis", "head": [0.08, 0, 0.55], "tail": [0.09, 0.08, 0.36], "role": "leg_l0", "bend": "front"},
+      {"name": "shin_l", "parent": "thigh_l", "head": [0.09, 0.08, 0.36], "tail": [0.09, -0.06, 0.17], "role": "leg_l0", "bend": "back"},
+      {"name": "foot_l", "parent": "shin_l", "head": [0.09, -0.06, 0.17], "tail": [0.09, 0.0, 0.02], "role": "leg_l0", "bend": "front"},
+      {"name": "toe_l", "parent": "foot_l", "head": [0.09, 0.0, 0.02], "tail": [0.09, 0.08, 0.0], "role": "leg_l0"},
+      {"name": "thigh_r", "parent": "pelvis", "head": [-0.08, 0, 0.55], "tail": [-0.09, 0.08, 0.36], "role": "leg_r0", "bend": "front"},
+      {"name": "shin_r", "parent": "thigh_r", "head": [-0.09, 0.08, 0.36], "tail": [-0.09, -0.06, 0.17], "role": "leg_r0", "bend": "back"},
+      {"name": "foot_r", "parent": "shin_r", "head": [-0.09, -0.06, 0.17], "tail": [-0.09, 0.0, 0.02], "role": "leg_r0", "bend": "front"},
+      {"name": "toe_r", "parent": "foot_r", "head": [-0.09, 0.0, 0.02], "tail": [-0.09, 0.08, 0.0], "role": "leg_r0"}]}}}
+   ]},
+  {"id": "blobs", "recipe": "figure", "variants": 4,
+   "params": {"tris": 15000, "texture": 2048},
+   "assets": [
+    {"id": "floating_blob", "brief": "A floating translucent blob with a dense glowing core and soft lobes."},
+    {"id": "crawling_blob", "brief": "A low crawling blob of dark glossy matter with a rippled surface."}
+   ]}
+ ],
+ "tasks": []
+}

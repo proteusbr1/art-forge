@@ -457,12 +457,271 @@ def check_humanoid(where, piece, problems):
             problems.append("%s: params.texture %d: TRELLIS.2's bake takes 256 to 8192, a multiple of 256" % (where, tex))
 
 
+# --- articulated and creature: whole object or body generated per variant, then split into
+# parts on pivots (articulated) or rigged and animated in the roles of a body plan (creature)
+
+ARTICULATED_SIZE = (1536, 1024)
+CREATURE_SIZE = (1024, 1536)
+# Piece params the local tools of these recipes take (when the order gives them).
+PARTS_PARAMS = ("tris", "height", "length", "front", "image_format")
+
+
+def _front_chain(fam, a, st, recipe, s, add, comfy, opts, fields, size, view):
+    """The stages a variant of the articulated and creature recipes shares with the humanoid:
+    reference, pose (creature), cutout, mesh and paint. Returns (mesh job, painted reference)."""
+    inputs = a.get("inputs") or {}
+    tris = param(a, "tris", "faces", stages.HUMANOID_PARAMS["tris"])
+    tex = param(a, "texture", "texture_size", stages.HUMANOID_PARAMS["texture"])
+    w, h = a.get("size", fam.get("size", size))
+    text = prompt_of(st, fam, a, a.get("view", fam.get("view", view)))
+    edit_text = st.get("pose_" + recipe) or st[view]
+    cutout_text = st.get("cutout_" + recipe) or st[view]
+    keep_texture = opts.get("paint", "trellis2_texture") == "trellis2_texture"
+    mask = rgba = None
+    if opts["reference"] == "input_image":
+        image = {"file": inputs.get("reference")}
+        rgba = image
+    else:
+        values = {"$PROMPT$": text, "$SEED$": s}
+        if opts["reference"] != "qwen21_turbo":
+            values.update({"$WIDTH$": w, "$HEIGHT$": h})
+        if opts["reference"] != "klein":
+            values["$NEGATIVE$"] = ""
+        ref = comfy("reference", values)
+        image = {"ref": ref, "role": "rgb"}
+        if "mask" in fields["reference"]["outputs"]:
+            mask = {"ref": ref, "role": "mask"}
+        else:
+            rgba = {"ref": ref, "role": "rgba"}
+    if "pose" in opts:
+        pose = comfy("pose", dict(EDIT_VALUES, **{"$IMAGE1$": image, "$PROMPT$": edit_text, "$SEED$": s}))
+        image, mask, rgba = {"ref": pose, "role": "rgb"}, {"ref": pose, "role": "mask"}, None
+    if opts["cutout"] == "birefnet":
+        ins = {"image": image, "mask": mask} if mask else {"image": rgba or image}
+        cut = add("cutout", {"kind": "cutout", "inputs": ins})
+    else:
+        cut = comfy("cutout", dict(EDIT_VALUES, **{"$IMAGE1$": image, "$PROMPT$": cutout_text, "$SEED$": s}))
+    cut_ref = {"ref": cut, "role": "rgba"}
+    if opts["mesh"] == "trellis2":
+        roles = {"403": "game_mesh", "405": "raw_mesh"}
+        extra = {}
+        if keep_texture:
+            roles["322"] = "painted_mesh"
+            extra["set"] = {"147.texture_size": tex, "196.resolution": tex}
+        else:
+            extra["drop"] = list(stages.TRELLIS2_TEXTURE_NODES)
+        mesh = comfy("mesh", {"$IMAGE$": cut_ref, "$SEED$": s, "$TRIS$": tris}, roles=roles, **extra)
+    else:
+        mesh = comfy("mesh", {"$IMAGE$": cut_ref, "$SEED$": s, "$FACES$": tris},
+                     drop=list(stages.HUNYUAN21_PAINT_NODES))
+    last = mesh
+    if opts.get("paint") == "hunyuan_paint":
+        last = comfy("paint", {"$IMAGE$": cut_ref, "$SEED$": s, "$TEXTURE$": tex,
+                               "$MESH$": {"ref": mesh, "role": "game_mesh", "transport": "local_path"}},
+                     mesh_role="painted_mesh",
+                     set_on_failure={"9.texture_size": min(tex, 2048), "9.view_size": 512})
+    return mesh, {"ref": last, "role": "painted_mesh"}
+
+
+def _variants(fam, a, st, recipe, size, view, tail):
+    """Every variant's chain (the shared front, then `tail(add, v, mesh, painted, opts)`,
+    which adds the recipe's own last stages and returns (last job, its role)), then the review
+    sheet and the final decision, with reserve variants as the humanoid's."""
+    fid, aid = fam["id"], a["id"]
+    opts = stages.chosen_options(recipe, a)
+    fields = {stage: stages.option(recipe, stage, o) for stage, o in opts.items()}
+    jobs, variants = [], []
+    n = variants_of(fam, a, 4)
+    final_id = "%s/%s/final" % (fid, aid)
+    hold = {"until": final_id, "outcome": acceptance.NO_VARIANT_PASSED}
+    for i, s in enumerate(seeds_for(fid + "/" + aid, n + reserve_of(a))):
+        v = "v%d" % s
+        chain = []
+        reserve = i >= n
+
+        def add(stage, job, v=v, chain=chain, reserve=reserve):
+            job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, stage), "stage": stage, "variant": v})
+            if reserve:
+                job["hold"] = dict(hold)
+            job.setdefault("group", fields[stage]["group"])
+            if fields[stage].get("ignored"):
+                job["ignored"] = dict(fields[stage]["ignored"])
+            jobs.append(job)
+            chain.append(job["id"])
+            return job["id"]
+
+        def comfy(stage, values, add=add, **extra):
+            f = fields[stage]
+            job = {"kind": "comfy", "workflow": f["workflow"], "values": values, "roles": dict(f["roles"])}
+            if f.get("heavy"):
+                job["heavy"] = True
+            job.update(extra)
+            return add(stage, job)
+
+        mesh, painted = _front_chain(fam, a, st, recipe, s, add, comfy, opts, fields, size, view)
+        last, role = tail(add, v, mesh, painted, opts)
+        entry = {"variant": v, "job": last, "role": role, "chain": list(chain)}
+        if reserve:
+            entry["reserve"] = True
+        variants.append(entry)
+    decision = {"accept": acceptance.limits(a.get("accept"), recipe),
+                "paint_stage": "paint" if "paint" in opts else "mesh"}
+    main, extra = variants[:n], variants[n:]
+
+    def decide(suffix, covered, held):
+        ids = [x["job"] for x in covered]
+        review = {"id": "%s/%s/review%s" % (fid, aid, suffix), "kind": "local_gpu", "tool": "sheet",
+                  "stage": "review", "group": fields["review"]["group"], "partial": True, "even_if_none": True,
+                  "from": ids, "variants": covered, "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))}
+        review.update(decision)
+        final = dict({"id": "%s/%s/final%s" % (fid, aid, suffix), "kind": "final", "group": "local",
+                      "partial": True, "even_if_none": True, "from": ids, "variants": covered,
+                      "reserve": {"variants": [x["variant"] for x in extra],
+                                  "decision": "%s/%s/final_reserve" % (fid, aid) if extra and not held else None}},
+                     **decision)
+        if held:
+            review["hold"], final["hold"] = dict(hold), dict(hold)
+        jobs.extend([review, final])
+    decide("", main, False)
+    if extra:
+        decide("_reserve", variants, True)
+    return jobs
+
+
+def _tool_params(a):
+    p = a.get("params") or {}
+    return {k: p[k] for k in PARTS_PARAMS if k in p}
+
+
+def recipe_articulated(fam, a, st):
+    """Rigid parts on pivots. For each seed of seeds_for(family/piece, variants) a chain
+    <family>/<piece>/v<seed>/<stage>: reference (the whole object) -> cutout -> mesh -> paint
+    -> parts (the painted mesh split into the order's parts, one node per part, each origin
+    at its pivot; tools/blender/articulated_export.py); then one review sheet and the final
+    decision. The whole object is generated once and the parts derived from it, so they are
+    one design."""
+
+    def tail(add, v, mesh, painted, opts):
+        ins = {"mesh": painted}
+        if opts.get("paint") == "hunyuan_paint":
+            ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
+        args = dict({"name": a["id"], "parts": a.get("parts")}, **_tool_params(a))
+        return add("parts", {"kind": "local_gpu", "tool": "parts", "inputs": ins, "args": args}), "glb"
+    return _variants(fam, a, st, "articulated", ARTICULATED_SIZE, "view_articulated", tail)
+
+
+def recipe_creature(fam, a, st):
+    """Skinned, with its own skeleton. Per variant: reference -> pose -> cutout -> mesh ->
+    paint -> rig (SkinTokens or UniRig: a skeleton of its own) -> export (the predicted bones
+    mapped onto the order's body plan or template by the tree and the geometry, the order's
+    motions made in those roles; tools/blender/creature_export.py); then one review sheet and
+    the final decision."""
+    inputs = a.get("inputs") or {}
+    from . import tool_specs
+
+    def tail(add, v, mesh, painted, opts):
+        args = {"method": opts["rig"], "seed": RIG_SEED}
+        if opts["rig"] == "skintokens":
+            args.update(beams=10, postprocess=False)
+        rig = add("rig", {"kind": "local_gpu", "tool": "rig", "inputs": {"mesh": painted}, "args": args})
+        ins = {"rig": {"ref": rig, "role": "rig"}}
+        if opts.get("paint") == "hunyuan_paint":
+            ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
+        if inputs.get("clips"):
+            ins["clips"] = {"file": inputs["clips"]}
+        libs = tool_specs.library_files(a.get("motions"))
+        if libs:
+            ins["libraries"] = [{"file": f} for f in libs]
+        bone_map = variant_bone_map(inputs.get("bone_map"), v)
+        if bone_map:
+            ins["bone_map"] = {"file": bone_map}
+        args = dict({"name": a["id"], "body": a.get("body"), "motions": a.get("motions") or []}, **_tool_params(a))
+        return add("export", {"kind": "local_gpu", "tool": "creature_export", "inputs": ins, "args": args}), "glb"
+    return _variants(fam, a, st, "creature", CREATURE_SIZE, "view_creature", tail)
+
+
+def _check_front(where, recipe, piece, problems):
+    """The stage combinations of the shared front stages (as the humanoid's)."""
+    opts = stages.chosen_options(recipe, piece)
+    inputs = piece.get("inputs") or {}
+    params = piece.get("params") or {}
+    if opts["mesh"] != "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture":
+        problems.append("%s: skipping paint keeps TRELLIS.2's own texture, which needs mesh trellis2 (mesh %s has "
+                        "none: use paint hunyuan_paint)" % (where, opts["mesh"]))
+    if opts["reference"] == "input_image":
+        path = inputs.get("reference")
+        if not path:
+            problems.append("%s: reference input_image needs inputs.reference (a picture of the subject)" % where)
+        elif "pose" not in opts and opts["cutout"] == "birefnet" and os.path.isfile(path):
+            why = _alpha_problem(path)
+            if why:
+                problems.append("%s: inputs.reference %s: with cutout birefnet%s it must have a transparent "
+                                "background (or use cutout qwen_edit_character)" % (
+                                    where, why, " and pose skipped" if recipe == "creature" else ""))
+    tex = params.get("texture")
+    if isinstance(tex, int) and not isinstance(tex, bool):
+        if opts.get("paint") == "hunyuan_paint" and not (512 <= tex <= 4096 and tex % 512 == 0):
+            problems.append("%s: params.texture %d: Hunyuan3D Paint takes 512 to 4096, a multiple of 512" % (where, tex))
+        elif opts["mesh"] == "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture" \
+                and not (256 <= tex <= 8192 and tex % 256 == 0):
+            problems.append("%s: params.texture %d: TRELLIS.2's bake takes 256 to 8192, a multiple of 256" % (where, tex))
+    if "height" in params and "length" in params:
+        problems.append("%s: give params.height or params.length, not both (the model is scaled by one)" % where)
+
+
+def check_articulated(where, piece, problems):
+    from . import tool_specs
+    _check_front(where, "articulated", piece, problems)
+    if "parts" not in piece:
+        problems.append("%s: parts is required (the object's parts with their regions and joints)" % where)
+    else:
+        problems.extend("%s: %s" % (where, p) for p in tool_specs.check_parts(piece["parts"]))
+
+
+def check_creature(where, piece, problems):
+    from . import tool_specs
+    _check_front(where, "creature", piece, problems)
+    if "body" not in piece:
+        problems.append("%s: body is required (the body plan or the skeleton template)" % where)
+        return
+    found = tool_specs.check_body(piece["body"])
+    problems.extend("%s: %s" % (where, p) for p in found)
+    if found:
+        return
+    inputs = piece.get("inputs") or {}
+    library = None
+    if isinstance(inputs.get("clips"), str) and os.path.isfile(inputs["clips"]):
+        library, why = tool_specs.read_library(inputs["clips"])
+        problems.extend("%s: inputs.clips: %s" % (where, p) for p in why)
+        if why:
+            library = None
+    motions = piece.get("motions", [])
+    uses_default = any(isinstance(m, dict) and m.get("source") == "library" and
+                       "file" not in (m.get("library") or {}) for m in motions or [])
+    if uses_default and not inputs.get("clips"):
+        problems.append("%s: a motion of source library without library.file needs inputs.clips" % where)
+    problems.extend("%s: %s" % (where, p) for p in tool_specs.check_motions(motions, piece["body"], library))
+    for f in tool_specs.library_files(motions):
+        if not os.path.isfile(f):
+            problems.append("%s: motion library not found: %s" % (where, f))
+        else:
+            problems.extend("%s: %s: %s" % (where, f, p) for p in tool_specs.read_library(f)[1])
+    bone_map = inputs.get("bone_map")
+    if isinstance(bone_map, dict):
+        names = ["v%d" % s for s in seeds_for(where, variants_of({}, piece, 4) + reserve_of(piece))]
+        for key in bone_map:
+            if key not in names and "v" + str(key) not in names:
+                problems.append("%s: inputs.bone_map names %r, which is no variant of this piece (variants: %s)" % (
+                    where, key, ", ".join(names)))
+
+
 RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "figure": recipe_figure,
            "object_3d": recipe_object_3d, "concept": recipe_concept, "prop": recipe_prop,
-           "material": recipe_material, "humanoid": recipe_humanoid}
+           "material": recipe_material, "humanoid": recipe_humanoid, "articulated": recipe_articulated,
+           "creature": recipe_creature}
 # Recipe-specific checks of a piece, called by forge.order.check_order with the piece's
 # valid stages and skips: check(where, piece, problems).
-PIECE_CHECKS = {"humanoid": check_humanoid}
+PIECE_CHECKS = {"humanoid": check_humanoid, "articulated": check_articulated, "creature": check_creature}
 
 
 def expand(job_list, only=None):

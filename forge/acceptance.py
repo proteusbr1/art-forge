@@ -33,11 +33,27 @@ ACCEPT = {
                                              "any fit, metres (a source that does not line up is already a "
                                              "mesh flag)"),
 }
+# Measures only other recipes have: the creature's motion report measures how deep its body
+# goes below the ground. Kept apart from ACCEPT so a humanoid's limits stay as they were.
+EXTRA_ACCEPT = {
+    "below_ground_cm": ("number", None, "deepest vertex below the ground over the clips, cm"),
+}
+ALL_ACCEPT = dict(ACCEPT, **EXTRA_ACCEPT)
+# The limits each recipe with a decision has, in this order.
+RECIPE_ACCEPT = {
+    "humanoid": tuple(ACCEPT),
+    "creature": ("mesh_flags", "missing_clips", "foot_slide_cm", "reach_shortfall_cm", "stretch_p95",
+                 "below_ground_cm"),
+    "articulated": ("mesh_flags",),
+}
+# Every motion measure a report may hold (the humanoid's, then the creature's).
+MOTION_MEASURES = dict(MOTION_DEFAULTS, below_ground_cm=3.0)
 CLASSES = ("acceptable", "rejected")
 NO_VARIANT_PASSED = "no_variant_passed"
 # Stages in the order of the humanoid chain, then the motion library; "unknown" last. Ties of
 # the most frequent responsible stage go to the earliest.
-STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "review", "library", "unknown")
+STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "parts", "review", "library",
+               "unknown")
 
 # The stage held responsible for a mesh flag (mesh_report.json "flags"), by its text: the
 # first matching row wins; no row: "unknown". "paint" is the stage that painted the mesh
@@ -56,6 +72,8 @@ MESH_FLAG_STAGES = (
     (r"bake source does not line up", "mesh", "the raw mesh and the game mesh both come from the mesh stage"),
     (r"has no UV layer", "unknown", "the UVs may be lost by the paint or the rig stage"),
     (r"materials, 1 is expected", "unknown", "the materials may be split by the paint or the rig stage"),
+    (r"^part \S+ (is empty|is tiny)", "unknown", "the order's region or the generated layout may be at fault"),
+    (r"^part \S+ ", "parts", "the parts stage cuts the parts and closes their cuts"),
 )
 # The stage held responsible for the other kinds of violation.
 RESPONSIBLE = {
@@ -78,29 +96,30 @@ def is_number(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def check(where, accept, problems):
+def check(where, accept, problems, recipe="humanoid"):
     """Problems of an order's "accept" object (unknown keys, values that are not limits)."""
     if not isinstance(accept, dict):
         problems.append("%s: accept must be an object {measure: limit}" % where)
         return
+    known = RECIPE_ACCEPT.get(recipe, tuple(ACCEPT))
     for k, v in accept.items():
-        if k not in ACCEPT:
-            problems.append("%s: unknown accept key %r (known: %s)" % (where, k, ", ".join(ACCEPT)))
-        elif ACCEPT[k][0] == "int" and not (is_int(v) and v >= 0):
+        if k not in known:
+            problems.append("%s: unknown accept key %r (known: %s)" % (where, k, ", ".join(known)))
+        elif ALL_ACCEPT[k][0] == "int" and not (is_int(v) and v >= 0):
             problems.append("%s: accept %s must be a whole number of at least 0, not %r" % (where, k, v))
-        elif ACCEPT[k][0] == "number" and not (is_number(v) and v >= 0):
+        elif ALL_ACCEPT[k][0] == "number" and not (is_number(v) and v >= 0):
             problems.append("%s: accept %s must be a number of at least 0, not %r" % (where, k, v))
 
 
-def limits(accept=None):
+def limits(accept=None, recipe="humanoid"):
     """The full limits of a piece: its "accept" over the defaults (None: not gated)."""
     accept = accept if isinstance(accept, dict) else {}
-    return {k: accept.get(k, default) for k, (_, default, _) in ACCEPT.items()}
+    return {k: accept.get(k, ALL_ACCEPT[k][1]) for k in RECIPE_ACCEPT.get(recipe, tuple(ACCEPT))}
 
 
 def motion_gated(lim):
     """The motion measures a set of limits gates (the others only rank and show)."""
-    return [k for k in MOTION_DEFAULTS if lim.get(k) is not None]
+    return [k for k in MOTION_MEASURES if lim.get(k) is not None]
 
 
 def mesh_flag_stage(flag, paint_stage="paint"):
@@ -180,12 +199,12 @@ def classify(records, lim, paint_stage="paint"):
                 vs.append(_violation("mesh_report", RESPONSIBLE["report_unreadable"], "mesh report unreadable"))
             elif isinstance(mesh, dict):
                 flags = [f if isinstance(f, str) else json.dumps(f, sort_keys=True) for f in mesh.get("flags") or []]
-                if len(flags) > lim["mesh_flags"]:
+                if len(flags) > lim.get("mesh_flags", 0):
                     for f in flags:
                         vs.append(_violation("mesh_flags", mesh_flag_stage(f, paint_stage), "mesh: " + f,
-                                             len(flags), lim["mesh_flags"]))
+                                             len(flags), lim.get("mesh_flags", 0)))
                 off = mesh.get("bake_source_offset_m")
-                if lim["bake_source_offset_m"] is not None and is_number(off) and off > lim["bake_source_offset_m"]:
+                if lim.get("bake_source_offset_m") is not None and is_number(off) and off > lim["bake_source_offset_m"]:
                     vs.append(_violation("bake_source_offset_m", RESPONSIBLE["bake_source_offset_m"],
                                          "bake source %.3f m off, over %s" % (off, lim["bake_source_offset_m"]),
                                          off, lim["bake_source_offset_m"]))
@@ -196,18 +215,18 @@ def classify(records, lim, paint_stage="paint"):
                 missing = sorted(c for c, e in (motion.get("clips") or {}).items() if not e.get("found", True))
                 missing += sorted(set(f.get("clip") for f in motion.get("flags") or []
                                       if isinstance(f, dict) and f.get("measure") == "missing") - set(missing))
-                if len(missing) > lim["missing_clips"]:
+                if len(missing) > lim.get("missing_clips", 0):
                     for c in missing:
                         vs.append(_violation("missing_clips", RESPONSIBLE["missing_clip"], "clip %s missing" % c,
-                                             len(missing), lim["missing_clips"], c))
+                                             len(missing), lim.get("missing_clips", 0), c))
                 over = []
                 for clip, e in sorted(_clip_values(motion).items()):
-                    for k in MOTION_DEFAULTS:
+                    for k in MOTION_MEASURES:
                         v = e.get(k)
                         if is_number(v) and not math.isfinite(v):
                             vs.append(_violation(k, RESPONSIBLE["motion_not_finite"], "%s %s is %s" % (clip, k, v),
-                                                 v, lim[k], clip))
-                        elif is_number(v) and lim[k] is not None and v > lim[k]:
+                                                 v, lim.get(k), clip))
+                        elif is_number(v) and lim.get(k) is not None and v > lim[k]:
                             over.append(_violation(k, RESPONSIBLE["motion"], "%s %s %.3g over %s" % (clip, k, v, lim[k]),
                                                    v, lim[k], clip))
                 # The worst first (the furthest over its limit, relatively): a label shows the first.
@@ -243,7 +262,7 @@ def classify(records, lim, paint_stage="paint"):
 
 def _gated_motion(x):
     """A violation of a motion limit the order set (not a non-finite value)."""
-    return x["measure"] in MOTION_DEFAULTS and x["stage"] == RESPONSIBLE["motion"] and x["clip"] is not None
+    return x["measure"] in MOTION_MEASURES and x["stage"] == RESPONSIBLE["motion"] and x["clip"] is not None
 
 
 def _clip_values(motion):
@@ -251,7 +270,7 @@ def _clip_values(motion):
     values of its flags (a report may list only flags)."""
     out = {c: dict(e) for c, e in (motion.get("clips") or {}).items() if isinstance(e, dict)}
     for f in motion.get("flags") or []:
-        if isinstance(f, dict) and f.get("measure") in MOTION_DEFAULTS and f.get("clip") is not None:
+        if isinstance(f, dict) and f.get("measure") in MOTION_MEASURES and f.get("clip") is not None:
             e = out.setdefault(f["clip"], {})
             if not is_number(e.get(f["measure"])):
                 e[f["measure"]] = f.get("value")

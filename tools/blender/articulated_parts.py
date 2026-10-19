@@ -365,7 +365,7 @@ def joint_record(part, joint, pivot_model, parent_pivot_model):
 FRONTS = ("+z", "-z", "+x", "-x")
 # The rotation about Blender's z (degrees) that turns a mesh whose front points along a glTF
 # axis so that it points along glTF +Z (Blender -Y).
-FRONT_YAW = {"+z": 0.0, "-z": 180.0, "+x": 90.0, "-x": -90.0}
+FRONT_YAW = {"+z": 0.0, "-z": 180.0, "+x": -90.0, "-x": 90.0}
 
 
 def snap_yaw(xy, limit=30.0, step=1.0):

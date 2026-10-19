@@ -35,11 +35,25 @@ REVIEW_PROJECT = os.path.join(TOOLS, "review_godot")
 REVIEW_FILES = ("project.godot", "main.tscn", "main.gd")
 SKINTOKENS_ENTRY = os.path.join(TOOLS, "rig", "skintokens_entry.py")
 
+PARTS_SCRIPT = os.path.join(TOOLS, "blender", "articulated_export.py")
+PARTS_FILES = [PARTS_SCRIPT, os.path.join(TOOLS, "blender", "articulated_parts.py"),
+               os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
+CREATURE_SCRIPT = os.path.join(TOOLS, "blender", "creature_export.py")
+CREATURE_FILES = [CREATURE_SCRIPT, os.path.join(TOOLS, "blender", "creature_bones.py"),
+                  os.path.join(TOOLS, "blender", "creature_motion.py"),
+                  os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
+SHEET_FILES = ("project.godot", "sheet.tscn", "sheet.gd")
+SHEET_LAYOUT = os.path.join(ROOT, "forge", "sheet_layout.py")
+
 RIG_METHODS = {
     "skintokens": ("skintokens_dir", "skintokens_python"),
     "unirig": ("unirig_dir", "unirig_venv", "unirig_hf", "unirig_shim"),
 }
-STEP_TOOLS = {"export": ("blender_python",), "review": ("godot",)}
+STEP_TOOLS = {"export": ("blender_python",), "review": ("godot",), "parts": ("blender_python",),
+              "creature_export": ("blender_python",), "sheet": ("godot",)}
+# Creature motion report thresholds: name -> command-line option.
+CREATURE_THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "reach_shortfall_cm": "--max-reach",
+                       "stretch_p95": "--max-stretch", "below_ground_cm": "--max-below-ground"}
 MODEL_EXTENSIONS = (".ckpt", ".safetensors", ".pth", ".pt", ".bin")
 # Exporter thresholds of the motion report: name -> command-line option.
 THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "hand_socket_cm": "--max-hand-socket",
@@ -158,6 +172,12 @@ def tool_fingerprint(job, config):
         scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT], {}
     elif tool == "review":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in REVIEW_FILES], {}
+    elif tool == "parts":
+        scripts, extra = list(PARTS_FILES), {}
+    elif tool == "creature_export":
+        scripts, extra = list(CREATURE_FILES), {}
+    elif tool == "sheet":
+        scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in SHEET_FILES] + [SHEET_LAYOUT], {}
     else:
         return None
     files = {os.path.basename(p): (sha_file_cached(p) if os.path.isfile(p) else "missing") for p in scripts}
@@ -178,6 +198,23 @@ def manual_bone_map(out_dir):
     except (OSError, ValueError):
         return None
     if isinstance(doc, dict) and doc.get("manual") and doc.get("source") != "order":
+        return sha_file_cached(path)
+    return None
+
+
+def manual_frame(out_dir):
+    """SHA-256 of <out_dir>/frame.json when a person marked it "manual": true (the parts
+    tool then turns the object as it says: a changed manual frame redoes the parts), else
+    None."""
+    path = os.path.join(out_dir, "frame.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(doc, dict) and doc.get("manual"):
         return sha_file_cached(path)
     return None
 
@@ -636,6 +673,257 @@ def review_runner(factory, job, out_dir):
 
 
 RUNNERS.update({"rig": rig_runner, "export": export_runner, "review": review_runner})
+
+
+# ---- articulated: the parts --------------------------------------------------------------------
+
+def _params_cmd(params):
+    cmd, settings = [], {}
+    for k, opt in (("height", "--height"), ("length", "--length"), ("tris", "--tris"), ("front", "--front")):
+        if params.get(k) is not None:
+            cmd += [opt, str(params[k])]
+            settings[k] = params[k]
+    return cmd, settings
+
+
+@_gpu_locked("parts")
+def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughness=None, image_format=None,
+              min_share=None, snap=None, timeout=3600):
+    """The articulated parts (tools/blender/articulated_export.py in blender_python): the
+    painted mesh turned to face +Z, scaled, cut into `parts` (the order's part list), each
+    part a node with its origin at its pivot. params: height or length, tris, front. Returns
+    {glb, model, mesh_report, frame}."""
+    _require(config, "parts")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    spec = os.path.join(out, "parts_spec.json")
+    write_json(spec, parts)
+    image_format = image_format or "lossless"
+    if image_format not in IMAGE_FORMATS:
+        raise ValueError("unknown image format %r (known: %s)" % (image_format, ", ".join(IMAGE_FORMATS)))
+    cmd = [config["blender_python"], PARTS_SCRIPT, "--mesh", os.path.abspath(mesh), "--out", out, "--name", name,
+           "--parts", spec, "--image-format", image_format]
+    extra, settings = _params_cmd(params or {})
+    cmd += extra
+    settings.update(name=name, image_format=image_format, parts=parts)
+    if min_share is not None:
+        cmd += ["--min-share", str(min_share)]
+        settings["min_share"] = min_share
+    if snap is not None:
+        cmd += ["--snap", "1" if snap else "0"]
+        settings["snap"] = bool(snap)
+    inputs = [_input("mesh", mesh)]
+    if metal_roughness:
+        cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
+        inputs.append(_input("metal_roughness", metal_roughness))
+    for stale in ("model.json", "mesh_report.json", name + ".glb"):
+        if os.path.exists(os.path.join(out, stale)):
+            os.remove(os.path.join(out, stale))
+    seconds, text = _run(cmd, out, "parts", timeout=timeout)
+    files = {"glb": os.path.join(out, name + ".glb"), "model": os.path.join(out, "model.json"),
+             "mesh_report": os.path.join(out, "mesh_report.json"), "frame": os.path.join(out, "frame.json")}
+    missing = [p for p in files.values() if not os.path.exists(p)]
+    if missing:
+        raise ToolError("parts did not write %s, see %s" % (", ".join(missing), os.path.join(out, "parts.stdout.log")))
+    version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
+    tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
+    rec = _record(PARTS_SCRIPT, PARTS_FILES, tools, settings, inputs)
+    rec["exec_seconds"] = seconds
+    rec["command"] = cmd
+    _write_provenance(out, "parts", rec, files)
+    return files
+
+
+def parts_runner(factory, job, out_dir):
+    """The parts of a variant's painted mesh (args: name, parts, height, length, tris, front,
+    image_format, min_share, snap)."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    mesh, _ = factory.resolve(ins["mesh"])
+    mr = factory.resolve(ins["metal_roughness"])[0] if "metal_roughness" in ins else None
+    params = {k: args[k] for k in ("height", "length", "tris", "front") if k in args}
+    files = run_parts(mesh, out_dir, factory.config, args["parts"], name=args.get("name", "model"), params=params,
+                      metal_roughness=mr, image_format=args.get("image_format"), min_share=args.get("min_share"),
+                      snap=args.get("snap"))
+    rec = _step_record(out_dir, "parts")
+    settings = rec.get("settings", {})
+    return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
+
+
+# ---- creature: the export ------------------------------------------------------------------------
+
+@_gpu_locked("creature_export")
+def run_creature_export(rig, out, config, body, motions=(), name="model", params=None, clips=None,
+                        libraries=(), bone_map=None, metal_roughness=None, image_format=None, thresholds=None,
+                        timeout=7200):
+    """The creature export (tools/blender/creature_export.py in blender_python): the rig turned
+    to face +Z and scaled, its bones mapped onto `body` (the order's plan or template), the
+    motions made in those roles. clips: the piece's library (inputs.clips); libraries: other
+    library files the motions name. Returns {glb, model, bone_map, mesh_report, clips[,
+    motion_report]}."""
+    _require(config, "creature_export")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    spec = os.path.join(out, "creature_spec.json")
+    write_json(spec, {"body": body, "motions": list(motions or [])})
+    image_format = image_format or "lossless"
+    if image_format not in IMAGE_FORMATS:
+        raise ValueError("unknown image format %r (known: %s)" % (image_format, ", ".join(IMAGE_FORMATS)))
+    cmd = [config["blender_python"], CREATURE_SCRIPT, "--rig", os.path.abspath(rig), "--out", out, "--name", name,
+           "--spec", spec, "--image-format", image_format]
+    extra, settings = _params_cmd(params or {})
+    cmd += extra
+    settings.update(name=name, image_format=image_format, body=body, motions=list(motions or []))
+    inputs = [_input("rig", rig)]
+    if clips:
+        cmd += ["--clips", os.path.abspath(clips)]
+        inputs.append(_input("clips", clips))
+    for path in libraries or ():
+        cmd += ["--library", os.path.abspath(path)]
+        inputs.append(_input("library", path))
+    if bone_map:
+        cmd += ["--bone-map", os.path.abspath(bone_map)]
+        inputs.append(_input("bone_map", bone_map))
+    if metal_roughness:
+        cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
+        inputs.append(_input("metal_roughness", metal_roughness))
+    for k, v in (thresholds or {}).items():
+        if k not in CREATURE_THRESHOLDS:
+            raise ValueError("unknown motion threshold %s (known: %s)" % (k, ", ".join(CREATURE_THRESHOLDS)))
+        cmd += [CREATURE_THRESHOLDS[k], str(v)]
+        settings.setdefault("thresholds", {})[k] = v
+    for stale in ("model.json", "motion_report.json", "mesh_report.json", "bone_map_report.json", "clips.json",
+                  name + ".glb"):
+        if os.path.exists(os.path.join(out, stale)):
+            os.remove(os.path.join(out, stale))
+    seconds, text = _run(cmd, out, "export", timeout=timeout)
+    files = {"glb": os.path.join(out, name + ".glb"), "model": os.path.join(out, "model.json"),
+             "mesh_report": os.path.join(out, "mesh_report.json"), "clips": os.path.join(out, "clips.json")}
+    bm = os.path.join(out, "bone_map.json")
+    files["bone_map"] = bm if os.path.exists(bm) else os.path.join(out, "bone_map_report.json")
+    if motions:
+        files["motion_report"] = os.path.join(out, "motion_report.json")
+    missing = [p for p in files.values() if not os.path.exists(p)]
+    if missing:
+        raise ToolError("export did not write %s, see %s" % (", ".join(missing), os.path.join(out, "export.stdout.log")))
+    version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
+    tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
+    rec = _record(CREATURE_SCRIPT, CREATURE_FILES, tools, settings, inputs)
+    rec["exec_seconds"] = seconds
+    rec["command"] = cmd
+    _write_provenance(out, "export", rec, files)
+    return files
+
+
+def creature_export_runner(factory, job, out_dir):
+    """The creature export of a variant's rig (args: name, body, motions, height, length,
+    tris, front, image_format and the motion thresholds). An invalid bone map stops it with
+    its report (ToolError, not retried)."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    rig, _ = factory.resolve(ins["rig"])
+    mr = factory.resolve(ins["metal_roughness"])[0] if "metal_roughness" in ins else None
+    params = {k: args[k] for k in ("height", "length", "tris", "front") if k in args}
+    thresholds = {k: args[k] for k in CREATURE_THRESHOLDS if k in args}
+    files = run_creature_export(rig, out_dir, factory.config, args["body"], motions=args.get("motions") or [],
+                                name=args.get("name", "model"), params=params,
+                                clips=ins["clips"]["file"] if "clips" in ins else None,
+                                libraries=[x["file"] for x in ins.get("libraries", [])],
+                                bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
+                                metal_roughness=mr, image_format=args.get("image_format"),
+                                thresholds=thresholds or None)
+    rec = _step_record(out_dir, "export")
+    settings = rec.get("settings", {})
+    passed = {k: settings[k] for k in args if k in settings}
+    passed.update({k: v for k, v in (settings.get("thresholds") or {}).items() if k in args})
+    return {"files": files, "passed": passed, "provenance": rec}
+
+
+# ---- the layout sheet (articulated and creature) ---------------------------------------------------
+
+@_gpu_locked("sheet")
+def run_sheet(glbs, out, config, camera=None, labels=None, name="sheet", verdicts=None, banner=None, timeout=900):
+    """One review sheet of a piece's variants (articulated or creature): the factory lays it
+    out (forge/sheet_layout.py, from each variant's model.json and reports) and Godot renders
+    the cells (tools/review_godot/sheet.gd). glbs, camera, labels, verdicts and banner as
+    run_review. Returns {"sheet": <out>/<name>.png, "layout": <out>/<name>.png.json}."""
+    from . import sheet_layout
+    _require(config, "sheet")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    sheet = os.path.join(out, name + ".png")
+    variants, inputs = [], []
+    labels = list(labels or [])
+    verdicts = list(verdicts or [])
+    for i, g in enumerate(glbs):
+        label = labels[i] if i < len(labels) else "v%d" % (i + 1)
+        reason = _failure(g)
+        entry = {"label": label, "verdict": verdicts[i] if i < len(verdicts) else None}
+        if reason is not None:
+            entry.update(failed=True, reason=reason)
+        else:
+            g = os.path.abspath(g)
+            folder = os.path.dirname(g)
+            entry.update(failed=False, glb=g.replace(os.sep, "/"))
+            inputs.append(_input("variant/" + label, g))
+            for side in ("model.json", "motion_report.json", "mesh_report.json"):
+                p = os.path.join(folder, side)
+                key = side.split(".")[0]
+                entry[key] = sheet_layout.read_json(p)
+                if os.path.exists(p):
+                    inputs.append(_input("variant/%s/%s" % (label, side), p))
+        variants.append(entry)
+    layout = sheet_layout.layout(variants, camera or {}, banner=banner)
+    request = os.path.join(out, name + "_request.json")
+    write_json(request, dict(layout, out=sheet.replace(os.sep, "/")))
+    for stale in (sheet, sheet + ".json"):
+        if os.path.exists(stale):
+            os.remove(stale)
+    cmd = [config["godot"], "--path", REVIEW_PROJECT, "--audio-driver", "Dummy", "--windowed",
+           "--position", "-20000,-20000", "--resolution", "64x64", "res://sheet.tscn", "--",
+           "--request", request.replace(os.sep, "/")]
+    seconds, text = _run(cmd, out, "review", timeout=timeout)
+    if not os.path.exists(sheet):
+        raise ToolError("review did not write %s, see %s" % (sheet, os.path.join(out, "review.stderr.log")))
+    load_failures = [ln.split(" ", 2)[2] for ln in text.splitlines() if ln.startswith("SHEET: failed ")]
+    layout["load_failures"] = load_failures
+    write_json(sheet + ".json", layout)
+    files = {"sheet": sheet, "layout": sheet + ".json"}
+    version = next((ln.split(" - ")[0].replace("Godot Engine ", "").strip() for ln in text.splitlines()
+                    if ln.startswith("Godot Engine ")), None)
+    tools = {"godot": {"path": config["godot"], "version": version}}
+    scripts = [os.path.join(REVIEW_PROJECT, f) for f in SHEET_FILES] + [SHEET_LAYOUT]
+    rec = _record(os.path.join(REVIEW_PROJECT, "sheet.gd"), scripts, tools, dict(layout["camera"]), inputs)
+    rec["exec_seconds"] = seconds
+    rec["command"] = cmd
+    _write_provenance(out, "review", rec, files)
+    return files
+
+
+def sheet_runner(factory, job, out_dir):
+    """The layout sheet of every variant of an articulated or creature piece, failures marked,
+    verdicts and the no-variant banner as the humanoid's (args: the review camera)."""
+    from . import acceptance
+    glbs, labels = review_variants(factory, job)
+    camera = dict(job.get("args", {}))
+    verdicts, summary = factory.decision(job)
+    shown = [{"class": v["class"], "reasons": acceptance.first_reasons(v)} for v in verdicts]
+    if not summary["motion_gated"]:
+        for x in shown:
+            if x["class"] == "acceptable":
+                x["reasons"] = ["motion not gated"]
+    banner = None
+    if not summary["acceptable"]:
+        top = summary["responsible_stage"] or "unknown"
+        banner = "no variant passed: most often the %s (%d of %d)" % (
+            top, summary["responsible_counts"].get(top, 0), len(verdicts))
+    files = run_sheet(glbs, out_dir, factory.config, camera=camera, labels=labels, verdicts=shown, banner=banner)
+    rec = _step_record(out_dir, "review")
+    settings = dict(rec.get("settings", {}))
+    return {"files": files, "passed": {k: settings[k] for k in camera if k in settings}, "provenance": rec}
+
+
+RUNNERS.update({"parts": parts_runner, "creature_export": creature_export_runner, "sheet": sheet_runner})
 
 
 if __name__ == "__main__":  # a manual check of this machine's configuration

@@ -263,10 +263,13 @@ class Factory(ComfyJobs, LocalSteps):
             # rig checkout's revision), so a fixed tool redoes its jobs.
             from . import local_gpu
             base["tool_sha"] = local_gpu.tool_fingerprint(job, self.config)
-            if job.get("tool") == "export":
+            if job.get("tool") in ("export", "creature_export"):
                 # A bone map corrected by hand next to the export ("manual": true) redoes it.
                 base["manual_bone_map"] = local_gpu.manual_bone_map(
                     os.path.join(self.asset_dir(job), slug(job["id"])))
+            elif job.get("tool") == "parts":
+                # A frame corrected by hand next to the parts ("manual": true) redoes them.
+                base["manual_frame"] = local_gpu.manual_frame(os.path.join(self.asset_dir(job), slug(job["id"])))
         if job["kind"] == "pick":
             base["candidates"] = {c: self.entry(c).get("files", {}).get(job["role"], [None, None])[1]
                                   for c in job["from"] if self.done_ok(c)}
@@ -346,13 +349,15 @@ class Factory(ComfyJobs, LocalSteps):
     def files_present(self, e, job=None):
         # The export's bone_map.json is also an editable control file. Its meaningful
         # manual changes already enter spec(); proposals and order copies are ignored.
-        editable_map = (job or {}).get("kind") == "local_gpu" and job.get("tool") == "export"
+        tool = (job or {}).get("tool") if (job or {}).get("kind") == "local_gpu" else None
+        editable = {"export": ("bone_map", "bone_map.json"), "creature_export": ("bone_map", "bone_map.json"),
+                    "parts": ("frame", "frame.json")}.get(tool)
         for role, (rel, sha) in e.get("files", {}).items():
             path = os.path.join(self.out, rel)
             try:
                 if not os.path.isfile(path):
                     return False
-                if editable_map and role == "bone_map" and os.path.basename(path) == "bone_map.json":
+                if editable and (role, os.path.basename(path)) == editable:
                     continue
                 if sha_file_cached(path) != sha:
                     return False
