@@ -11,7 +11,15 @@ formats of the `articulated`, `creature` and `held_item` tools follow in
 
 - **Exported model:** metres, glTF axes (Y up). The figure faces glTF +Z, stands on the
   ground (y = 0) with its hips over the origin, and is `--height` metres tall at rest
-  (`model.json` `height`, the height of the rest mesh after any reduction).
+  (`model.json` `height`, the height of the rest mesh after any reduction). A rig that faced
+  another way (the front the bone map finds from the feet) is turned about the vertical
+  first, so `model.json` `front` is always `[0, 0, 1]`.
+- **Bone directions:** the retarget and the IK turn each mapped bone by the line from its
+  joint to the joint of the next mapped bone of its chain, not by the bone's own axis: rig
+  tools give joints orientations whose axes need not point to their children (such a rig was
+  exported crouching before 2026-10-19). The last bone of a chain (head, hand, toes, a foot
+  without toes) keeps its own axis, unless it is more than 45 degrees off its parent's
+  segment continued.
 - **Body coordinates** (motion library and hold placements): `[side, forward, up]` in
   body heights; side + is the figure's left, the ground is up = 0, the pelvis stands over
   side = forward = 0.

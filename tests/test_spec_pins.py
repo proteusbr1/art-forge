@@ -24,11 +24,16 @@ from forge.recipes import refs_of  # noqa: E402
 FIXTURES = os.path.join(HERE, "fixtures")
 ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_roughness", "rig", "glb", "model",
          "mesh_report", "motion_report", "image", "pick", "albedo", "paint_views", "shape", "background_mask")
-# sha_obj({job id: specification hash}) of each sample order, as of the humanoid night's
-# snapshot (art-forge 1c8761c).
+# sha_obj({job id: specification hash}) of each sample order. The humanoid's moved on purpose
+# on 2026-10-19 with the exporter's fix (bones aimed by their joints, exact two-bone IK, the
+# figure turned to face glTF +z): its script enters the export's specification, so a resumed
+# night redoes its exports, sheets and decisions. The hashes of the local tools' scripts are
+# taken from the files as checked out, so the pins hold for a checkout with CRLF line endings
+# (Windows, core.autocrlf true, which is also what `git archive` gives a night's snapshot);
+# the earlier humanoid pin had been taken from files with mixed line endings.
 PINS = {
     "order_generic.json": "a148805423689b29e1f8fa3cff06720115ec0753be4f28d322bc879f25c78e44",
-    "order_humanoid.json": "387cf807976db0b0c0303625b93c6409c81876fb80db74ee7c54c67992284740",
+    "order_humanoid.json": "7a2d980b551e1e4b1a3005c706ea4b153f1e67d8e1ed87cc2b815c05ca98e561",
 }
 
 

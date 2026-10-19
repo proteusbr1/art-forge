@@ -17,7 +17,8 @@ Steps (formats in docs/conventions.md):
    marked "manual": true, then the proposal from the skeleton's tree
    (humanoid_bones.py). It is validated; an invalid map stops the export with its report in
    <out>/bone_map.json (exit code 3). The exporter never guesses.
-2. The model stands on z = 0 over the hips, scaled to --height metres, widened across
+2. The model stands on z = 0 over the hips, turned about the vertical so that its front
+   (from the bone map) is the glTF front (+z), scaled to --height metres, widened across
    (--widen); the mapped bones take their SkeletonProfileHumanoid names, the others keep
    theirs.
 3. The mesh is the painted game mesh of the rig. It is reduced only when it has more than
@@ -33,7 +34,10 @@ Steps (formats in docs/conventions.md):
    opacity, emissive, occlusion) are carried from --material-source (the painted mesh).
 4. With --clips, every clip of the library (canonical joints in body coordinates) is
    retargeted by bone directions, the feet planted as the clip says and the hands put on
-   the held item's sockets by IK. Without it the GLB has the rest pose only.
+   the held item's sockets by IK. A bone's direction is the line from its joint to its
+   child's joint (the next mapped bone; the bone's own axis only for the last bone of a
+   chain): a rig tool's joints may carry orientations whose axes do not point to their
+   children. Without a library the GLB has the rest pose only.
 5. Writes <out>/<name>.glb, <out>/model.json and <out>/regions_mask.png (red: skin, green:
    hair of the head, blue: what glows, with --glow). The normal, metallic-roughness and
    occlusion maps and an opacity mask are never JPEG: --image-format lossless (default)
@@ -340,8 +344,14 @@ _floor = min(c.z for c in coords)
 _H0 = max(c.z for c in coords) - _floor
 _hips = arm.matrix_world @ arm.data.bones[ROLES["hips"]].head_local
 _k = a.height / _H0
-TRANSFORM = (Matrix.Diagonal((a.widen, a.widen, 1.0, 1.0)) @ Matrix.Diagonal((_k, _k, _k, 1.0))
+# Turned about the vertical so that the figure's front is Blender's -y (glTF +z, the front of
+# every exported model), whatever way the generated mesh faced.
+_yaw = -math.atan2(FRONT.x, -FRONT.y)
+_turn = Matrix.Rotation(_yaw, 4, "Z")
+TRANSFORM = (Matrix.Diagonal((a.widen, a.widen, 1.0, 1.0)) @ Matrix.Diagonal((_k, _k, _k, 1.0)) @ _turn
              @ Matrix.Translation(Vector((-_hips.x, -_hips.y, -_floor))))
+FRONT = (_turn.to_3x3() @ FRONT).normalized()
+LEFT = (_turn.to_3x3() @ LEFT).normalized()
 arm.matrix_world = TRANSFORM @ arm.matrix_world
 bpy.ops.object.select_all(action="DESELECT")
 arm.select_set(True)
@@ -710,7 +720,28 @@ cx, cy = head(CH["hips"]).x, head(CH["hips"]).y
 LEGS = [CH["legs"]["left"], CH["legs"]["right"]]
 ARMS = [CH["arms"]["left"], CH["arms"]["right"]]
 ANKLE = (head(LEGS[0][2]).z - zmin) / H
-
+# The joint each mapped bone points to: the head of the next mapped bone of its chain (its
+# own tail for the last one). Rig tools give joints orientations of their own, so a bone's
+# axis (head to tail as imported) need not point to its child.
+AIM_TO = {}
+for _chain in [[CH["hips"]] + CH["spine"] + CH["head"]] + [[c for c in ch if c] for ch in ARMS] + LEGS:
+    _chain = [b for b in _chain if b]
+    for _b, _c in zip(_chain, _chain[1:]):
+        if arm.data.bones[_c].parent is not None and _b in [x.name for x in arm.data.bones[_c].parent_recursive]:
+            AIM_TO[_b] = _c
+# The last bone of a chain (the head, a hand, a foot without toes, the toes) has no child joint:
+# it points along its own axis, unless that axis is more than 45 degrees off the line of its
+# parent's segment continued, then along that line (kept in the bone's own frame).
+END_AXIS = {}
+for _b in AIM_TO.values():
+    if _b in AIM_TO:
+        continue
+    _parent = next((p for p, c in AIM_TO.items() if c == _b), None)
+    _bone = arm.data.bones[_b]
+    _line = (_bone.head_local - arm.data.bones[_parent].head_local).normalized()
+    _own = (_bone.tail_local - _bone.head_local).normalized()
+    if _own.angle(_line, 0.0) > math.radians(45):
+        END_AXIS[_b] = _bone.matrix_local.to_3x3().inverted() @ _line
 
 def bdir(v):
     """A direction in body coordinates (side, forward, up) in the rig's world."""
@@ -786,14 +817,11 @@ def place(cls, socket, at, direction, roll_up=UP):
 
 
 LIMB_BONES = {"larm": ARMS[0][2], "rarm": ARMS[1][2], "lleg": LEGS[0][1], "rleg": LEGS[1][1]}
-LIMB_LENGTH = {k: (bones[b].length + bones[bones[b].parent.name].length) for k, b in LIMB_BONES.items()}
-empties = {}
-for name in LIMB_BONES:
-    t = bpy.data.objects.new("ik_" + name, None)
-    p = bpy.data.objects.new("pole_" + name, None)
-    bpy.context.scene.collection.objects.link(t)
-    bpy.context.scene.collection.objects.link(p)
-    empties[name] = (t, p)
+# Each limb: (upper bone, lower bone, end bone): the IK puts the end bone's joint (wrist,
+# ankle) on the target.
+LIMBS = {"larm": ARMS[0][1:4], "rarm": ARMS[1][1:4], "lleg": LEGS[0][0:3], "rleg": LEGS[1][0:3]}
+SEGMENT = {k: ((head(u) - head(lo)).length, (head(lo) - head(e)).length) for k, (u, lo, e) in LIMBS.items()}
+LIMB_LENGTH = {k: sum(v) for k, v in SEGMENT.items()}
 SHORT = {}  # limb -> worst reach shortfall (model units) of the clip being made
 
 
@@ -822,10 +850,18 @@ def world_of(name):
 
 
 def aim_bone(name, direction):
-    """Turns a bone (pose) so that it points along `direction` (rig world)."""
+    """Turns a bone (pose) so that it points along `direction` (rig world): the line from its
+    joint to its child's joint (AIM_TO), else its own axis."""
     pb = arm.pose.bones[name]
     m = pb.matrix.copy()
-    cur = (m.to_3x3() @ Vector((0, 1, 0))).normalized()
+    child = AIM_TO.get(name)
+    if child:
+        cur = arm.pose.bones[child].head - pb.head
+    else:
+        cur = m.to_3x3() @ END_AXIS.get(name, Vector((0, 1, 0)))
+    if cur.length < 1e-9:
+        cur = m.to_3x3() @ Vector((0, 1, 0))
+    cur = cur.normalized()
     want = (mw3.inverted() @ direction).normalized()
     q = cur.rotation_difference(want)
     new = (q.to_matrix() @ m.to_3x3()).to_4x4()
@@ -851,7 +887,7 @@ def retarget(j, src_pelvis):
         return bdir(P[e] - P[s]).normalized()
     pb = arm.pose.bones[CH["hips"]]
     l0 = head(LEGS[0][0]) - head(LEGS[1][0])
-    u0 = tail(CH["hips"]) - head(CH["hips"])
+    u0 = head(CH["spine"][0]) - head(CH["hips"])
     R = frame_rot(l0, u0, bdir(P["l_hip"] - P["r_hip"]), bdir(P["spine"] - P["pelvis"]))
     m = pb.matrix.copy()
     new = (mw3.inverted() @ R @ mw3 @ m.to_3x3()).to_4x4()
@@ -887,25 +923,35 @@ def retarget(j, src_pelvis):
 
 
 def ik(name, target, pole):
-    bone = LIMB_BONES[name]
-    t, p = empties[name]
-    t.location = target
-    p.location = pole
-    root = world_of(bones[bone].parent.name)[0]
-    short = (target - root).length - LIMB_LENGTH[name]
-    SHORT[name] = max(SHORT.get(name, 0.0), short)
-    c = arm.pose.bones[bone].constraints.new("IK")
-    c.target = t
-    c.pole_target = p
-    c.pole_angle = 0.0 if name.endswith("leg") else -math.pi / 2
-    c.chain_count = 2
-    c.use_tail = True
+    """Two-bone IK, solved exactly: the limb's end joint (wrist, ankle) on `target` (as near as
+    the limb reaches), the middle joint (elbow, knee) in the plane of the pole, both bones
+    turned by aim_bone (their joints' lines, whatever their own axes)."""
+    upper, lower, end = LIMBS[name]
+    l1, l2 = SEGMENT[name]
+    root = world_of(upper)[0]
+    d = target - root
+    dist = d.length
+    SHORT[name] = max(SHORT.get(name, 0.0), dist - LIMB_LENGTH[name])
+    if dist < 1e-9:
+        return
+    u = d / dist
+    dist = min(max(dist, abs(l1 - l2) + 1e-6), l1 + l2 - 1e-6)
+    v = (pole - root) - u * (pole - root).dot(u)
+    if v.length < 1e-9:
+        v = FRONT - u * FRONT.dot(u)
+    v = v.normalized()
+    along = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist)
+    knee = root + u * along + v * math.sqrt(max(l1 * l1 - along * along, 0.0))
+    aim_bone(upper, knee - root)
+    aim_bone(lower, root + u * dist - knee)
 
 
 def pole_of(upper, lower):
     """A pole beyond the middle joint (elbow, knee), on the side it bends to now (FK)."""
     start = world_of(upper)[0]
-    mid, end = world_of(lower)
+    mid = world_of(lower)[0]
+    child = AIM_TO.get(lower)
+    end = world_of(child)[0] if child else world_of(lower)[1]
     out = mid - (start + end) / 2
     if out.length < 1e-6:
         out = -FRONT
@@ -1108,7 +1154,7 @@ def key(action_name, frames, fps, loop):
 
 info = {"format": "forge-humanoid", "version": 1, "status": "pending review", "name": a.name,
         "height": H, "widen": a.widen, "head": a.head, "hands": a.hands, "feet": a.feet,
-        "ankle_height": ANKLE * H, "front": [FRONT.x, FRONT.z, -FRONT.y], "animations": [],
+        "ankle_height": ANKLE * H, "front": [round(v, 6) + 0.0 for v in (FRONT.x, FRONT.z, -FRONT.y)], "animations": [],
         "bones": {r: hb.godot_name(r) for r in ROLES}, "unmapped_bones": [nm(b) for b in doc["unmapped"]],
         "bone_map": {"source": doc["source"], "file": "bone_map.json"},
         "item_bones": {"right": "item", "left": "item_l", "reference": "item_ref"},

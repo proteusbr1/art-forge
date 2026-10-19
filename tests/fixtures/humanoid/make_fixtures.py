@@ -9,6 +9,11 @@ box and an 8-frame walk.
                                             triangles), humanoid_high.glb (the same figure,
                                             unrigged, finer and with surface relief) and
                                             box.glb
+  <blender python> make_fixtures.py --figure FILE [--yaw DEG] [--skew]
+                                            only the rigged figure, turned by DEG about the
+                                            vertical (90: it faces +x) and, with --skew, its
+                                            bones' tails off their children (as a rig tool
+                                            whose joints carry their own orientations)
 
 library.json and items/box.json next to this file are its --data output (committed); the
 GLBs are made on the first test run, under local/.
@@ -278,10 +283,49 @@ def _export(path, objects):
 
 def build_glbs(folder):
     import bpy
-    from mathutils import Vector
     folder = os.path.abspath(folder)
     os.makedirs(folder, exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    arm, body, bones = _rigged(folder)
+    _export(os.path.join(folder, "humanoid.glb"), [arm, body])
+    _rest_of_glbs(folder, bones, body)
+
+
+def build_figure(path, yaw=0.0, skew=False):
+    """The rigged figure alone, turned by yaw degrees about the vertical; skew: every bone's
+    tail turned 60 degrees off its child (about a sideways axis, alternating), the length kept."""
+    import bpy
+    from mathutils import Matrix, Vector
+    path = os.path.abspath(path)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    arm, body, bones = _rigged(folder)
+    if skew:
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode="EDIT")
+        for k, eb in enumerate(arm.data.edit_bones):
+            d = eb.tail - eb.head
+            side = d.cross(Vector((0, 0, 1)))
+            if side.length < 1e-6:
+                side = Vector((1, 0, 0))
+            eb.tail = eb.head + Matrix.Rotation(math.radians(60 if k % 2 else -60), 3, side.normalized()) @ d
+            eb.roll = math.radians(37 * k)
+        bpy.ops.object.mode_set(mode="OBJECT")
+    if yaw:
+        arm.matrix_world = Matrix.Rotation(math.radians(yaw), 4, "Z") @ arm.matrix_world
+        bpy.ops.object.select_all(action="DESELECT")
+        arm.select_set(True)
+        body.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    _export(path, [arm, body])
+    print("FIGURE", path, "yaw", yaw, "skew", skew, flush=True)
+
+
+def _rigged(folder):
+    import bpy
+    from mathutils import Vector
     # The rigged game mesh.
     arm_data = bpy.data.armatures.new("Armature")
     arm = bpy.data.objects.new("Armature", arm_data)
@@ -317,7 +361,12 @@ def build_glbs(folder):
     body.parent = arm
     mod = body.modifiers.new("Armature", "ARMATURE")
     mod.object = arm
-    _export(os.path.join(folder, "humanoid.glb"), [arm, body])
+    return arm, body, bones
+
+
+def _rest_of_glbs(folder, bones, body):
+    import bpy
+    from mathutils import Vector
     # The raw high mesh of the same figure, unrigged and unpainted.
     high, _ = _figure_mesh("figure_high", fine=True)
     _export(os.path.join(folder, "humanoid_high.glb"), [high])
@@ -342,11 +391,16 @@ def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="")
     ap.add_argument("--glbs", default="")
+    ap.add_argument("--figure", default="")
+    ap.add_argument("--yaw", type=float, default=0.0)
+    ap.add_argument("--skew", action="store_true")
     a = ap.parse_args(argv)
     if a.data:
         write_data(a.data)
     if a.glbs:
         build_glbs(a.glbs)
+    if a.figure:
+        build_figure(a.figure, a.yaw, a.skew)
     return 0
 
 
