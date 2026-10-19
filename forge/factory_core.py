@@ -263,13 +263,18 @@ class Factory(ComfyJobs, LocalSteps):
             # rig checkout's revision), so a fixed tool redoes its jobs.
             from . import local_gpu
             base["tool_sha"] = local_gpu.tool_fingerprint(job, self.config)
-            if job.get("tool") in ("export", "creature_export"):
+            if job.get("tool") in ("export", "creature_export", "hold"):
                 # A bone map corrected by hand next to the export ("manual": true) redoes it.
                 base["manual_bone_map"] = local_gpu.manual_bone_map(
                     os.path.join(self.asset_dir(job), slug(job["id"])))
             elif job.get("tool") == "parts":
                 # A frame corrected by hand next to the parts ("manual": true) redoes them.
                 base["manual_frame"] = local_gpu.manual_frame(os.path.join(self.asset_dir(job), slug(job["id"])))
+            elif job.get("tool") == "item":
+                # A held item's frame or sockets corrected by hand ("manual": true) redo it.
+                folder = os.path.join(self.asset_dir(job), slug(job["id"]))
+                base["manual_frame"] = local_gpu.manual_frame(folder)
+                base["manual_sockets"] = local_gpu.manual_file(folder, "sockets.json")
         if job["kind"] == "pick":
             base["candidates"] = {c: self.entry(c).get("files", {}).get(job["role"], [None, None])[1]
                                   for c in job["from"] if self.done_ok(c)}
@@ -350,14 +355,15 @@ class Factory(ComfyJobs, LocalSteps):
         # The export's bone_map.json is also an editable control file. Its meaningful
         # manual changes already enter spec(); proposals and order copies are ignored.
         tool = (job or {}).get("tool") if (job or {}).get("kind") == "local_gpu" else None
-        editable = {"export": ("bone_map", "bone_map.json"), "creature_export": ("bone_map", "bone_map.json"),
-                    "parts": ("frame", "frame.json")}.get(tool)
+        editable = {"export": {("bone_map", "bone_map.json")}, "creature_export": {("bone_map", "bone_map.json")},
+                    "parts": {("frame", "frame.json")}, "hold": {("bone_map", "bone_map.json")},
+                    "item": {("frame", "frame.json"), ("socket_map", "sockets.json")}}.get(tool, ())
         for role, (rel, sha) in e.get("files", {}).items():
             path = os.path.join(self.out, rel)
             try:
                 if not os.path.isfile(path):
                     return False
-                if editable and (role, os.path.basename(path)) == editable:
+                if (role, os.path.basename(path)) in editable:
                     continue
                 if sha_file_cached(path) != sha:
                     return False

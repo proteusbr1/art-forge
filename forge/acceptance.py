@@ -45,6 +45,7 @@ RECIPE_ACCEPT = {
     "creature": ("mesh_flags", "missing_clips", "foot_slide_cm", "reach_shortfall_cm", "stretch_p95",
                  "below_ground_cm"),
     "articulated": ("mesh_flags",),
+    "held_item": ("mesh_flags",),
 }
 # Every motion measure a report may hold (the humanoid's, then the creature's).
 MOTION_MEASURES = dict(MOTION_DEFAULTS, below_ground_cm=3.0)
@@ -52,8 +53,8 @@ CLASSES = ("acceptable", "rejected")
 NO_VARIANT_PASSED = "no_variant_passed"
 # Stages in the order of the humanoid chain, then the motion library; "unknown" last. Ties of
 # the most frequent responsible stage go to the earliest.
-STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "parts", "review", "library",
-               "unknown")
+STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "parts", "item", "hold", "review",
+               "library", "unknown")
 
 # The stage held responsible for a mesh flag (mesh_report.json "flags"), by its text: the
 # first matching row wins; no row: "unknown". "paint" is the stage that painted the mesh
@@ -74,6 +75,9 @@ MESH_FLAG_STAGES = (
     (r"materials, 1 is expected", "unknown", "the materials may be split by the paint or the rig stage"),
     (r"^part \S+ (is empty|is tiny)", "unknown", "the order's region or the generated layout may be at fault"),
     (r"^part \S+ ", "parts", "the parts stage cuts the parts and closes their cuts"),
+    (r"^socket \S+ is (missing|off the mesh)", "unknown",
+     "the generated shape or the class template (or a manual sockets file) may be at fault"),
+    (r"^frame: ", "unknown", "the concept may not be a side view, or the mesh generator turned the item"),
 )
 # The stage held responsible for the other kinds of violation.
 RESPONSIBLE = {

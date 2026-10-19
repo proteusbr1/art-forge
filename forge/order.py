@@ -15,14 +15,16 @@ from .config import missing_tools
 # Per-piece keys a family may set as defaults for its pieces. Dictionaries merge key by key
 # (the piece wins); the other keys are taken from the family when the piece has none.
 PIECE_KEYS = ("recipe", "variants", "stages", "skip", "params", "inputs", "review", "accept", "reserve",
-              "parts", "body", "motions")
-DICT_KEYS = ("stages", "params", "inputs", "review", "accept")
+              "parts", "body", "motions", "item")
+DICT_KEYS = ("stages", "params", "inputs", "review", "accept", "item")
 FORMAT_VERSION = 1
 # The view each of these recipes needs in style (the text of its reference).
 VIEWS = {"articulated": "the view of every articulated reference (the whole object in its rest pose, "
                         "plain background, even light)",
          "creature": "the view of every creature reference (the whole body, limbs held away from the "
-                     "body, plain background, even light)"}
+                     "body, plain background, even light)",
+         "held_item": "the view of every held item's reference (a strict side view of the whole item, its "
+                      "front to the right, plain background, even light)"}
 
 
 def _resolve(path, base):

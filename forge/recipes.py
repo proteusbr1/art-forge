@@ -523,14 +523,18 @@ def _front_chain(fam, a, st, recipe, s, add, comfy, opts, fields, size, view):
     return mesh, {"ref": last, "role": "painted_mesh"}
 
 
-def _variants(fam, a, st, recipe, size, view, tail):
+def _variants(fam, a, st, recipe, size, view, tail, review_tool="sheet", final_extra=None):
     """Every variant's chain (the shared front, then `tail(add, v, mesh, painted, opts)`,
-    which adds the recipe's own last stages and returns (last job, its role)), then the review
-    sheet and the final decision, with reserve variants as the humanoid's."""
+    which adds the recipe's own last stages and returns (last job, its role), or (job, role,
+    extra) where extra may hold "review_from" (more jobs the review waits for and whose files
+    enter its specification) and "variant" (more keys of the variant's entry)), then the review
+    sheet (its runner: review_tool) and the final decision (final_extra: more keys of the
+    final jobs), with reserve variants as the humanoid's."""
     fid, aid = fam["id"], a["id"]
     opts = stages.chosen_options(recipe, a)
     fields = {stage: stages.option(recipe, stage, o) for stage, o in opts.items()}
     jobs, variants = [], []
+    review_from = {}
     n = variants_of(fam, a, 4)
     final_id = "%s/%s/final" % (fid, aid)
     hold = {"until": final_id, "outcome": acceptance.NO_VARIANT_PASSED}
@@ -559,10 +563,15 @@ def _variants(fam, a, st, recipe, size, view, tail):
             return add(stage, job)
 
         mesh, painted = _front_chain(fam, a, st, recipe, s, add, comfy, opts, fields, size, view)
-        last, role = tail(add, v, mesh, painted, opts)
+        got = tail(add, v, mesh, painted, opts)
+        last, role = got[0], got[1]
+        more = got[2] if len(got) > 2 else {}
         entry = {"variant": v, "job": last, "role": role, "chain": list(chain)}
+        entry.update(more.get("variant") or {})
         if reserve:
             entry["reserve"] = True
+        if more.get("review_from"):
+            review_from[v] = list(more["review_from"])
         variants.append(entry)
     decision = {"accept": acceptance.limits(a.get("accept"), recipe),
                 "paint_stage": "paint" if "paint" in opts else "mesh"}
@@ -570,15 +579,17 @@ def _variants(fam, a, st, recipe, size, view, tail):
 
     def decide(suffix, covered, held):
         ids = [x["job"] for x in covered]
-        review = {"id": "%s/%s/review%s" % (fid, aid, suffix), "kind": "local_gpu", "tool": "sheet",
+        later = [j for x in covered for j in review_from.get(x["variant"], [])]
+        review = {"id": "%s/%s/review%s" % (fid, aid, suffix), "kind": "local_gpu", "tool": review_tool,
                   "stage": "review", "group": fields["review"]["group"], "partial": True, "even_if_none": True,
-                  "from": ids, "variants": covered, "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))}
+                  "from": ids + later, "variants": covered, "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))}
         review.update(decision)
         final = dict({"id": "%s/%s/final%s" % (fid, aid, suffix), "kind": "final", "group": "local",
                       "partial": True, "even_if_none": True, "from": ids, "variants": covered,
                       "reserve": {"variants": [x["variant"] for x in extra],
                                   "decision": "%s/%s/final_reserve" % (fid, aid) if extra and not held else None}},
                      **decision)
+        final.update(final_extra or {})
         if held:
             review["hold"], final["hold"] = dict(hold), dict(hold)
         jobs.extend([review, final])
@@ -638,6 +649,78 @@ def recipe_creature(fam, a, st):
         args = dict({"name": a["id"], "body": a.get("body"), "motions": a.get("motions") or []}, **_tool_params(a))
         return add("export", {"kind": "local_gpu", "tool": "creature_export", "inputs": ins, "args": args}), "glb"
     return _variants(fam, a, st, "creature", CREATURE_SIZE, "view_creature", tail)
+
+
+# --- held_item: an object a figure holds, generated from a strict side view, put in item
+# space with its sockets (the socket file the humanoid exporter reads)
+
+HELD_ITEM_SIZE = (1536, 1024)
+ITEM_PARAMS = ("tris", "height", "length", "image_format")
+# The family folder every picked item of a held-item family is copied to (<name>.glb and
+# <name>.json side by side): a humanoid order's inputs.items.
+ITEMS_FOLDER = "items"
+
+
+def recipe_held_item(fam, a, st):
+    """An object a figure holds. Per variant <family>/<piece>/v<seed>/<stage>: reference (a
+    strict side view, the front to the right) -> cutout -> mesh -> paint -> item (item space
+    at the real size, the class template's sockets, the socket file;
+    tools/blender/held_item_export.py) -> hold (the humanoid exporter run on the order's
+    reference figure with this item and the class's clips; for the review only); then one
+    review sheet (the item from the review camera, a side view with its sockets, the figure
+    holding it) and the final decision, which also copies the picked item's GLB and socket
+    file to <family>/items/."""
+    inputs = a.get("inputs") or {}
+    item_spec = a.get("item") or {}
+
+    def tail(add, v, mesh, painted, opts):
+        ins = {"mesh": painted}
+        if opts.get("paint") == "hunyuan_paint":
+            ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
+        p = a.get("params") or {}
+        args = dict({"name": a["id"], "item": a.get("item")}, **{k: p[k] for k in ITEM_PARAMS if k in p})
+        item = add("item", {"kind": "local_gpu", "tool": "item", "inputs": ins, "args": args})
+        if "hold" not in opts:
+            return item, "glb"
+        hold_ins = {"glb": {"ref": item, "role": "glb"}, "sockets": {"ref": item, "role": "sockets"},
+                    "figure": {"file": inputs.get("figure")}, "clips": {"file": inputs.get("clips")}}
+        hold_args = {"name": a["id"], "class": item_spec.get("class")}
+        if item_spec.get("clips"):
+            hold_args["clips"] = list(item_spec["clips"])
+        hold = add("hold", {"kind": "local_gpu", "tool": "hold", "inputs": hold_ins, "args": hold_args})
+        return item, "glb", {"review_from": [hold], "variant": {"hold": hold}}
+    return _variants(fam, a, st, "held_item", HELD_ITEM_SIZE, "view_held_item", tail, review_tool="item_sheet",
+                     final_extra={"items_folder": ITEMS_FOLDER})
+
+
+def check_held_item(where, piece, problems):
+    from . import tool_specs
+    _check_front(where, "held_item", piece, problems)
+    params = piece.get("params") or {}
+    if "height" not in params and "length" not in params:
+        problems.append("%s: params.length or params.height is required (the item's real size in metres: its "
+                        "length front to back, or its height)" % where)
+    if where.rsplit("/", 1)[-1] == ITEMS_FOLDER:
+        problems.append("%s: a held item cannot be named %r: the family's folder of picked items has that name" % (
+            where, ITEMS_FOLDER))
+    if "item" not in piece:
+        problems.append("%s: item is required (the hold class and its socket template)" % where)
+        return
+    found = tool_specs.check_item(piece["item"])
+    problems.extend("%s: %s" % (where, p) for p in found)
+    if found or "hold" not in stages.chosen_options("held_item", piece):
+        return
+    inputs = piece.get("inputs") or {}
+    for name, what in (("figure", "a rigged humanoid GLB"), ("clips", "the motion library")):
+        if not inputs.get(name):
+            problems.append("%s: the hold stage needs inputs.%s (%s), or skip hold" % (where, name, what))
+    figure = inputs.get("figure")
+    if isinstance(figure, str) and os.path.isfile(figure):
+        problems.extend("%s: inputs.figure %s" % (where, p) for p in tool_specs.check_figure(figure))
+    clips = inputs.get("clips")
+    if isinstance(clips, str) and os.path.isfile(clips):
+        problems.extend("%s: inputs.clips: %s" % (where, p)
+                        for p in tool_specs.check_hold_clips(clips, piece["item"]))
 
 
 def _check_front(where, recipe, piece, problems):
@@ -718,10 +801,11 @@ def check_creature(where, piece, problems):
 RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "figure": recipe_figure,
            "object_3d": recipe_object_3d, "concept": recipe_concept, "prop": recipe_prop,
            "material": recipe_material, "humanoid": recipe_humanoid, "articulated": recipe_articulated,
-           "creature": recipe_creature}
+           "creature": recipe_creature, "held_item": recipe_held_item}
 # Recipe-specific checks of a piece, called by forge.order.check_order with the piece's
 # valid stages and skips: check(where, piece, problems).
-PIECE_CHECKS = {"humanoid": check_humanoid, "articulated": check_articulated, "creature": check_creature}
+PIECE_CHECKS = {"humanoid": check_humanoid, "articulated": check_articulated, "creature": check_creature,
+                "held_item": check_held_item}
 
 
 def expand(job_list, only=None):

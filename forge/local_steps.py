@@ -170,7 +170,8 @@ class LocalSteps:
         (None when its last stage wrote no report) and its rank, (mesh flags, motion flags,
         total excess): the number of mesh flags (a defective GLB) first, then the number of
         motion flags, then their size, the sum over motion flags of how far each value is over
-        its threshold (value / threshold - 1). Lower is better."""
+        its threshold (value / threshold - 1), plus a held item's fit excess (its mesh report's
+        "fit": ranking only). Lower is better."""
         files = self.entry(jid).get("files", {})
         flags, seen = [], False
         mesh_n = motion_n = 0
@@ -181,11 +182,15 @@ class LocalSteps:
             seen = True
             try:
                 with open(os.path.join(self.out, files[role][0]), encoding="utf-8") as f:
-                    found = json.load(f).get("flags") or []
+                    report = json.load(f)
+                found = report.get("flags") or []
             except (OSError, ValueError) as ex:
                 flags.append("%s unreadable: %s" % (role, ex))
                 mesh_n += 1
                 continue
+            fit = report.get("fit") if role == "mesh_report" else None
+            if isinstance(fit, dict) and isinstance(fit.get("excess"), (int, float)):
+                excess += float(fit["excess"])  # a held item's fit measures rank, never gate
             for x in found:
                 flags.append("%s: %s" % (role, x if isinstance(x, str) else json.dumps(x, sort_keys=True)))
                 if role == "mesh_report":
@@ -204,6 +209,27 @@ class LocalSteps:
         acceptable or rejected against the job's limits (forge/acceptance.py)."""
         records = acceptance.variant_records(self, job)
         return acceptance.classify(records, job.get("accept") or acceptance.limits(), job.get("paint_stage", "paint"))
+
+    def items_folder_copy(self, job, chosen, files):
+        """A held item's pick in its family's folder of picked items (<out>/<family>/items/:
+        the chosen variant's <name>.glb and <name>.json side by side, the folder a humanoid
+        order takes as inputs.items); no pick removes the piece's earlier copy."""
+        folder = os.path.join(self.out, job["family"], job["items_folder"])
+        name = job["asset"]
+        for ext in (".glb", ".json"):
+            old = os.path.join(folder, name + ext)
+            if os.path.exists(old):
+                os.remove(old)
+        if not chosen:
+            return
+        os.makedirs(folder, exist_ok=True)
+        got = self.entry(chosen).get("files", {})
+        for role, key in (("glb", "items_glb"), ("sockets", "items_json")):
+            if role in got:
+                src = os.path.join(self.out, got[role][0])
+                p = os.path.join(folder, os.path.basename(src))
+                shutil.copyfile(src, p)
+                files[key] = [os.path.relpath(p, self.out), sha_file(p)]
 
     def final(self, job, d, rec, files):
         """The decision of a humanoid piece: the best acceptable variant copied to
@@ -243,9 +269,13 @@ class LocalSteps:
             why = "no variant is acceptable (most often responsible: %s)" % (summary["responsible_stage"] or "unknown")
         else:
             outcome = "picked"
-            why = ("acceptable variant without mesh or motion flags (the first such)" if not best["flags"] else
-                   "acceptable variant with the fewest and smallest flags: %d mesh, %d motion, excess %.2f" % (
-                       best["rank"]["mesh_flags"], best["rank"]["motion_flags"], best["rank"]["excess"]))
+            if not best["flags"] and best["rank"]["excess"]:
+                why = "acceptable variant without flags and with the best fit (excess %.2f)" % best["rank"]["excess"]
+            elif not best["flags"]:
+                why = "acceptable variant without mesh or motion flags (the first such)"
+            else:
+                why = "acceptable variant with the fewest and smallest flags: %d mesh, %d motion, excess %.2f" % (
+                    best["rank"]["mesh_flags"], best["rank"]["motion_flags"], best["rank"]["excess"])
         dest = os.path.join(d, "final")
         if os.path.isdir(dest):
             shutil.rmtree(dest)  # the copy of an earlier pick
@@ -256,6 +286,8 @@ class LocalSteps:
                 p = os.path.join(dest, os.path.basename(src))
                 shutil.copyfile(src, p)
                 files[role] = [os.path.relpath(p, self.out), sha_file(p)]
+        if job.get("items_folder"):
+            self.items_folder_copy(job, chosen, files)
         reserve = job.get("reserve") or {}
         if not reserve.get("variants"):
             reserve_info = None

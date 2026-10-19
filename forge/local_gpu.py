@@ -19,6 +19,7 @@ are the arguments the runner actually gave the tool (the effective parameters; t
 import functools
 import json
 import os
+import shutil
 import subprocess
 import time
 
@@ -44,13 +45,22 @@ CREATURE_FILES = [CREATURE_SCRIPT, os.path.join(TOOLS, "blender", "creature_bone
                   os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
 SHEET_FILES = ("project.godot", "sheet.tscn", "sheet.gd")
 SHEET_LAYOUT = os.path.join(ROOT, "forge", "sheet_layout.py")
+ITEM_SCRIPT = os.path.join(TOOLS, "blender", "held_item_export.py")
+ITEM_FILES = [ITEM_SCRIPT, os.path.join(TOOLS, "blender", "held_item_geometry.py"),
+              os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
+FIGURE_SCRIPT = os.path.join(TOOLS, "blender", "held_item_figure.py")
+HOLD_FILES = [FIGURE_SCRIPT, os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT,
+              EXPORT_SCRIPT, BONES_SCRIPT, os.path.join(ROOT, "forge", "tool_specs.py")]
+ITEM_SHEET_FILES = ("project.godot", "item_sheet.tscn", "item_sheet.gd")
+ITEM_SHEET_LAYOUT = os.path.join(ROOT, "forge", "item_sheet_layout.py")
 
 RIG_METHODS = {
     "skintokens": ("skintokens_dir", "skintokens_python"),
     "unirig": ("unirig_dir", "unirig_venv", "unirig_hf", "unirig_shim"),
 }
 STEP_TOOLS = {"export": ("blender_python",), "review": ("godot",), "parts": ("blender_python",),
-              "creature_export": ("blender_python",), "sheet": ("godot",)}
+              "creature_export": ("blender_python",), "sheet": ("godot",), "item": ("blender_python",),
+              "hold": ("blender_python",), "item_sheet": ("godot",)}
 # Creature motion report thresholds: name -> command-line option.
 CREATURE_THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "reach_shortfall_cm": "--max-reach",
                        "stretch_p95": "--max-stretch", "below_ground_cm": "--max-below-ground"}
@@ -178,6 +188,12 @@ def tool_fingerprint(job, config):
         scripts, extra = list(CREATURE_FILES), {}
     elif tool == "sheet":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in SHEET_FILES] + [SHEET_LAYOUT], {}
+    elif tool == "item":
+        scripts, extra = list(ITEM_FILES), {}
+    elif tool == "hold":
+        scripts, extra = list(HOLD_FILES), {}
+    elif tool == "item_sheet":
+        scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in ITEM_SHEET_FILES] + [ITEM_SHEET_LAYOUT], {}
     else:
         return None
     files = {os.path.basename(p): (sha_file_cached(p) if os.path.isfile(p) else "missing") for p in scripts}
@@ -206,7 +222,13 @@ def manual_frame(out_dir):
     """SHA-256 of <out_dir>/frame.json when a person marked it "manual": true (the parts
     tool then turns the object as it says: a changed manual frame redoes the parts), else
     None."""
-    path = os.path.join(out_dir, "frame.json")
+    return manual_file(out_dir, "frame.json")
+
+
+def manual_file(out_dir, name):
+    """SHA-256 of <out_dir>/<name> when a person marked it "manual": true (the tool then
+    reads it instead of its own proposal), else None."""
+    path = os.path.join(out_dir, name)
     if not os.path.isfile(path):
         return None
     try:
@@ -924,6 +946,270 @@ def sheet_runner(factory, job, out_dir):
 
 
 RUNNERS.update({"parts": parts_runner, "creature_export": creature_export_runner, "sheet": sheet_runner})
+
+
+# ---- held items: the item, the reference figure holding it, the sheet ----------------------------
+
+@_gpu_locked("item")
+def run_item(mesh, out, config, item, name="model", params=None, metal_roughness=None, image_format=None,
+             front=None, top=None, snap=None, tolerance_cm=None, timeout=3600):
+    """The held item (tools/blender/held_item_export.py in blender_python): the painted mesh
+    put in item space at its real size (params: length or height, tris), its sockets proposed
+    from the class template of `item` (the order's item object). Returns {glb, sockets, model,
+    mesh_report, frame, socket_map}."""
+    _require(config, "item")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    spec = os.path.join(out, "item_spec.json")
+    write_json(spec, item)
+    image_format = image_format or "lossless"
+    if image_format not in IMAGE_FORMATS:
+        raise ValueError("unknown image format %r (known: %s)" % (image_format, ", ".join(IMAGE_FORMATS)))
+    cmd = [config["blender_python"], ITEM_SCRIPT, "--mesh", os.path.abspath(mesh), "--out", out, "--name", name,
+           "--spec", spec, "--image-format", image_format]
+    params = params or {}
+    settings = {"name": name, "image_format": image_format, "item": item}
+    for k, opt in (("length", "--length"), ("height", "--height"), ("tris", "--tris")):
+        if params.get(k) is not None:
+            cmd += [opt, str(params[k])]
+            settings[k] = params[k]
+    for k, opt, v in (("front", "--front", front), ("top", "--top", top), ("tolerance_cm", "--tolerance-cm",
+                                                                            tolerance_cm)):
+        if v is not None:
+            cmd += [opt, str(v)]
+            settings[k] = v
+    if snap is not None:
+        cmd += ["--snap", "1" if snap else "0"]
+        settings["snap"] = bool(snap)
+    inputs = [_input("mesh", mesh)]
+    if metal_roughness:
+        cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
+        inputs.append(_input("metal_roughness", metal_roughness))
+    for stale in ("model.json", "mesh_report.json", name + ".json", name + ".glb"):
+        if os.path.exists(os.path.join(out, stale)):
+            os.remove(os.path.join(out, stale))
+    seconds, text = _run(cmd, out, "item", timeout=timeout)
+    files = {"glb": os.path.join(out, name + ".glb"), "sockets": os.path.join(out, name + ".json"),
+             "model": os.path.join(out, "model.json"), "mesh_report": os.path.join(out, "mesh_report.json"),
+             "frame": os.path.join(out, "frame.json"), "socket_map": os.path.join(out, "sockets.json")}
+    missing = [p for p in files.values() if not os.path.exists(p)]
+    if missing:
+        raise ToolError("item did not write %s, see %s" % (", ".join(missing), os.path.join(out, "item.stdout.log")))
+    version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
+    tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
+    rec = _record(ITEM_SCRIPT, ITEM_FILES, tools, settings, inputs)
+    rec["exec_seconds"] = seconds
+    rec["command"] = cmd
+    _write_provenance(out, "item", rec, files)
+    return files
+
+
+def item_runner(factory, job, out_dir):
+    """The held item of a variant's painted mesh (args: name, item, length, height, tris,
+    image_format, front, top, snap, tolerance_cm)."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    mesh, _ = factory.resolve(ins["mesh"])
+    mr = factory.resolve(ins["metal_roughness"])[0] if "metal_roughness" in ins else None
+    params = {k: args[k] for k in ("length", "height", "tris") if k in args}
+    files = run_item(mesh, out_dir, factory.config, args["item"], name=args.get("name", "model"), params=params,
+                     metal_roughness=mr, image_format=args.get("image_format"), front=args.get("front"),
+                     top=args.get("top"), snap=args.get("snap"), tolerance_cm=args.get("tolerance_cm"))
+    rec = _step_record(out_dir, "item")
+    settings = rec.get("settings", {})
+    return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
+
+
+# The reference figure is exported at its full mesh (no reduction, so no normal-map bake) with
+# a small unbaked normal map: the hold export only shows the item in the figure's hands.
+HOLD_TRIS = 10 ** 8
+HOLD_NORMAL_MAP = 256
+HOLD_THRESHOLDS = ("hand_socket_cm", "penetration_cm")
+
+
+@_gpu_locked("hold")
+def run_hold(item_glb, item_json, figure, clips, out, config, cls, name="model", clip_names=None, height=None,
+             thresholds=None, timeout=7200):
+    """The reference figure holding a held item: the figure made ready as a rig
+    (tools/blender/held_item_figure.py: an exported figure's item bones, item_ref and
+    animations removed), then the humanoid exporter (run_export) with the item's folder
+    (out/items: <name>.glb and <name>.json) and the clips of the motion library that hold the
+    item's class (clip_names, else its first idle and aim clips; out/clips.json). Returns
+    {glb, model, mesh_report, motion_report, bone_map, clips, figure}."""
+    from . import tool_specs
+    _require(config, "hold")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    items = os.path.join(out, "items")
+    if os.path.isdir(items):
+        shutil.rmtree(items)
+    os.makedirs(items)
+    shutil.copyfile(item_glb, os.path.join(items, name + ".glb"))
+    shutil.copyfile(item_json, os.path.join(items, name + ".json"))
+    with open(clips, encoding="utf-8-sig") as f:
+        library = json.load(f)
+    names, problems = tool_specs.select_hold_clips(library, cls, clip_names)
+    if problems:
+        raise ToolError("hold cannot run: %s" % "; ".join(problems), retry=False)
+    chosen = {k: v for k, v in library.items() if k != "anims"}
+    chosen["anims"] = {n: library["anims"][n] for n in names}
+    clips_out = os.path.join(out, "clips.json")
+    write_json(clips_out, chosen)
+    rig = os.path.join(out, "figure_rig.glb")
+    report = os.path.join(out, "figure.json")
+    for stale in (rig, report):
+        if os.path.exists(stale):
+            os.remove(stale)
+    t0 = time.time()
+    cmd = [config["blender_python"], FIGURE_SCRIPT, "--figure", os.path.abspath(figure), "--out", rig,
+           "--report", report]
+    _run(cmd, out, "figure", timeout=timeout)
+    if not os.path.exists(rig):
+        raise ToolError("hold: the figure was not made ready, see %s" % os.path.join(out, "figure.stdout.log"))
+    params = {"tris": HOLD_TRIS, "normal_map": HOLD_NORMAL_MAP}
+    if height is not None:
+        params["height"] = height
+    files = run_export(rig, out, config, params=params, clips=clips_out, items=items, name="figure",
+                       thresholds=thresholds or None)
+    files = {k: files[k] for k in ("glb", "model", "mesh_report", "motion_report", "bone_map")}
+    files.update(clips=clips_out, figure=report)
+    tools = {"blender_python": {"path": config["blender_python"]}}
+    settings = {"name": name, "class": cls, "clips": names, "height": height or 1.8, "tris": HOLD_TRIS,
+                "normal_map": HOLD_NORMAL_MAP}
+    if thresholds:
+        settings["thresholds"] = dict(thresholds)
+    inputs = [_input("item", item_glb), _input("sockets", item_json), _input("figure", figure),
+              _input("clips", clips)]
+    rec = _record(FIGURE_SCRIPT, HOLD_FILES, tools, settings, inputs)
+    rec["exec_seconds"] = round(time.time() - t0, 2)
+    rec["command"] = cmd
+    _write_provenance(out, "hold", rec, files)
+    return files
+
+
+def hold_runner(factory, job, out_dir):
+    """The reference figure holding a variant's item (args: name, class, clips, height,
+    hand_socket_cm, penetration_cm). An invalid bone map of the figure stops it (not
+    retried)."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    glb, _ = factory.resolve(ins["glb"])
+    sockets, _ = factory.resolve(ins["sockets"])
+    thresholds = {k: args[k] for k in HOLD_THRESHOLDS if k in args}
+    files = run_hold(glb, sockets, ins["figure"]["file"], ins["clips"]["file"], out_dir, factory.config,
+                     args.get("class"), name=args.get("name", "model"), clip_names=args.get("clips"),
+                     height=args.get("height"), thresholds=thresholds or None)
+    rec = _step_record(out_dir, "hold")
+    settings = dict(rec.get("settings", {}))
+    settings.update(settings.pop("thresholds", {}) or {})
+    return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
+
+
+@_gpu_locked("item_sheet")
+def run_item_sheet(glbs, out, config, camera=None, labels=None, holds=None, name="sheet", verdicts=None,
+                   banner=None, timeout=900):
+    """One review sheet of a held item's variants: the factory lays it out
+    (forge/item_sheet_layout.py, from each variant's model.json and reports) and Godot renders
+    it (tools/review_godot/item_sheet.gd). glbs: per variant the item's GLB or a failure mark;
+    holds: per variant the reference figure's GLB from the hold stage, a failure mark, or None
+    (hold skipped). Returns {"sheet": <out>/<name>.png, "layout": <out>/<name>.png.json}."""
+    from . import item_sheet_layout, sheet_layout
+    _require(config, "item_sheet")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    sheet = os.path.join(out, name + ".png")
+    variants, inputs = [], []
+    labels = list(labels or [])
+    verdicts = list(verdicts or [])
+    holds = list(holds or [])
+    for i, g in enumerate(glbs):
+        label = labels[i] if i < len(labels) else "v%d" % (i + 1)
+        reason = _failure(g)
+        entry = {"label": label, "verdict": verdicts[i] if i < len(verdicts) else None, "hold": None}
+        if reason is not None:
+            entry.update(failed=True, reason=reason)
+        else:
+            g = os.path.abspath(g)
+            entry.update(failed=False, glb=g.replace(os.sep, "/"))
+            inputs.append(_input("variant/" + label, g))
+            for side in ("model.json", "mesh_report.json"):
+                p = os.path.join(os.path.dirname(g), side)
+                entry[side.split(".")[0]] = sheet_layout.read_json(p)
+                if os.path.exists(p):
+                    inputs.append(_input("variant/%s/%s" % (label, side), p))
+            h = holds[i] if i < len(holds) else None
+            if h is not None:
+                why = _failure(h)
+                if why is not None:
+                    entry["hold"] = {"failed": True, "reason": why}
+                else:
+                    h = os.path.abspath(h)
+                    hold = {"failed": False, "glb": h.replace(os.sep, "/")}
+                    inputs.append(_input("variant/%s/hold" % label, h))
+                    for side in ("model.json", "motion_report.json"):
+                        p = os.path.join(os.path.dirname(h), side)
+                        hold[side.split(".")[0]] = sheet_layout.read_json(p)
+                        if os.path.exists(p):
+                            inputs.append(_input("variant/%s/hold/%s" % (label, side), p))
+                    entry["hold"] = hold
+        variants.append(entry)
+    layout = item_sheet_layout.layout(variants, camera or {}, banner=banner)
+    request = os.path.join(out, name + "_request.json")
+    write_json(request, dict(layout, out=sheet.replace(os.sep, "/")))
+    for stale in (sheet, sheet + ".json"):
+        if os.path.exists(stale):
+            os.remove(stale)
+    cmd = [config["godot"], "--path", REVIEW_PROJECT, "--audio-driver", "Dummy", "--windowed",
+           "--position", "-20000,-20000", "--resolution", "64x64", "res://item_sheet.tscn", "--",
+           "--request", request.replace(os.sep, "/")]
+    seconds, text = _run(cmd, out, "review", timeout=timeout)
+    if not os.path.exists(sheet):
+        raise ToolError("review did not write %s, see %s" % (sheet, os.path.join(out, "review.stderr.log")))
+    layout["load_failures"] = [ln.split(" ", 2)[2] for ln in text.splitlines() if ln.startswith("SHEET: failed ")]
+    write_json(sheet + ".json", layout)
+    files = {"sheet": sheet, "layout": sheet + ".json"}
+    version = next((ln.split(" - ")[0].replace("Godot Engine ", "").strip() for ln in text.splitlines()
+                    if ln.startswith("Godot Engine ")), None)
+    tools = {"godot": {"path": config["godot"], "version": version}}
+    scripts = [os.path.join(REVIEW_PROJECT, f) for f in ITEM_SHEET_FILES] + [ITEM_SHEET_LAYOUT]
+    rec = _record(os.path.join(REVIEW_PROJECT, "item_sheet.gd"), scripts, tools, dict(layout["camera"]), inputs)
+    rec["exec_seconds"] = seconds
+    rec["command"] = cmd
+    _write_provenance(out, "review", rec, files)
+    return files
+
+
+def item_sheet_runner(factory, job, out_dir):
+    """The review sheet of every variant of a held item: failures marked, verdicts and the
+    no-variant banner as the other recipes', and each variant's figure from its hold stage
+    (args: the review camera, side_width, hold_height)."""
+    from . import acceptance
+    glbs, labels = review_variants(factory, job)
+    holds = []
+    for v in job["variants"]:
+        h = v.get("hold")
+        if not h:
+            holds.append(None)
+        elif factory.done_ok(h):
+            holds.append(factory.resolve({"ref": h, "role": "glb"})[0])
+        else:
+            holds.append("!" + variant_failure(factory, {"chain": [h]}))
+    camera = dict(job.get("args", {}))
+    verdicts, summary = factory.decision(job)
+    shown = [{"class": v["class"], "reasons": acceptance.first_reasons(v)} for v in verdicts]
+    banner = None
+    if not summary["acceptable"]:
+        top = summary["responsible_stage"] or "unknown"
+        banner = "no variant passed: most often the %s (%d of %d)" % (
+            top, summary["responsible_counts"].get(top, 0), len(verdicts))
+    files = run_item_sheet(glbs, out_dir, factory.config, camera=camera, labels=labels, holds=holds,
+                           verdicts=shown, banner=banner)
+    rec = _step_record(out_dir, "review")
+    settings = dict(rec.get("settings", {}))
+    return {"files": files, "passed": {k: settings[k] for k in camera if k in settings}, "provenance": rec}
+
+
+RUNNERS.update({"item": item_runner, "hold": hold_runner, "item_sheet": item_sheet_runner})
 
 
 if __name__ == "__main__":  # a manual check of this machine's configuration

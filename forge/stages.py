@@ -28,10 +28,11 @@ Option fields (all optional except kind):
             or override (the effective-parameters record says why it cannot know them)
 
 A setting declaration:
-  type      "int" (whole number), "number", "seed" (whole number 0 to 2**64-1), "bool" or
+  type      "int" (whole number), "number", "seed" (whole number 0 to 2**64-1), "bool",
             "combo" (a name from the server's list for that input: checked by the
-            environment check, forge.readiness)
+            environment check, forge.readiness) or "choice" (one of "choices", checked here)
   min, max  inclusive range ("int", "number")
+  choices   the names a "choice" setting may take
   step      the value must be a multiple of it ("int")
   to        list of "<node>.<input>" of the option's workflow it lands on (comfy)
   arg       the argument of the option's tool it lands on (local, local_gpu)
@@ -316,9 +317,68 @@ CREATURE_DEFAULTS = {"reference": "qwen21_base", "pose": "qwen_edit_2511", "cuto
                      "paint": "hunyuan_paint", "rig": "skintokens", "export": "creature_export",
                      "review": "layout_sheet"}
 CREATURE_SKIPPABLE = ("pose", "paint")
+# Options of the held-item recipe (forge/recipes.py recipe_held_item): the object generated
+# from a strict side view, put in item space with its sockets (the socket file the humanoid
+# exporter reads), then held by a reference figure for the review.
+ITEM_AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
+HELD_ITEM_OPTIONS = dict(_FRONT_STAGES, **{
+    "item": {
+        "item_frame": {
+            "kind": "local_gpu", "tool": "item", "group": "local_gpu",
+            "outputs": ("glb", "sockets", "model", "mesh_report", "frame", "socket_map"), "tools": ("blender_python",),
+            "params": ("tris", "height", "length", "image_format"),
+            "meaning": "the painted mesh put in item space (front +x, top +z, the grip at the origin) at its real size, "
+                       "squared to its principal axes when long and straight, its sockets proposed from the class "
+                       "template, and the socket file",
+            "settings": {
+                "front": {"type": "choice", "choices": ITEM_AXES, "arg": "front",
+                          "meaning": "the glTF axis the generated item's front points along (default +x: to the right "
+                                     "of the side view)"},
+                "top": {"type": "choice", "choices": ITEM_AXES, "arg": "top",
+                        "meaning": "the glTF axis the generated item's top points along (default +y)"},
+                "snap": {"type": "bool", "arg": "snap",
+                         "meaning": "square the item to its principal axes when it came out turned by 8 to 30 degrees "
+                                    "(default: the class template's)"},
+                "tolerance_cm": {"type": "number", "min": 0.0, "max": 20.0, "arg": "tolerance_cm",
+                                 "meaning": "how far from the surface a socket may lie before it is flagged off the "
+                                            "mesh, outside its cross-section (default 1)"},
+            }},
+    },
+    "hold": {
+        "figure_hold": {
+            "kind": "local_gpu", "tool": "hold", "group": "local_gpu",
+            "outputs": ("glb", "model", "mesh_report", "motion_report", "bone_map", "clips", "figure"),
+            "tools": ("blender_python",), "inputs": ("figure", "clips"),
+            "meaning": "the humanoid exporter run on the order's reference figure with this variant's item and the "
+                       "class's clips of the order's motion library (for the review sheet)",
+            "settings": {
+                "height": {"type": "number", "min": 0.3, "max": 4.0, "arg": "height",
+                           "meaning": "the reference figure's height in metres (default 1.8)"},
+                "hand_socket_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "hand_socket_cm",
+                                   "meaning": "motion report threshold: wrist to socket in cm"},
+                "penetration_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "penetration_cm",
+                                   "meaning": "motion report threshold: body inside the item in cm"},
+            }},
+    },
+    "review": {
+        "item_sheet": {
+            "kind": "local_gpu", "tool": "item_sheet", "group": "local_gpu", "outputs": ("sheet", "layout"),
+            "tools": ("godot",),
+            "settings": {
+                "side_width": {"type": "int", "min": 128, "max": 2048, "arg": "side_width",
+                               "meaning": "width of the large side view with the sockets in pixels (default 640)"},
+                "hold_height": {"type": "int", "min": 64, "max": 1024, "arg": "hold_height",
+                                "meaning": "height of each held-pose figure in pixels (default twice figure_height)"},
+            }},
+    },
+})
+HELD_ITEM_DEFAULTS = {"reference": "qwen21_base", "cutout": "birefnet", "mesh": "trellis2", "paint": "hunyuan_paint",
+                      "item": "item_frame", "hold": "figure_hold", "review": "item_sheet"}
+HELD_ITEM_SKIPPABLE = ("paint", "hold")
 STAGE_ORDER = {
     "articulated": ("reference", "cutout", "mesh", "paint", "parts", "review"),
     "creature": ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "review"),
+    "held_item": ("reference", "cutout", "mesh", "paint", "item", "hold", "review"),
 }
 
 # recipe -> stage -> {"default": option, "skippable": bool, "options": {option: fields}}.
@@ -340,6 +400,8 @@ CATALOGUE = {
                             "options": ARTICULATED_OPTIONS[stage]} for stage in STAGE_ORDER["articulated"]},
     "creature": {stage: {"default": CREATURE_DEFAULTS[stage], "skippable": stage in CREATURE_SKIPPABLE,
                          "options": CREATURE_OPTIONS[stage]} for stage in STAGE_ORDER["creature"]},
+    "held_item": {stage: {"default": HELD_ITEM_DEFAULTS[stage], "skippable": stage in HELD_ITEM_SKIPPABLE,
+                          "options": HELD_ITEM_OPTIONS[stage]} for stage in STAGE_ORDER["held_item"]},
 }
 
 # Inputs of a workflow that an implementation is known to ignore or override: the
@@ -383,7 +445,7 @@ RECIPE_INPUTS = {
     "prop": ("reference",),
 }
 # Piece keys only some recipes read (the order check refuses them elsewhere).
-RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("creature",)}
+RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("creature",), "item": ("held_item",)}
 # Inputs that are folders (they enter the job specification by the files inside them);
 # every other input is a file.
 FOLDER_INPUTS = ("items",)
@@ -489,6 +551,8 @@ def setting_problem(decl, v):
         return None if isinstance(v, bool) else "true or false"
     if kind == "combo":
         return None if isinstance(v, str) and v.strip() else "a name (text)"
+    if kind == "choice":
+        return None if v in decl["choices"] else "one of %s" % ", ".join(decl["choices"])
     lo, hi = decl.get("min"), decl.get("max")
     if kind == "int":
         ok = _is_int(v)
