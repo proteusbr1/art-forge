@@ -216,7 +216,7 @@ HUMANOID_OPTIONS = {
         "humanoid_export": {
             "kind": "local_gpu", "tool": "export", "group": "local_gpu",
             "outputs": ("glb", "model", "regions_mask", "bone_map", "mesh_report", "motion_report"),
-            "tools": ("blender_python",), "inputs": ("clips", "items", "bone_map"),
+            "tools": ("blender_python",), "inputs": ("clips", "items", "bone_map", "body"),
             "params": ("tris", "texture", "height", "head", "hands", "feet", "widen", "image_format"),
             "settings": {
                 "normal_map": {"type": "int", "min": 256, "max": 8192, "arg": "normal_map",
@@ -232,6 +232,22 @@ HUMANOID_OPTIONS = {
                                 "meaning": "motion report threshold: 95th percentile of edge stretch"},
                 "penetration_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "penetration_cm",
                                    "meaning": "motion report threshold: body inside a held item in cm"},
+                # With inputs.body only (the conform's flags: tools/blender/humanoid_fit.py).
+                "conform_joint_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "conform_joint_cm",
+                                     "meaning": "conform flag: a body joint this far (cm) from the conformed "
+                                                "variant's (default 4)"},
+                "conform_outside_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "conform_outside_cm",
+                                       "meaning": "conform flag: a body joint this far (cm) outside the outfit "
+                                                  "(default 1.5)"},
+                "conform_scale": {"type": "number", "min": 1.0, "max": 10.0, "arg": "conform_scale",
+                                  "meaning": "conform flag: a segment stretched or shrunk by more than this factor "
+                                             "(default 1.5)"},
+                "conform_torn_share": {"type": "number", "min": 0.0, "max": 1.0, "arg": "conform_torn_share",
+                                       "meaning": "conform flag: this share of the edges stretched over twice or "
+                                                  "under half their length (default 0.002)"},
+                "conform_floor_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "conform_floor_cm",
+                                     "meaning": "conform flag: the outfit's soles this far (cm) below or above the "
+                                                "body's floor (default 4)"},
             }},
     },
     "review": {
@@ -449,9 +465,14 @@ RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("cr
                "item": ("held_item",)}
 # The tools of the humanoid motions' text source (HY-Motion Lite, forge/motion_text.py).
 MOTION_TEXT_TOOLS = ("hymotion_python", "hymotion_dir", "hymotion_model", "hymotion_text_encoder", "hymotion_clip")
+# The export settings that only a piece wearing an approved body (inputs.body) uses.
+CONFORM_SETTINGS = ("conform_joint_cm", "conform_outside_cm", "conform_scale", "conform_torn_share",
+                    "conform_floor_cm")
 # Inputs that are folders (they enter the job specification by the files inside them);
 # every other input is a file.
 FOLDER_INPUTS = ("items",)
+# Inputs a piece may set to null to drop its family's default (a piece that wears no body).
+NULLABLE_INPUTS = ("body",)
 # Inputs that may also be an object {"v<seed>" or "<seed>": file}: one file per variant.
 VARIANT_INPUTS = ("bone_map",)
 

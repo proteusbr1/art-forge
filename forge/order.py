@@ -219,6 +219,8 @@ def _check_piece(where, recipe, piece, config, problems):
         inputs = {}
     allowed = stages.allowed_inputs(recipe, piece)
     for name, path in inputs.items():
+        if name in stages.NULLABLE_INPUTS and path is None:
+            continue  # a piece's null drops its family's input (a piece that wears no body)
         if name in allowed and name in stages.VARIANT_INPUTS and isinstance(path, dict):
             # One file per variant: each must be a file (the variant names: check_humanoid).
             for key, p in path.items():
@@ -259,7 +261,7 @@ def _check_piece(where, recipe, piece, config, problems):
                 where, recipe, key, ", ".join(users)))
     if "accept" in piece:
         if decides:
-            acceptance.check(where, piece["accept"], problems, recipe)
+            acceptance.check(where, piece["accept"], problems, acceptance.decision_recipe(recipe, piece))
         else:
             problems.append("%s: recipe %s has no acceptance criteria; remove accept" % (where, recipe))
     if "reserve" in piece:

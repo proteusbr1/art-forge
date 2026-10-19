@@ -1,0 +1,27 @@
+{
+ "version": 1,
+ "note": "Sample order of humanoids that wear an approved body: the crew's outfits are conformed to body_a (the family's), one piece wears body_b instead, and the plain figure the bodies would be approved from wears none (null drops the family's). The bodies are the synthetic figures the body smoke test exports under local/fixtures/humanoid_body/ (tests/test_humanoid_body_smoke.py); the motion library and the held item are the synthetic fixtures.",
+ "style": {
+  "global": "Original character design, clean readable shapes, realistic proportions, high detail.",
+  "view_humanoid": "Full body figure standing in an A-pose, arms angled down and out from the body, open empty hands held apart from the hips, the whole figure in frame from head to feet, plain neutral grey background, even soft light."
+ },
+ "families": [
+  {"id": "crew", "recipe": "humanoid", "variants": 3,
+   "style": "A member of a small station crew in practical work clothing of muted colours.",
+   "params": {"tris": 25000, "texture": 2048},
+   "inputs": {"clips": "humanoid/library.json", "items": "humanoid/items",
+              "body": "../../local/fixtures/humanoid_body/body_a/body_a.glb"},
+   "review": {"pitch": 60, "directions": 8, "figure_height": 96, "front": true},
+   "assets": [
+    {"id": "plain", "brief": "A crew member in a plain grey jumpsuit and soft boots, no gear.",
+     "inputs": {"body": null}, "params": {"height": 1.8}},
+    {"id": "technician", "brief": "A technician in grey work overalls with rolled sleeves, a tool belt and sturdy boots.",
+     "accept": {"conform_stretch_p95": 0.3}},
+    {"id": "hazard", "brief": "A crew member in a bulky padded hazard suit with a hood, thick gloves and heavy boots.",
+     "stages": {"export": {"option": "humanoid_export", "settings": {"conform_floor_cm": 6.0}}}},
+    {"id": "pilot", "brief": "A pilot in a fitted flight suit with a harness and light boots.",
+     "inputs": {"body": "../../local/fixtures/humanoid_body/body_b/body_b.glb"}}
+   ]}
+ ],
+ "tasks": []
+}

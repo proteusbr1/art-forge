@@ -38,10 +38,20 @@ ACCEPT = {
 EXTRA_ACCEPT = {
     "below_ground_cm": ("number", None, "deepest vertex below the ground over the clips, cm"),
 }
+# Measures of the conform report of a humanoid that wears an approved body (inputs.body):
+# its own decision recipe, "humanoid_body", so a humanoid without a body keeps its limits.
+CONFORM_ACCEPT = {
+    "conform_flags": ("int", 0, "conform flags a variant may have (conform_report.json flags)"),
+    "conform_stretch_p95": ("number", None, "95th percentile of the edges' stretch by the conform"),
+    "body_outside_cm": ("number", None, "99th percentile of how far the approved body's surface lies outside "
+                                        "the conformed outfit, cm"),
+}
 ALL_ACCEPT = dict(ACCEPT, **EXTRA_ACCEPT)
+ALL_ACCEPT.update(CONFORM_ACCEPT)
 # The limits each recipe with a decision has, in this order.
 RECIPE_ACCEPT = {
     "humanoid": tuple(ACCEPT),
+    "humanoid_body": tuple(ACCEPT) + tuple(CONFORM_ACCEPT),
     "creature": ("mesh_flags", "missing_clips", "foot_slide_cm", "reach_shortfall_cm", "stretch_p95",
                  "below_ground_cm"),
     "articulated": ("mesh_flags",),
@@ -79,6 +89,12 @@ MESH_FLAG_STAGES = (
      "the generated shape or the class template (or a manual sockets file) may be at fault"),
     (r"^frame: ", "unknown", "the concept may not be a side view, or the mesh generator turned the item"),
 )
+# The stage held responsible for a conform flag (conform_report.json "flags"), by its text:
+# the conform follows the rig's joints and weights; the soles are the outfit's own shape.
+CONFORM_FLAG_STAGES = (
+    (r"^(joints|scale|outside|tear|bone map):", "rig", "the conform follows the predicted joints and weights"),
+    (r"^floor:", "unknown", "the outfit's soles (the mesh) or its predicted ankles (the rig)"),
+)
 # The stage held responsible for the other kinds of violation.
 RESPONSIBLE = {
     "bone_map": "rig",            # an export stopped by an invalid bone map: the rig's skeleton
@@ -89,6 +105,8 @@ RESPONSIBLE = {
     "report_unreadable": "export",  # a report the exporter wrote cannot be read
     "motion_not_finite": "unknown",  # a NaN or infinite motion value (degenerate skin or retarget)
     "not_finished": "unknown",    # a variant that stopped without a failed job
+    "conform_stretch_p95": "rig",  # the conform moves the mesh by the rig's weights
+    "body_outside_cm": "mesh",    # the outfit is thinner than the body: its generated shape
 }
 
 
@@ -113,6 +131,15 @@ def check(where, accept, problems, recipe="humanoid"):
             problems.append("%s: accept %s must be a whole number of at least 0, not %r" % (where, k, v))
         elif ALL_ACCEPT[k][0] == "number" and not (is_number(v) and v >= 0):
             problems.append("%s: accept %s must be a number of at least 0, not %r" % (where, k, v))
+
+
+def decision_recipe(recipe, piece):
+    """The recipe whose limits a piece's decision has: "humanoid_body" for a humanoid that
+    wears an approved body (inputs.body), else the recipe."""
+    inputs = piece.get("inputs") if isinstance(piece, dict) else None
+    if recipe == "humanoid" and isinstance(inputs, dict) and inputs.get("body"):
+        return "humanoid_body"
+    return recipe
 
 
 def limits(accept=None, recipe="humanoid"):
@@ -156,10 +183,11 @@ def variant_records(factory, job):
     out = []
     for v in job["variants"]:
         rec = {"job": v["job"], "variant": v["variant"], "complete": factory.done_ok(v["job"]),
-               "reserve": bool(v.get("reserve")), "failure": None, "mesh_report": None, "motion_report": None}
+               "reserve": bool(v.get("reserve")), "failure": None, "mesh_report": None, "motion_report": None,
+               "conform_report": None}
         if rec["complete"]:
             files = factory.entry(v["job"]).get("files", {})
-            for role in ("mesh_report", "motion_report"):
+            for role in ("mesh_report", "motion_report", "conform_report"):
                 if role in files:
                     rec[role] = _read(os.path.join(factory.out, files[role][0]))
         else:
@@ -212,6 +240,7 @@ def classify(records, lim, paint_stage="paint"):
                     vs.append(_violation("bake_source_offset_m", RESPONSIBLE["bake_source_offset_m"],
                                          "bake source %.3f m off, over %s" % (off, lim["bake_source_offset_m"]),
                                          off, lim["bake_source_offset_m"]))
+            vs += _conform_violations(r.get("conform_report"), lim)
             motion = r.get("motion_report")
             if motion == "unreadable":
                 vs.append(_violation("motion_report", RESPONSIBLE["report_unreadable"], "motion report unreadable"))
@@ -262,6 +291,47 @@ def classify(records, lim, paint_stage="paint"):
                "responsible_counts": {s: counts[s] for s in top},
                "responsible_stage": top[0] if top else None, "motion_gated": motion_gated(lim)}
     return verdicts, summary
+
+
+def conform_flag_stage(flag):
+    """The stage responsible for one conform flag (CONFORM_FLAG_STAGES)."""
+    for pattern, stage, _ in CONFORM_FLAG_STAGES:
+        if re.search(pattern, flag):
+            return stage
+    return "unknown"
+
+
+def _conform_violations(conform, lim):
+    """The violations of a conform report (a variant that wears an approved body)."""
+    if conform is None:
+        return []
+    if conform == "unreadable" or not isinstance(conform, dict):
+        return [_violation("conform_report", RESPONSIBLE["report_unreadable"], "conform report unreadable")]
+    vs = []
+    flags = [f if isinstance(f, str) else json.dumps(f, sort_keys=True) for f in conform.get("flags") or []]
+    if len(flags) > lim.get("conform_flags", 0):
+        for f in flags:
+            vs.append(_violation("conform_flags", conform_flag_stage(f), "conform: " + f, len(flags),
+                                 lim.get("conform_flags", 0)))
+    measures = (("conform_stretch_p95", conform.get("stretch_p95"), "conform stretch p95 %.3g over %s"),
+                ("body_outside_cm", (conform.get("body_outside") or {}).get("p99_cm"),
+                 "body %.3g cm outside the outfit, over %s"))
+    for key, value, text in measures:
+        if is_number(value) and not math.isfinite(value):
+            vs.append(_violation(key, RESPONSIBLE["motion_not_finite"], "%s is %s" % (key, value), value, lim.get(key)))
+        elif is_number(value) and lim.get(key) is not None and value > lim[key]:
+            vs.append(_violation(key, RESPONSIBLE[key], text % (value, lim[key]), value, lim[key]))
+    return vs
+
+
+def conform_line(conform):
+    """One line of a conform report's measures for the review sheet, or None."""
+    if not isinstance(conform, dict) or not conform.get("valid"):
+        return None
+    out = (conform.get("body_outside") or {}).get("p99_cm")
+    return "conform: joints %.1f cm, stretch p95 %.2f%s, %d flags" % (
+        conform.get("joint_error_cm") or 0.0, conform.get("stretch_p95") or 0.0,
+        "" if out is None else ", body out %.1f cm" % out, len(conform.get("flags") or []))
 
 
 def _gated_motion(x):

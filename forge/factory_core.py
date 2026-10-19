@@ -267,6 +267,10 @@ class Factory(ComfyJobs, LocalSteps):
                 # A bone map corrected by hand next to the export ("manual": true) redoes it.
                 base["manual_bone_map"] = local_gpu.manual_bone_map(
                     os.path.join(self.asset_dir(job), slug(job["id"])))
+            elif job.get("tool") == "body_export":
+                # The variant's bone map is the conform's (<export>/conform/bone_map.json).
+                base["manual_bone_map"] = local_gpu.manual_bone_map(
+                    os.path.join(self.asset_dir(job), slug(job["id"]), "conform"))
             elif job.get("tool") == "parts":
                 # A frame corrected by hand next to the parts ("manual": true) redoes them.
                 base["manual_frame"] = local_gpu.manual_frame(os.path.join(self.asset_dir(job), slug(job["id"])))

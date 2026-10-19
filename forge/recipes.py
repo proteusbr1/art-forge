@@ -216,6 +216,8 @@ def recipe_material(fam, a, st):
 # --- humanoid: every variant goes through every stage; review and final see them all
 
 HUMANOID_SIZE = (1024, 1536)
+# The params an approved body sets (inputs.body): the order check refuses them on its pieces.
+BODY_PARAMS = ("height", "head", "hands", "feet", "widen")
 # Qwen Image Edit 2511 with the Lightning LoRA: 4 steps, CFG 1.
 EDIT_VALUES = {"$NEGATIVE$": "", "$STEPS$": 4, "$CFG$": 1.0, "$LORA$": 1.0}
 REVIEW_DEFAULTS = {"pitch": 60, "directions": 8, "figure_height": 96, "front": True}
@@ -223,6 +225,11 @@ EXPORT_PARAMS = ("height", "head", "hands", "feet", "widen", "image_format")
 # The rig's seed unless the order's rig setting "seed" gives another (the lab's SkinTokens
 # setting: seed 9001, 10 beams).
 RIG_SEED = 9001
+
+
+def body_model_path(body):
+    """The model.json of an approved body GLB (next to it)."""
+    return os.path.join(os.path.dirname(body), "model.json")
 
 
 def variant_bone_map(given, variant):
@@ -265,6 +272,7 @@ def recipe_humanoid(fam, a, st):
     w, h = a.get("size", fam.get("size", HUMANOID_SIZE))
     text, pose_text, cutout_text = humanoid_texts(st, fam, a)
     keep_texture = opts.get("paint", "trellis2_texture") == "trellis2_texture"
+    body = inputs.get("body") if "export" in opts else None
     jobs, variants = [], []
     motions_job = None
     if isinstance(a.get("motions"), list) and "export" in opts:
@@ -374,14 +382,23 @@ def recipe_humanoid(fam, a, st):
                 ins["bone_map"] = {"file": bone_map}
             args = {"name": aid, "tris": tris, "normal_map": tex}
             args.update({k: v for k, v in (a.get("params") or {}).items() if k in EXPORT_PARAMS})
-            last, role = add("export", {"kind": "local_gpu", "tool": "export", "inputs": ins, "args": args}), "glb"
+            tool = "export"
+            if body:
+                # The approved body: the variant conformed to it and exported on its skeleton
+                # (forge/local_gpu.py run_body_export); the body sets the height and proportions.
+                tool = "body_export"
+                ins["body"], ins["body_model"] = {"file": body}, {"file": body_model_path(body)}
+                for k in BODY_PARAMS:
+                    args.pop(k, None)
+            last, role = add("export", {"kind": "local_gpu", "tool": tool, "inputs": ins, "args": args}), "glb"
         entry = {"variant": v, "job": last, "role": role, "chain": list(chain)}
         if reserve:
             entry["reserve"] = True
         variants.append(entry)
     # The decisions' limits (the order's accept, else the defaults) and the stage held
     # responsible for the painted maps (the mesh stage's TRELLIS.2 bake when paint is skipped).
-    decision = {"accept": acceptance.limits(a.get("accept")),
+    decision = {"accept": acceptance.limits(a.get("accept"), "humanoid_body") if body else acceptance.limits(
+                    a.get("accept")),
                 "paint_stage": "paint" if "paint" in opts else "mesh"}
     main, extra = variants[:n], variants[n:]
 
@@ -465,6 +482,35 @@ def check_humanoid(where, piece, problems):
             problems.append("%s: params.texture %d: TRELLIS.2's bake takes 256 to 8192, a multiple of 256" % (where, tex))
     if "motions" in piece:
         check_humanoid_motions(where, piece, opts, problems)
+    check_humanoid_body(where, piece, opts, problems)
+
+
+def check_humanoid_body(where, piece, opts, problems):
+    """An approved body (inputs.body): a humanoid exporter's GLB with its model.json, not the
+    piece's own output; the body sets the height and proportions; the conform settings and
+    limits need it."""
+    from . import body as bodymod
+    inputs = piece.get("inputs") or {}
+    params = piece.get("params") or {}
+    body = inputs.get("body")
+    settings = stages.entry_settings((piece.get("stages") or {}).get("export"))
+    if not body:
+        given = sorted(k for k in settings if k in stages.CONFORM_SETTINGS)
+        if given:
+            problems.append("%s: export settings %s are the conform's: they need inputs.body (an approved body)" % (
+                where, ", ".join(given)))
+        return
+    if not isinstance(body, str) or "export" not in opts:
+        return  # the generic input check names it
+    fam, pid = where.split("/", 1) if "/" in where else ("", where)
+    if bodymod.wears_own_output(body, fam, pid):
+        problems.append("%s: inputs.body is this piece's own output (%s): a piece cannot wear its own pick (set "
+                        "\"body\": null in the piece's inputs to drop a family's body)" % (where, body))
+    for k in BODY_PARAMS:
+        if k in params:
+            problems.append("%s: params.%s: the approved body (inputs.body) sets the height and proportions; "
+                            "remove it" % (where, k))
+    problems.extend(bodymod.check_body(body, where))
 
 
 def check_humanoid_motions(where, piece, opts, problems):

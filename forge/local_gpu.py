@@ -35,6 +35,12 @@ MATERIALS_SCRIPT = os.path.join(TOOLS, "blender", "glb_materials.py")
 REVIEW_PROJECT = os.path.join(TOOLS, "review_godot")
 REVIEW_FILES = ("project.godot", "main.tscn", "main.gd")
 SKINTOKENS_ENTRY = os.path.join(TOOLS, "rig", "skintokens_entry.py")
+# A humanoid that wears an approved body (inputs.body): the conform, then the exporter run in
+# the body's frame (forge/body.py compares the result's skeleton with the body's).
+CONFORM_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_conform.py")
+BODY_EXPORT_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_body_export.py")
+BODY_FILES = [BODY_EXPORT_SCRIPT, CONFORM_SCRIPT, os.path.join(TOOLS, "blender", "humanoid_fit.py"),
+              os.path.join(TOOLS, "blender", "forge_blender.py"), os.path.join(ROOT, "forge", "body.py")]
 
 PARTS_SCRIPT = os.path.join(TOOLS, "blender", "articulated_export.py")
 PARTS_FILES = [PARTS_SCRIPT, os.path.join(TOOLS, "blender", "articulated_parts.py"),
@@ -58,7 +64,8 @@ RIG_METHODS = {
     "skintokens": ("skintokens_dir", "skintokens_python"),
     "unirig": ("unirig_dir", "unirig_venv", "unirig_hf", "unirig_shim"),
 }
-STEP_TOOLS = {"export": ("blender_python",), "review": ("godot",), "parts": ("blender_python",),
+STEP_TOOLS = {"export": ("blender_python",), "body_export": ("blender_python",), "review": ("godot",),
+              "parts": ("blender_python",),
               "creature_export": ("blender_python",), "sheet": ("godot",), "item": ("blender_python",),
               "hold": ("blender_python",), "item_sheet": ("godot",)}
 # Creature motion report thresholds: name -> command-line option.
@@ -69,6 +76,11 @@ MODEL_EXTENSIONS = (".ckpt", ".safetensors", ".pth", ".pt", ".bin")
 THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "hand_socket_cm": "--max-hand-socket",
               "reach_shortfall_cm": "--max-reach", "stretch_p95": "--max-stretch",
               "penetration_cm": "--max-penetration"}
+# Conform flag thresholds (a piece that wears a body): name -> command-line option of
+# tools/blender/humanoid_conform.py.
+CONFORM_THRESHOLDS = {"conform_joint_cm": "--max-joint-cm", "conform_outside_cm": "--max-outside-cm",
+                      "conform_scale": "--max-scale", "conform_torn_share": "--max-torn",
+                      "conform_floor_cm": "--max-floor-cm"}
 # Exit codes of the exporter when the bone map is invalid and when the mesh cannot be
 # exported (no UV layer or base colour): another try would fail the same way.
 # Image formats of the exported GLB (params.image_format): "lossless" writes every map as
@@ -180,6 +192,8 @@ def tool_fingerprint(job, config):
         extra = {"checkout_revision": _git_revision(folder) if folder else None}
     elif tool == "export":
         scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT], {}
+    elif tool == "body_export":
+        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT] + BODY_FILES, {}
     elif tool == "review":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in REVIEW_FILES], {}
     elif tool == "parts":
@@ -408,7 +422,7 @@ EXPORT_PARAMS = {"tris": "--tris", "height": "--height", "head": "--head", "hand
 @_gpu_locked("export")
 def run_export(rig, out, config, params=None, clips=None, items=None, name="model", bake_source=None,
                bone_map=None, glow=None, device=None, thresholds=None, metal_roughness=None,
-               material_source=None, image_format=None, timeout=7200):
+               material_source=None, image_format=None, timeout=7200, frame=None, after=None):
     """The humanoid export (tools/blender/humanoid_export.py in blender_python).
 
     params: tris, height, head, hands, feet, widen (piece params), normal_map (normal map
@@ -420,14 +434,20 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
     material_source: the painted mesh the rig was made from (maps the rig's material lacks
     are carried from it); image_format: "lossless" (default: every map PNG) or "compact"
     (base colour JPEG at quality 92, the technical maps PNG).
+    frame: a body frame file (humanoid_conform.py's frame.json): the exporter runs through
+    humanoid_body_export.py, in the body's frame; after(files, record): called before the
+    provenance is written (it may add files and edit the outputs).
     Returns {glb, model, regions_mask, bone_map, mesh_report[, motion_report]}."""
     _require(config, "export")
     params = dict(params or {})
     out = os.path.abspath(out)
     os.makedirs(out, exist_ok=True)
     device = (device or config.get("bake_device") or "GPU").upper()
-    cmd = [config["blender_python"], EXPORT_SCRIPT, "--rig", os.path.abspath(rig), "--out", out, "--name", name,
-           "--device", device]
+    if frame:
+        cmd = [config["blender_python"], BODY_EXPORT_SCRIPT, "--frame", os.path.abspath(frame)]
+    else:
+        cmd = [config["blender_python"], EXPORT_SCRIPT]
+    cmd += ["--rig", os.path.abspath(rig), "--out", out, "--name", name, "--device", device]
     tex = params.pop("normal_map", None) or params.get("texture") or 2048
     cmd += ["--tex", str(int(tex))]
     image_format = image_format or "lossless"
@@ -484,10 +504,110 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
         raise ToolError("export did not write %s, see %s" % (", ".join(missing), os.path.join(out, "export.stdout.log")))
     version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
     tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
-    rec = _record(EXPORT_SCRIPT, [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT], tools, settings, inputs)
+    scripts = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT] + ([BODY_EXPORT_SCRIPT] if frame else [])
+    rec = _record(EXPORT_SCRIPT, scripts, tools, settings, inputs)
     rec["exec_seconds"] = seconds
     rec["command"] = cmd
+    if frame:
+        rec["frame"] = _input("frame", frame)
+    if after is not None:
+        after(files, rec)
     _write_provenance(out, "export", rec, files)
+    return files
+
+
+# ---- a humanoid that wears an approved body --------------------------------------------------
+
+@_gpu_locked("export")
+def run_body_export(rig, out, config, body, body_model=None, params=None, clips=None, items=None, name="model",
+                    bake_source=None, bone_map=None, glow=None, device=None, thresholds=None,
+                    conform_thresholds=None, metal_roughness=None, material_source=None, image_format=None,
+                    timeout=7200):
+    """The humanoid export of a variant that wears an approved body (inputs.body):
+
+    1. tools/blender/humanoid_conform.py conforms the variant's rig to the body in
+       <out>/conform/ (the variant's bone map there: the order's bone_map, else a manual
+       <out>/conform/bone_map.json, else the proposal; an invalid map stops it, exit 3) and
+       writes <out>/conform_report.json; conform_thresholds: its flag thresholds by name
+       (CONFORM_THRESHOLDS);
+    2. run_export on the conformed rig, through humanoid_body_export.py: the body's frame,
+       height and proportions (params height, head, hands, feet and widen are the body's),
+       the body's roles as the bone map, the conformed raw mesh as the bake source;
+    3. the exported skeleton compared with the body's (forge/body.py): model.json gets "body"
+       (the body's file and SHA-256, the comparison) and a skeleton that differs is a mesh
+       flag.
+    Returns run_export's files and conform_report."""
+    from . import body as bodymod
+    _require(config, "body_export")
+    out = os.path.abspath(out)
+    work = os.path.join(out, "conform")
+    os.makedirs(work, exist_ok=True)
+    body_model = body_model or bodymod.model_path(body)
+    report = os.path.join(out, "conform_report.json")
+    for stale in (report, os.path.join(work, "conformed.glb"), os.path.join(work, "conformed_raw.glb"),
+                  os.path.join(work, "frame.json")):
+        if os.path.exists(stale):
+            os.remove(stale)
+    cmd = [config["blender_python"], CONFORM_SCRIPT, "--rig", os.path.abspath(rig), "--body", os.path.abspath(body),
+           "--body-model", os.path.abspath(body_model), "--out", work, "--report", report]
+    inputs = [_input("rig", rig), _input("body", body), _input("body_model", body_model)]
+    settings = {}
+    if bone_map:
+        cmd += ["--bone-map", os.path.abspath(bone_map)]
+        inputs.append(_input("bone_map", bone_map))
+    if bake_source:
+        cmd += ["--bake-source", os.path.abspath(bake_source)]
+        inputs.append(_input("bake_source", bake_source))
+    for k, v in (conform_thresholds or {}).items():
+        if k not in CONFORM_THRESHOLDS:
+            raise ValueError("unknown conform threshold %s (known: %s)" % (k, ", ".join(CONFORM_THRESHOLDS)))
+        cmd += [CONFORM_THRESHOLDS[k], str(v)]
+        settings[k] = v
+    seconds, _ = _run(cmd, work, "conform", timeout=timeout)
+    conformed = os.path.join(work, "conformed.glb")
+    frame_path = os.path.join(work, "frame.json")
+    for p in (conformed, frame_path, report, os.path.join(work, "body_map.json")):
+        if not os.path.exists(p):
+            raise ToolError("the conform did not write %s, see %s" % (p, os.path.join(work, "conform.stdout.log")))
+    raw = os.path.join(work, "conformed_raw.glb") if bake_source else None
+    with open(frame_path, encoding="utf-8") as f:
+        frame = json.load(f)
+    params = dict(params or {})
+    for k in bodymod.BODY_PARAMS:
+        params[k] = frame[k]
+    conform_record = {"script": _rel(CONFORM_SCRIPT), "command": cmd, "exec_seconds": seconds,
+                      "settings": settings, "inputs": inputs, "frame": frame}
+
+    def after(files, rec):
+        files["conform_report"] = report
+        model_file, mesh_file = files["model"], files["mesh_report"]
+        try:
+            check = bodymod.compare_skeletons(bodymod.skeleton(files["glb"]), bodymod.skeleton(body))
+        except (OSError, ValueError, KeyError, IndexError) as ex:
+            check = {"identical": False, "problems": ["the skeletons cannot be compared: %s" % ex]}
+        with open(model_file, encoding="utf-8") as f:
+            model = json.load(f)
+        model["body"] = {"file": os.path.basename(body), "sha256": sha_file(body),
+                         "model_sha256": sha_file(body_model), "conform_report": "conform_report.json",
+                         "skeleton": check}
+        write_json(model_file, model)
+        if not check["identical"]:
+            with open(mesh_file, encoding="utf-8") as f:
+                mesh = json.load(f)
+            for p in check["problems"][:5]:
+                mesh.setdefault("problems", []).append("skeleton: %s" % p)
+            mesh["flags"] = list(mesh["problems"])
+            mesh["valid"] = False
+            write_json(mesh_file, mesh)
+        rec["conform"] = conform_record
+        rec["tool_files"].update({_rel(p): sha_file(p) for p in BODY_FILES})
+
+    files = run_export(conformed, out, config, params=params, clips=clips, items=items, name=name,
+                       bake_source=raw, bone_map=os.path.join(work, "body_map.json"), glow=glow, device=device,
+                       thresholds=thresholds, metal_roughness=metal_roughness, material_source=material_source,
+                       image_format=image_format, timeout=timeout, frame=frame_path, after=after)
+    if raw and os.path.exists(raw):
+        os.remove(raw)  # large, and only the bake read it
     return files
 
 
@@ -652,6 +772,38 @@ def export_runner(factory, job, out_dir):
     return {"files": files, "passed": passed, "provenance": rec}
 
 
+def body_export_runner(factory, job, out_dir):
+    """The export of a variant that wears an approved body (run_body_export): the inputs of
+    export_runner plus the body (inputs body, body_model); args as export_runner's (the body
+    sets height, head, hands, feet and widen) and the conform thresholds."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    rig, _ = factory.resolve(ins["rig"])
+    bake = factory.resolve(ins["bake_source"])[0] if "bake_source" in ins else None
+    maps = {k: factory.resolve(ins[k])[0] for k in ("metal_roughness", "material_source") if k in ins}
+    params = {k: args[k] for k in EXPORT_PARAMS if k in args}
+    if args.get("normal_map"):
+        params["normal_map"] = args["normal_map"]
+    thresholds = {k: args[k] for k in THRESHOLDS if k in args}
+    conform = {k: args[k] for k in CONFORM_THRESHOLDS if k in args}
+    files = run_body_export(rig, out_dir, factory.config, ins["body"]["file"], body_model=ins["body_model"]["file"],
+                            params=params, clips=_clips_path(factory, ins.get("clips")),
+                            items=ins["items"]["folder"] if "items" in ins else None,
+                            name=args.get("name", "model"), bake_source=bake,
+                            bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
+                            glow=True if args.get("glow") else None, thresholds=thresholds or None,
+                            conform_thresholds=conform or None, metal_roughness=maps.get("metal_roughness"),
+                            material_source=maps.get("material_source"), image_format=args.get("image_format"))
+    rec = _step_record(out_dir, "export")
+    settings = rec.get("settings", {})
+    passed = {k: settings[k] for k in args if k in settings}
+    passed.update({k: v for k, v in (settings.get("thresholds") or {}).items() if k in args})
+    passed.update({k: v for k, v in ((rec.get("conform") or {}).get("settings") or {}).items() if k in args})
+    if "glow" in args:
+        passed["glow"] = bool(settings.get("glow", False))
+    return {"files": files, "passed": passed, "provenance": rec}
+
+
 def variant_failure(factory, variant):
     """Why a variant did not finish: the first failed job of its chain and its error."""
     for jid in variant["chain"]:
@@ -693,6 +845,17 @@ def review_runner(factory, job, out_dir):
         for x in shown:  # "acceptable" is not "motion-clean": the motion flags stay on the sheet
             if x["class"] == "acceptable":
                 x["reasons"] = ["motion not gated"]
+    # A variant that wears an approved body: its conform measures on its label.
+    for x, v in zip(shown, job["variants"]):
+        files = factory.entry(v["job"]).get("files", {}) if factory.done_ok(v["job"]) else {}
+        if "conform_report" in files:
+            try:
+                with open(os.path.join(factory.out, files["conform_report"][0]), encoding="utf-8") as f:
+                    line = acceptance.conform_line(json.load(f))
+            except (OSError, ValueError):
+                line = "conform report unreadable"
+            if line:
+                x["reasons"] = list(x["reasons"]) + [line]
     banner = None
     if not summary["acceptable"]:
         top = summary["responsible_stage"] or "unknown"
@@ -706,7 +869,8 @@ def review_runner(factory, job, out_dir):
     return {"files": files, "passed": {k: settings[k] for k in camera if k in settings}, "provenance": rec}
 
 
-RUNNERS.update({"rig": rig_runner, "export": export_runner, "review": review_runner})
+RUNNERS.update({"rig": rig_runner, "export": export_runner, "body_export": body_export_runner,
+                "review": review_runner})
 
 
 # ---- articulated: the parts --------------------------------------------------------------------
