@@ -86,8 +86,11 @@ def merge_order(order, base):
                 # A motion library named by a motions entry, like an input, is relative to the order.
                 for m in p["motions"]:
                     lib = m.get("library") if isinstance(m, dict) else None
-                    if isinstance(lib, dict) and isinstance(lib.get("file"), str):
+                    # "@..." names a library the factory ships (forge/motion_clips.py STARTER).
+                    if isinstance(lib, dict) and isinstance(lib.get("file"), str) and not lib["file"].startswith("@"):
                         lib["file"] = _resolve(lib["file"], base)
+                    if isinstance(m, dict) and m.get("source") == "bvh" and isinstance(m.get("file"), str):
+                        m["file"] = _resolve(m["file"], base)
             pieces.append(p)
         fam["assets"] = pieces
         if isinstance(fam.get("inputs"), dict):
@@ -334,6 +337,9 @@ def check_order(order, config, server=None):
                 continue
             if pid in ids:
                 problems.append("family %s: piece %s appears twice" % (fid, pid))
+            if pid == "_motions":
+                problems.append("family %s: a piece cannot be named _motions (the folder of the family's made "
+                                "motions)" % fid)
             ids.add(pid)
             _check_piece("%s/%s" % (fid, pid), piece.get("recipe"), piece, config, problems)
             if piece.get("recipe") == "humanoid":

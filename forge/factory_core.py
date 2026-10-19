@@ -275,6 +275,10 @@ class Factory(ComfyJobs, LocalSteps):
                 folder = os.path.join(self.asset_dir(job), slug(job["id"]))
                 base["manual_frame"] = local_gpu.manual_frame(folder)
                 base["manual_sockets"] = local_gpu.manual_file(folder, "sockets.json")
+        if job["kind"] in ("motion", "motions"):
+            # The motion clips' code (forge/motion_clips.py): a fixed correction redoes them.
+            from . import motion_jobs
+            base["tool_sha"] = motion_jobs.code_fingerprint()
         if job["kind"] == "pick":
             base["candidates"] = {c: self.entry(c).get("files", {}).get(job["role"], [None, None])[1]
                                   for c in job["from"] if self.done_ok(c)}

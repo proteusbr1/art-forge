@@ -14,5 +14,11 @@
  "gpu_wait": 300,
  "gpu_busy_mb": 2048,
  "gpu_used_busy_mb": 4096,
- "queue_wait_warn": 3600
+ "queue_wait_warn": 3600,
+ "hymotion_python": "C:/path/to/torch-env/Scripts/python.exe",
+ "hymotion_dir": "C:/path/to/HY-Motion-1.0",
+ "hymotion_model": "C:/path/to/HY-Motion-1.0-Lite/latest.ckpt",
+ "hymotion_text_encoder": "C:/path/to/Qwen3-8B",
+ "hymotion_clip": "C:/path/to/clip-vit-large-patch14",
+ "hymotion_pythonpath": "C:/path/to/extra-site-packages"
 }

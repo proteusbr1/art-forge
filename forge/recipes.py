@@ -266,6 +266,11 @@ def recipe_humanoid(fam, a, st):
     text, pose_text, cutout_text = humanoid_texts(st, fam, a)
     keep_texture = opts.get("paint", "trellis2_texture") == "trellis2_texture"
     jobs, variants = [], []
+    motions_job = None
+    if isinstance(a.get("motions"), list) and "export" in opts:
+        from .motion_jobs import piece_motions_job
+        motions_job = piece_motions_job(fam, a, inputs)
+        jobs.append(motions_job)
     n = variants_of(fam, a, 4)
     final_id = "%s/%s/final" % (fid, aid)
     hold = {"until": final_id, "outcome": acceptance.NO_VARIANT_PASSED}
@@ -361,6 +366,9 @@ def recipe_humanoid(fam, a, st):
             for name, key in (("clips", "file"), ("items", "folder")):
                 if inputs.get(name):
                     ins[name] = {key: inputs[name]}
+            if motions_job is not None:
+                # The motions list: the piece's own motion library (forge/motion_jobs.py).
+                ins["clips"] = {"ref": motions_job["id"], "role": "library"}
             bone_map = variant_bone_map(inputs.get("bone_map"), v)
             if bone_map:
                 ins["bone_map"] = {"file": bone_map}
@@ -455,6 +463,37 @@ def check_humanoid(where, piece, problems):
         elif opts["mesh"] == "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture" \
                 and not (256 <= tex <= 8192 and tex % 256 == 0):
             problems.append("%s: params.texture %d: TRELLIS.2's bake takes 256 to 8192, a multiple of 256" % (where, tex))
+    if "motions" in piece:
+        check_humanoid_motions(where, piece, opts, problems)
+
+
+def check_humanoid_motions(where, piece, opts, problems):
+    """The motions list of a humanoid piece (forge/motion_clips.py check_motions)."""
+    from . import motion_clips as mc
+    if "export" not in opts:
+        problems.append("%s: motions need the export stage (it plays them on the figure)" % where)
+    inputs = piece.get("inputs") or {}
+    default = None
+    clips = inputs.get("clips")
+    if isinstance(clips, str) and os.path.isfile(clips):
+        default, why = mc.read_library(clips)
+        problems.extend("%s: inputs.clips: %s" % (where, p) for p in why)
+        if why:
+            default = None
+    libraries = {}
+    for m in piece["motions"] if isinstance(piece["motions"], list) else []:
+        lib = m.get("library") if isinstance(m, dict) else None
+        f = lib.get("file") if isinstance(lib, dict) else None
+        if isinstance(f, str) and f not in libraries:
+            if f != mc.STARTER and not os.path.isfile(f):
+                problems.append("%s: motion library not found: %s" % (where, f))
+                libraries[f] = None
+                continue
+            doc, why = mc.read_library(f)
+            problems.extend("%s: %s: %s" % (where, f, p) for p in why)
+            libraries[f] = None if why else doc
+    problems.extend("%s: %s" % (where, p) for p in mc.check_motions(
+        piece["motions"], default, {k: v for k, v in libraries.items() if v is not None}))
 
 
 # --- articulated and creature: whole object or body generated per variant, then split into
@@ -820,6 +859,11 @@ def expand(job_list, only=None):
             for j in apply_settings(recipe, a, RECIPES[recipe](fam, a, st)):
                 j["family"], j["asset"] = fam["id"], a["id"]
                 jobs.append(j)
+        # The humanoid motions made once for the whole family (text, bvh): forge/motion_jobs.py.
+        from .motion_jobs import MOTIONS_ASSET, made_motion_jobs
+        for j in made_motion_jobs(fam):
+            j["family"], j["asset"] = fam["id"], MOTIONS_ASSET
+            jobs.append(j)
     for t in job_list.get("tasks", []):
         fam = t["id"].split("/")[0]
         if only and fam not in only:

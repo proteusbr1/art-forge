@@ -168,7 +168,7 @@ def local_record(job, inputs):
     """Provenance of a local step (pick, sheet, roll, unroll): no model, only its inputs."""
     return {"family": job["family"], "asset": job["asset"], "kind": job["kind"], "group": job["group"],
             "workflow": None, "workflow_sha256": None, "models": [], "prompt": None, "negative": None,
-            "seeds": [], "settings": {k: job[k] for k in ("metric", "axes") if k in job}, "inputs": inputs}
+            "seeds": [], "settings": {k: job[k] for k in ("metric", "axes", "args") if k in job}, "inputs": inputs}
 
 
 def export(out, dest):

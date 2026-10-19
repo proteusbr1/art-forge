@@ -32,6 +32,12 @@ KEYS = {
                         "driver reports no amount per process (default 4096)",
     "queue_wait_warn": "seconds a local GPU job may wait for the card before the log and state.json call it "
                        "stalled (default 3600)",
+    "hymotion_python": "Python with PyTorch (CUDA) and HY-Motion's requirements (the humanoid motions' text source)",
+    "hymotion_dir": "HY-Motion checkout (its hymotion package, stats/ and bundled body assets)",
+    "hymotion_model": "HY-Motion checkpoint file (HY-Motion-1.0-Lite/latest.ckpt; its config.yml next to it)",
+    "hymotion_text_encoder": "folder of HY-Motion's language model text encoder (Qwen3-8B)",
+    "hymotion_clip": "folder of HY-Motion's sentence encoder (CLIP ViT-L/14)",
+    "hymotion_pythonpath": "optional folder put first on HY-Motion's Python path (packages its Python lacks)",
 }
 # Keys that are values, not paths on this machine; NUMBER_KEYS are numbers of at least 0.
 VALUE_KEYS = ("comfy_url", "bake_device", "gpu_wait", "gpu_busy_mb", "gpu_used_busy_mb", "queue_wait_warn")
@@ -41,6 +47,10 @@ TOOL_KEYS = tuple(k for k in KEYS if k not in VALUE_KEYS)
 TOOL_FILES = {
     "skintokens_dir": ("demo.py",),
     "unirig_dir": ("run.py",),
+    "hymotion_dir": (os.path.join("hymotion", "pipeline", "motion_diffusion.py"), os.path.join("stats", "Mean.npy"),
+                     os.path.join("stats", "Std.npy")),
+    "hymotion_text_encoder": ("config.json",),
+    "hymotion_clip": ("config.json",),
     "unirig_venv": (os.path.join("Scripts", "python.exe") if os.name == "nt" else os.path.join("bin", "python"),),
 }
 # Weight files a tool needs, relative to its configured folder (glob patterns): the

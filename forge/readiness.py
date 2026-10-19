@@ -10,8 +10,10 @@ check_environment(order, config, server) gives one of three results:
 It covers: the node classes of every workflow the order's jobs use; every model file a
 workflow names is in its loader's option list from /object_info; every setting or `set`
 value that lands on a list input is in the server's list (samplers, schedulers); the local
-tools the chosen stages need, with their weight files (forge.config.TOOL_WEIGHTS); and the
-versions of Blender (bpy) and Godot when they are configured.
+tools the chosen stages need, with their weight files (forge.config.TOOL_WEIGHTS); the
+versions of Blender (bpy) and Godot when they are configured; for the humanoid motions' text
+source, HY-Motion's files and an import of its modules in its own Python (forge/motion_text.py;
+imports only); and whether the GPU lock file is redirected.
 """
 
 import os
@@ -190,6 +192,18 @@ def check_environment(order, config, server):
     env.problems += missing_weights(config, sorted(keys))
     env.versions, notes = tool_versions(config)
     env.notes += notes
+    if stages.MOTION_TEXT_TOOLS[0] in keys:
+        # The humanoid motions' text source: its files, then an import of its modules in its
+        # own Python (no model is loaded, the card is not used).
+        from .motion_text import import_check, readiness_problems
+        extra = [p for p in readiness_problems(config) if p not in env.problems]
+        env.problems += extra
+        if not extra and not missing_tools(config, stages.MOTION_TEXT_TOOLS):
+            v, err = import_check(config)
+            if v:
+                env.versions["hymotion_python"] = v
+            else:
+                env.problems.append("hymotion_python cannot import HY-Motion's modules: %s" % err)
     try:
         who = gpu_lock.holder()
         if who is not None:

@@ -232,7 +232,8 @@ class OrderCheck(Base):
             {"id": "f", "recipe": "humanoid", "assets": [{"id": "p", "brief": "x", "motions": MOTIONS,
                                                           "accept": {"below_ground_cm": 3}}]}]}
         problems = check_order(self.load(order), self.config)
-        self.assertProblem(problems, "does not use motions")
+        # The humanoid reads motions too (since the motions list): a procedural kind is the creature's.
+        self.assertProblem(problems, "procedural motion kinds are the creature's")
         self.assertProblem(problems, "unknown accept key 'below_ground_cm'")
 
     def test_sample_orders(self):

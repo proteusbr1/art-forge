@@ -194,6 +194,11 @@ def tool_fingerprint(job, config):
         scripts, extra = list(HOLD_FILES), {}
     elif tool == "item_sheet":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in ITEM_SHEET_FILES] + [ITEM_SHEET_LAYOUT], {}
+    elif tool == "motion_text":
+        from . import motion_text
+        scripts = [motion_text.entry_script(), os.path.join(ROOT, "forge", "motion_clips.py")]
+        folder = (config or {}).get("hymotion_dir")
+        extra = {"checkout_revision": _git_revision(folder) if folder else None}
     else:
         return None
     files = {os.path.basename(p): (sha_file_cached(p) if os.path.isfile(p) else "missing") for p in scripts}
@@ -608,6 +613,13 @@ def rig_runner(factory, job, out_dir):
     return {"files": files, "passed": dict(kw), "provenance": _step_record(out_dir, "rig")}
 
 
+def _clips_path(factory, ref):
+    """The export's motion library: the order's file as given, or the motions job's library."""
+    if not ref:
+        return None
+    return ref["file"] if "file" in ref else factory.resolve(ref)[0]
+
+
 def export_runner(factory, job, out_dir):
     """The humanoid export of a variant's rig, with its raw mesh as the bake source and the
     order's motion library, held items and bone map, the paint stage's metallic-roughness map
@@ -624,7 +636,7 @@ def export_runner(factory, job, out_dir):
         params["normal_map"] = args["normal_map"]
     thresholds = {k: args[k] for k in THRESHOLDS if k in args}
     files = run_export(rig, out_dir, factory.config, params=params,
-                       clips=ins["clips"]["file"] if "clips" in ins else None,
+                       clips=_clips_path(factory, ins.get("clips")),
                        items=ins["items"]["folder"] if "items" in ins else None,
                        name=args.get("name", "model"), bake_source=bake,
                        bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
@@ -1212,9 +1224,23 @@ def item_sheet_runner(factory, job, out_dir):
 RUNNERS.update({"item": item_runner, "hold": hold_runner, "item_sheet": item_sheet_runner})
 
 
+# ---- the humanoid motions' text source (HY-Motion Lite, forge/motion_text.py) ------------------
+
+@_gpu_locked("motion_text")
+def motion_text_runner(factory, job, out_dir):
+    """A text motion of a family (args: name, prompt, frames, fps, loop, settings, contacts)."""
+    from . import motion_text
+    return motion_text.motion_text_runner(factory, job, out_dir)
+
+
+RUNNERS["motion_text"] = motion_text_runner
+
+
 if __name__ == "__main__":  # a manual check of this machine's configuration
     import sys
     from .config import load_config
     cfg = load_config(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "forge.local.json"))
     for step, method in (("rig", "skintokens"), ("rig", "unirig"), ("export", None), ("review", None)):
         print(step, method or "", check_tools(cfg, step, method) or "ready")
+    from .motion_text import readiness_problems
+    print("motion_text", readiness_problems(cfg) or "ready (files; -Check also imports its modules)")

@@ -52,6 +52,9 @@ class LocalSteps:
             self.cutout(job, d, files)
         elif job["kind"] == "final":
             inputs = self.final(job, d, rec, files)
+        elif job["kind"] in ("motion", "motions"):
+            from . import motion_jobs
+            inputs = motion_jobs.run_local(self, job, d, files)
         else:
             inputs = []
         rec["files"] = files

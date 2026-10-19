@@ -198,7 +198,8 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(set(cfg), {"comfy_url", "python", "blender_python", "unirig_dir", "unirig_venv",
                                         "unirig_hf", "unirig_shim", "skintokens_dir", "skintokens_python",
                                         "godot", "bake_device", "gpu_wait", "gpu_busy_mb", "gpu_used_busy_mb",
-                                        "queue_wait_warn"})
+                                        "queue_wait_warn", "hymotion_python", "hymotion_dir", "hymotion_model",
+                                        "hymotion_text_encoder", "hymotion_clip", "hymotion_pythonpath"})
             self.assertEqual((cfg["gpu_wait"], cfg["gpu_busy_mb"], cfg["gpu_used_busy_mb"], cfg["queue_wait_warn"]),
                              (300, 2048, 4096, 3600))
             self.assertEqual(cfg["bake_device"], "GPU")

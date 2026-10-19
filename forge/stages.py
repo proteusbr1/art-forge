@@ -445,7 +445,10 @@ RECIPE_INPUTS = {
     "prop": ("reference",),
 }
 # Piece keys only some recipes read (the order check refuses them elsewhere).
-RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("creature",), "item": ("held_item",)}
+RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("creature", "humanoid"),
+               "item": ("held_item",)}
+# The tools of the humanoid motions' text source (HY-Motion Lite, forge/motion_text.py).
+MOTION_TEXT_TOOLS = ("hymotion_python", "hymotion_dir", "hymotion_model", "hymotion_text_encoder", "hymotion_clip")
 # Inputs that are folders (they enter the job specification by the files inside them);
 # every other input is a file.
 FOLDER_INPUTS = ("items",)
@@ -527,8 +530,12 @@ def allowed_inputs(recipe, piece):
 def tools_needed(recipe, piece):
     """Configuration keys the chosen stages of a piece need on this machine."""
     keys = set()
-    for stage, opt in chosen_options(recipe, piece).items():
+    opts = chosen_options(recipe, piece)
+    for stage, opt in opts.items():
         keys.update(stages_of(recipe)[stage]["options"].get(opt, {}).get("tools", ()))
+    if recipe == "humanoid" and "export" in opts and isinstance(piece.get("motions"), list) and any(
+            isinstance(m, dict) and m.get("source") == "text" for m in piece["motions"]):
+        keys.update(MOTION_TEXT_TOOLS)
     return sorted(keys)
 
 
