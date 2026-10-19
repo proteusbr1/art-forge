@@ -2,3 +2,5 @@
 # Workflow hashes are part of every job's specification and provenance: keep their bytes
 # identical on every machine (no line-ending conversion).
 forge/workflows/*.json -text
+# The motion data the factory ships enters the specification of the jobs that read it.
+data/** -text
