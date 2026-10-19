@@ -108,6 +108,19 @@ class BodyFiles(unittest.TestCase):
         self.assertTrue(any("cannot be read as a skinned GLB" in p for p in body.check_body(
             os.path.join(flat, "flat.glb"), "f/p")))
 
+    def test_a_turned_body_is_refused(self):
+        straight = glb_synth.stub_body(os.path.join(self.tmp, "straight"))
+        sk = body.skeleton(straight)
+        self.assertAlmostEqual(body.body_turn(sk, glb_synth.ROLE_NAMES), 0.0, places=6)
+        self.assertAlmostEqual(body.joint_positions(sk)["LeftHand"][0], 0.33, places=5)
+        # The upper arms 0.36 apart across and 0.2 apart front to back: turned about 29 degrees.
+        turned = glb_synth.skeleton_glb(os.path.join(self.tmp, "turned", "turned.glb"),
+                                        moved={"LeftUpperArm": (0.0, 0.0, 0.1), "RightUpperArm": (0.0, 0.0, -0.1)})
+        with open(os.path.join(self.tmp, "turned", "model.json"), "w", encoding="utf-8") as f:
+            json.dump({"format": "forge-humanoid", "height": 1.8, "bones": glb_synth.ROLE_NAMES}, f)
+        self.assertAlmostEqual(body.body_turn(body.skeleton(turned), glb_synth.ROLE_NAMES), 29.05, delta=0.1)
+        self.assertTrue(any("stands turned 29 degrees" in p for p in body.check_body(turned, "f/p")))
+
     def test_wears_own_output(self):
         self.assertTrue(body.wears_own_output(os.path.join("D:", os.sep, "night", "crew", "plain", "final", "plain.glb"),
                                               "crew", "plain"))

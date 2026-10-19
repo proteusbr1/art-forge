@@ -179,6 +179,39 @@ def compare_animations(a, b):
     return {"same_channels": set(a) == set(b), "max_difference": worst, "worst": where}
 
 
+# An approved body must face glTF +z: its shoulders' and hips' lines across within this many
+# degrees of +x (the exporter turns a figure by the axis its feet point to, so a figure that
+# stood turned between two axes stays turned, and every variant would be conformed to it).
+TURN_LIMIT_DEG = 15.0
+
+
+def joint_positions(sk):
+    """{joint: (x, y, z)} at bind, from the inverse bind matrices (glTF axes: y up, front +z)."""
+    out = {}
+    for name, j in sk["joints"].items():
+        m = j.get("inverse_bind")
+        if not m:
+            continue
+        r = [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]]  # column-major
+        t = (m[12], m[13], m[14])
+        out[name] = tuple(-sum(r[k][i] * t[k] for k in range(3)) for i in range(3))
+    return out
+
+
+def body_turn(sk, bones):
+    """How far (degrees) the body's shoulders' and hips' lines turn from glTF +x about the
+    vertical (the larger of the two), or None when the skeleton lacks them."""
+    pos = joint_positions(sk)
+    worst = None
+    for a, b in (("left_upper_arm", "right_upper_arm"), ("left_upper_leg", "right_upper_leg")):
+        pa, pb = pos.get(bones.get(a)), pos.get(bones.get(b))
+        if pa is None or pb is None:
+            continue
+        ang = abs(math.degrees(math.atan2(pa[2] - pb[2], pa[0] - pb[0])))
+        worst = ang if worst is None else max(worst, ang)
+    return worst
+
+
 def check_body(path, where):
     """Problems of an approved body given as inputs.body: a GLB the humanoid exporter wrote,
     its model.json next to it naming its bones by role."""
@@ -212,6 +245,12 @@ def check_body(path, where):
     if absent:
         problems.append("%s: inputs.body: the skeleton lacks the bones its model.json names: %s" % (
             where, ", ".join(absent)))
+        return problems
+    turn = body_turn(sk, model["bones"])
+    if turn is not None and turn > TURN_LIMIT_DEG:
+        problems.append("%s: inputs.body stands turned %.0f degrees from facing +z (its shoulders' or hips' line, "
+                        "limit %.0f): every variant would be conformed to it; approve a body that faces straight" % (
+                            where, turn, TURN_LIMIT_DEG))
     return problems
 
 

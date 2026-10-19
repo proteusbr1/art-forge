@@ -59,7 +59,7 @@ class ConformTest(unittest.TestCase):
         rep = res["report"]
         # Every joint of the limbs lands on the body's; the torso's spine joints come near.
         for role, j in rep["joints"].items():
-            if j["kind"] == "torso":
+            if j["kind"] in ("torso", "head"):
                 self.assertLess(j["after_cm"], 3.0, role)
             else:
                 self.assertLess(j["after_cm"], 1e-6, role)
@@ -114,6 +114,19 @@ class ConformTest(unittest.TestCase):
         self.assertTrue(any(f.startswith("floor: the") and "below" in f for f in rep["flags"]), rep["flags"])
         rep = conform(hs.figure(height=1.0))["report"]
         self.assertLess(abs(rep["floor_offset_cm"]["left"]), 0.5)
+
+    def test_a_short_neck_is_not_stretched(self):
+        # A rig whose neck joint sits 3 cm (body heights) higher, its neck twice as short: the
+        # neck and head stay one piece on the body's neck joint, the head joint misses.
+        v = hs.figure(height=1.0)
+        v["joints"]["neck"] = v["joints"]["neck"] + np.array([0.0, 0.0, 0.025])
+        rep = conform(v)["report"]
+        self.assertEqual(rep["joints"]["neck"]["kind"], "head")
+        self.assertEqual(rep["joints"]["neck"]["scale"], 1.0)
+        self.assertLess(rep["joints"]["neck"]["after_cm"], 1e-6)
+        self.assertAlmostEqual(rep["head_offset_cm"], 4.5, delta=0.05)
+        self.assertNotEqual(rep["joint_error_role"], "head")
+        self.assertFalse(any(f.startswith(("scale:", "tear:")) for f in rep["flags"]), rep["flags"])
 
     def test_thresholds_are_reported(self):
         # A rig that predicted its chest joint 2 cm (body heights 0.02) too high: the torso is one

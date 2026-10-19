@@ -14,8 +14,11 @@ The conform:
    across stays the variant's (a bulky armour stays bulky). The torso (hips, spine, chest,
    upper chest) is one piece from the hips to the neck: the spine joints a rig tool predicts are
    not landmarks of the surface, so they are not forced onto the body's (their remaining
-   distance is reported). An end bone (head, hand, toes, a foot without toes) is not stretched:
-   it takes the turn of the segment it hangs from and lands on its own joint.
+   distance is reported). The neck and head are one piece too, set on the body's neck joint
+   with the torso's turn and not stretched (a predicted neck is short and uncertain under a
+   helmet; the head joint's remaining distance is reported). An end bone (hand, toes, a foot
+   without toes) is not stretched: it takes the turn of the segment it hangs from and lands on
+   its own joint.
 3. Every vertex moved by its own weights (linear blend skinning from the variant's rest to the
    body's rest): its bones' roles, a bone without a role (a finger) counted with its nearest
    mapped ancestor, a role the body lacks with its nearest role the body has.
@@ -42,7 +45,7 @@ for _s in SIDES:
                         _s + "_upper_leg": "hips", _s + "_lower_leg": _s + "_upper_leg",
                         _s + "_foot": _s + "_lower_leg", _s + "_toes": _s + "_foot"})
 # A segment's role -> the roles its far joint may be (the first that both skeletons have).
-AIM = {"neck": ("head",)}
+AIM = {}
 for _s in SIDES:
     AIM.update({_s + "_shoulder": (_s + "_upper_arm",), _s + "_upper_arm": (_s + "_lower_arm",),
                 _s + "_lower_arm": (_s + "_hand",), _s + "_upper_leg": (_s + "_lower_leg",),
@@ -174,6 +177,17 @@ def role_matrices(vj, bj, common):
         if r in common:
             mats[r], rots[r] = m, rot
             info[r] = {"scale": s, "aim": torso_aim, "kind": "torso"}
+    # The neck and the head: one piece set on the body's neck joint with the torso's turn, not
+    # stretched. A rig tool's neck is short and uncertain under a helmet or a collar (the first
+    # night's heavy armour: twice the body's length asked of it, and torn edges); the body's
+    # head joint then misses the variant's by the difference (reported, not forced).
+    if "neck" in common:
+        rot = rots["hips"]
+        m = affine(rot, bj["neck"] - rot @ vj["neck"])
+        for r in ("neck", "head"):
+            if r in common:
+                mats[r], rots[r] = m, rot
+                info[r] = {"scale": 1.0, "aim": None, "kind": "head"}
     # Parents before children (ROLE_PARENT's order).
     for r in ROLE_PARENT:
         if r not in common or r in mats:
@@ -323,7 +337,8 @@ def conform(vj, bj, variant_roles, body_roles, front, points, index, weight, ver
         joints[r] = {"before_cm": _round(before * 100, 3), "after_cm": _round(after * 100, 3),
                      "scale": _round(info[r]["scale"]), "kind": info[r]["kind"]}
     flags = []
-    worst_joint = max(joints, key=lambda r: joints[r]["after_cm"])
+    head_cm = max([joints[r]["after_cm"] for r in ("neck", "head") if r in joints] + [0.0])
+    worst_joint = max((r for r in joints if joints[r]["kind"] != "head"), key=lambda r: joints[r]["after_cm"])
     joint_cm = joints[worst_joint]["after_cm"]
     if joint_cm > th["joint_cm"]:
         flags.append("joints: the conformed %s joint misses the body's by %.1f cm (over %s)" % (
@@ -371,7 +386,7 @@ def conform(vj, bj, variant_roles, body_roles, front, points, index, weight, ver
     report = {
         "roles": common, "missing_roles": missing,
         "prefit": {k: _round(v, 5) for k, v in fit.items()},
-        "joints": joints, "joint_error_cm": joint_cm, "joint_error_role": worst_joint,
+        "joints": joints, "joint_error_cm": joint_cm, "joint_error_role": worst_joint, "head_offset_cm": head_cm,
         "joint_outside_cm": outside, "joint_outside_max_cm": _round(max(depth) if len(depth) else 0.0, 3),
         "segment_scale": {"min": _round(min(scales.values())), "max": _round(max(scales.values()))},
         "stretch_p95": _round(np.percentile(stretch, 95)), "stretch_max": _round(stretch.max()),
