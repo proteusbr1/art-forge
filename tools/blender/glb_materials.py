@@ -167,6 +167,41 @@ def material_slots(path, mesh_name="body"):
     return out
 
 
+def slot_flags(read, sources, image_format, not_carried=None):
+    """{slot: why} of the mesh flags of a written GLB's material. read: material_slots();
+    sources: {slot: where its source map came from} as the exporter saw them; not_carried:
+    {slot: why a source map could not be carried}.
+
+    The GLB is the authority for formats: every present slot that is lossy where the image
+    format forbids it is flagged whether or not the exporter saw a source for it (lossless:
+    any slot; compact: every slot but an opaque base colour, so a base colour that carries
+    opacity may not be JPEG either). A slot whose source existed but is missing is flagged
+    too, and so is a source map that could not be carried."""
+    flags = {}
+    opaque = read["opacity"].get("alpha_mode", "OPAQUE") == "OPAQUE"
+    for slot in SLOTS:
+        r = read[slot]
+        src = sources.get(slot)
+        if slot != "opacity" and r["present"] and not r["lossless"]:
+            if image_format == "lossless":
+                flags[slot] = "written as %s, which is lossy (every map is PNG with image_format lossless)" % r["format"]
+            elif slot != "base_color":
+                flags[slot] = ("written as %s, which is lossy (only the base colour may be JPEG with image_format "
+                               "compact)" % r["format"])
+            elif not opaque:
+                flags[slot] = ("written as %s, which is lossy, while it carries the opacity (alpha mode %s)" % (
+                    r["format"], read["opacity"].get("alpha_mode")))
+        elif src is not None and not r["present"]:
+            flags[slot] = "its source map (%s) is missing from the exported GLB" % src
+    for slot, why in (not_carried or {}).items():
+        if slot in read and not read[slot]["present"]:
+            why += "; the exported GLB has none"
+        elif slot in read:
+            why += "; " + (flags.get(slot) or "the exported GLB has the map of %s" % sources.get(slot))
+        flags[slot] = why
+    return flags
+
+
 if __name__ == "__main__":
     import sys
     print(json.dumps(material_slots(sys.argv[1]), indent=1))

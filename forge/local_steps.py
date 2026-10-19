@@ -262,12 +262,18 @@ class LocalSteps:
         elif reserve.get("decision"):
             reserve_info = {"variants": reserve["variants"], "released": outcome == acceptance.NO_VARIANT_PASSED,
                             "decision": reserve["decision"]}
+            if reserve_info["released"] and summary["responsible_stage"] == "library":
+                reserve_info["note"] = ("the library's clips fail on every variant: the reserve variants will "
+                                        "likely fail the same way")
         else:
             reserve_info = {"variants": reserve["variants"], "released": True, "left": 0}
         doc = {"outcome": outcome, "chosen": chosen,
                "variant": next((x["variant"] for x in cands if x["job"] == chosen), None),
                "manual": bool(manual), "review": "manual" if manual else "pending", "metric": why,
-               "accept": job.get("accept"), "candidates": cands, "reserve": reserve_info,
+               "accept": job.get("accept"),
+               "motion": ("gated on %s" % ", ".join(summary["motion_gated"]) if summary["motion_gated"] else
+                          "not gated: no motion limit in accept; motion flags only rank the acceptable variants"),
+               "candidates": cands, "reserve": reserve_info,
                "how_to_change": "set chosen to another candidate job id and manual to true; "
                                 "the factory redoes only the copy to final/"}
         if outcome == acceptance.NO_VARIANT_PASSED:

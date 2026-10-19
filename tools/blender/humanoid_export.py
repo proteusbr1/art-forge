@@ -395,7 +395,7 @@ RIG_SLOTS = find_slots(nt, bsdf)
 # Where each slot's map comes from ("sources"), maps a better one replaced and source maps
 # that could not be carried (each a flag of the mesh report).
 MATERIAL = {"image_format": a.image_format, "sources": {s: "the rig's material" for s in RIG_SLOTS},
-            "replaced": [], "not_carried": []}
+            "replaced": [], "not_carried": [], "not_taken": [], "notes": []}
 NOT_CARRIED = {}  # slot -> why its source map could not be carried
 SOURCE = None
 if a.material_source:
@@ -622,12 +622,42 @@ if a.metal_roughness:
                 RIG_SLOTS["metallic_roughness"].image.name, _name))
         link_metal_roughness(_img)
         MATERIAL["sources"]["metallic_roughness"] = "the paint stage's map %s" % _name
+def factor_note(slot, src):
+    """A note when the source's map reaches its shader through more than the plain layout
+    (a factor or another node the carry does not reproduce), else None."""
+    sh = src["shader"]
+    names = {"metallic_roughness": ("Roughness", "Metallic"), "emissive": ("Emission Color", "Emission")}.get(slot, ())
+    for name in names:
+        sock = socket_of(sh, name)
+        if sock is not None and sock.is_linked and sock.links[0].from_node.type not in ("TEX_IMAGE", "SEPARATE_COLOR",
+                                                                                      "SEPRGB"):
+            return "%s: the material source's %s goes through a %s node (a factor) that is not carried" % (
+                slot, name, sock.links[0].from_node.type)
+    return None
+
+
 if SOURCE is not None:
     _have = find_slots(nt, bsdf)
     _src_name = os.path.basename(a.material_source)
+    for _slot in ("base_color", "normal"):
+        if _slot in SOURCE["slots"]:
+            MATERIAL["not_taken"].append("%s: the material source's map %s is not taken (%s)" % (
+                _slot, SOURCE["slots"][_slot].image.name,
+                "the rig's base colour is the one its UVs carry" if _slot == "base_color"
+                else "the exporter bakes its own normal map"))
+    # A technical map the rig re-encoded lossily gives way to the source's lossless original.
+    for _slot in ("metallic_roughness", "emissive"):
+        if (_slot in _have and _slot in SOURCE["slots"] and MATERIAL["sources"].get(_slot) == "the rig's material"
+                and lossy_source(_have[_slot].image) and not lossy_source(SOURCE["slots"][_slot].image)):
+            MATERIAL["replaced"].append("%s: the rig's lossy map %s, by the material source's %s" % (
+                _slot, _have[_slot].image.name, SOURCE["slots"][_slot].image.name))
+            del _have[_slot]
     for _slot in ("metallic_roughness", "opacity", "emissive", "occlusion"):
         if _slot in _have or _slot not in SOURCE["slots"]:
             continue
+        _note = factor_note(_slot, SOURCE)
+        if _note:
+            MATERIAL["notes"].append(_note)
         _why = carry(_slot, SOURCE)
         if _why:
             NOT_CARRIED[_slot] = "; ".join(x for x in (NOT_CARRIED.get(_slot), "the map of the material source %s "
@@ -636,8 +666,6 @@ if SOURCE is not None:
             MATERIAL["sources"][_slot] = "the material source %s (not carried)" % _src_name
         else:
             MATERIAL["sources"][_slot] = "the material source %s" % _src_name
-    # The base colour and normal map of the material source are not carried: the rig's
-    # base colour is the one its UVs were painted with, the normal map is baked here.
 print("MATERIAL", json.dumps(MATERIAL["sources"], sort_keys=True), flush=True)
 
 if unweighted:
@@ -1240,7 +1268,12 @@ def rewritten(img, fmt):
     w, h = img.size
     px = np.empty(w * h * 4, np.float32)
     img.pixels.foreach_get(px)
-    px = np.clip(np.round(px.reshape(h, w, 4) * 255.0), 0, 255).astype(np.uint8)[::-1]
+    px = px.reshape(h, w, 4)
+    if img.is_float and img.colorspace_settings.name == "sRGB":
+        # A float buffer (a 16-bit PNG, say) holds linear values: back to sRGB for 8 bits.
+        c = np.clip(px[..., :3], 0.0, 1.0)
+        px[..., :3] = np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+    px = np.clip(np.round(px * 255.0), 0, 255).astype(np.uint8)[::-1]
     alpha = fmt == "png" and img.channels == 4 and bool((px[..., 3] < 255).any())
     pic = PILImage.fromarray(np.ascontiguousarray(px if alpha else px[..., :3]), "RGBA" if alpha else "RGB")
     name = img.name
@@ -1261,7 +1294,8 @@ FINAL_SLOTS = find_slots(nt, bsdf)
 _done = {}
 for _slot, _node in sorted(FINAL_SLOTS.items()):
     _img = _node.image
-    if _slot == "base_color" and a.image_format == "compact" and "opacity" not in FINAL_SLOTS:
+    if (_slot == "base_color" and a.image_format == "compact" and "opacity" not in FINAL_SLOTS
+            and not bsdf.inputs["Alpha"].is_linked):
         _fmt = "jpeg"
     elif lossy_source(_img):
         _fmt = "png"
@@ -1295,29 +1329,17 @@ if os.path.isdir(MAPS):
 # source map that could not be carried.
 import glb_materials  # noqa: E402
 _read = glb_materials.material_slots(GLB)
-_slots, _flags = {}, {}
+_slots = {}
 for _slot in glb_materials.SLOTS:
     _r = _read[_slot]
     _src = MATERIAL["sources"].get(_slot)
     _slots[_slot] = {"present": _r["present"], "format": _r["format"], "size": _r["size"], "lossless": _r["lossless"],
                      "image": _r["image"], "source": _src is not None, "source_from": _src}
-    if _src is None:
-        continue
-    if not _r["present"]:
-        _flags[_slot] = "its source map (%s) is missing from the exported GLB" % _src
-    elif not _r["lossless"] and (a.image_format == "lossless" or _slot != "base_color"):
-        _flags[_slot] = "written as %s, which is lossy (%s)" % (
-            _r["format"], "every map is PNG with image_format lossless" if a.image_format == "lossless"
-            else "only the base colour may be JPEG with image_format compact")
-for _slot, _why in NOT_CARRIED.items():
-    if _slot in _slots and not _slots[_slot]["present"]:
-        _why += "; the exported GLB has none"
-    elif _slot in _slots:
-        _why += "; " + (_flags.get(_slot) or "the exported GLB has the map of %s" % _slots[_slot]["source_from"])
-    _flags[_slot] = _why
+_flags = glb_materials.slot_flags(_read, MATERIAL["sources"], a.image_format, NOT_CARRIED)
 _slots["opacity"]["alpha_mode"] = _read["opacity"].get("alpha_mode")
 mesh_report["materials"] = {"image_format": a.image_format, "read_from": os.path.basename(GLB) + " as written",
-                            "slots": _slots, "replaced": MATERIAL["replaced"], "not_carried": MATERIAL["not_carried"]}
+                            "slots": _slots, "replaced": MATERIAL["replaced"], "not_carried": MATERIAL["not_carried"],
+                            "not_taken": MATERIAL["not_taken"], "notes": MATERIAL["notes"]}
 for _slot in sorted(_flags):
     mesh_report["problems"].append("%s: %s" % ("material source" if _slot == "material_source"
                                                else "material slot " + _slot, _flags[_slot]))

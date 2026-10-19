@@ -337,25 +337,33 @@ the others are `acceptable`.
 |---|---|---|---|
 | `mesh_flags` | whole number, at least 0 | 0 | how many mesh flags the variant may have (`mesh_report.json` `flags`; above it, every flag is a violation) |
 | `missing_clips` | whole number, at least 0 | 0 | library clips the exported GLB may lack |
-| `foot_slide_cm`, `hand_socket_cm`, `reach_shortfall_cm`, `penetration_cm` | number, at least 0 | the motion report's threshold (the export setting of that name, else 2, 2, 1 and 2) | the largest value of that measure over the clips |
-| `stretch_p95` | number, at least 0 | the motion report's threshold (the export setting, else 0.5) | the largest edge stretch over the clips |
-| `bake_source_offset_m` | number, at least 0 | 0.05 | `bake_source_offset_m` of the mesh report |
+| `foot_slide_cm`, `hand_socket_cm`, `reach_shortfall_cm`, `penetration_cm` | number, at least 0 | not gated | the largest value of that measure over the clips |
+| `stretch_p95` | number, at least 0 | not gated | the largest edge stretch over the clips |
+| `bake_source_offset_m` | number, at least 0 | not gated | `bake_source_offset_m` of the mesh report (a bake source that does not line up is already a mesh flag) |
 
-By default, then, a variant is acceptable only without any mesh flag and without any
-motion value over the report's thresholds. A failed variant is always rejected. Each
+By default, then, a variant is rejected only for structural defects: a failed job (an
+invalid bone map included), any mesh flag (unweighted vertices, weights not normalised,
+no UV layer, several materials, no base colour, a bake source that does not line up, a
+material map lost, lossy or not carried), a missing clip, an unreadable mesh or motion
+report, or a NaN or infinite motion value. Motion limits gate only when the order sets
+them in `accept`; until then motion values rank the acceptable variants and stay on the
+sheet, `pick_final.json` says `"motion": "not gated: ..."` (else `"gated on <measures>"`)
+and the sheet labels an acceptable variant `acceptable: motion not gated`. Each
 violation names the stage held responsible (`forge/acceptance.py`, a conservative table:
 `unknown` rather than a guess):
 
 | Violation | Stage |
 |---|---|
 | a failed job | its stage; an export stopped by an invalid bone map: `rig` |
-| a mesh flag about a painted map (`material slot base_color`, `metallic_roughness`, `occlusion`, `emissive`, `opacity`, `material source`) or no base-colour texture | `paint` (`mesh` when paint is skipped: TRELLIS.2's own texture) |
-| `material slot normal` | `export` (it bakes the normal map) |
+| a painted map that could not be carried (`material slot <slot>: ... could not be carried`, `material source: ...`) or no base-colour texture | `paint` (`mesh` when paint is skipped: TRELLIS.2's own texture) |
+| a map missing from or lossy in the exported GLB, any `material slot normal` flag | `export` (it writes the GLB's images and bakes the normal map) |
+| any other `material slot` flag | `unknown` |
 | vertices without weight, weights not normalised | `rig` |
 | a bake source that does not line up, `bake_source_offset_m` | `mesh` |
 | no UV layer, more than one material, any other mesh flag | `unknown` |
 | a motion limit | `rig`; `library` when the same clip is over a limit on every variant that has a motion report (at least two) |
 | a missing clip, an unreadable report | `export` |
+| a NaN or infinite motion value | `unknown` |
 
 `reserve` (piece or family, default 0): that many more variants, with the next seeds of
 `family/piece` (the first `variants` seeds stay the same), are expanded with their whole
@@ -364,8 +372,10 @@ chain but held: they are not ready, do not keep the night going and appear in
 `no_variant_passed`, they are released and run like the others; then a second sheet
 (`review_reserve`) and a second decision (`final_reserve`, `pick_final_reserve.json`)
 cover every variant, the main and the reserve ones. With no acceptable variant there
-either, the outcome stays `no_variant_passed`. A manual pick in `pick_final.json` holds
-the reserve again. `-Estimate` counts held jobs apart, as "if needed".
+either, the outcome stays `no_variant_passed`. When the stage held responsible most often
+is `library` (the same clips fail on every variant), the reserve is still released but
+`pick_final.json` notes that it will likely fail the same way. A manual pick in
+`pick_final.json` holds the reserve again. `-Estimate` counts held jobs apart, as "if needed".
 
 Estimates (`-Estimate`, seconds per job on one 24 GB card, from earlier measurements of
 the same workflows, to be replaced by a real night's `timings.csv`): `qwen21_base` 90,
@@ -546,8 +556,8 @@ Picks are automatic: sharpness of the object and a clean background for concepts
 `"manual": true`; the next pass redoes only what depends on the pick. A humanoid's
 `pick_final.json` has the same keys plus `outcome` (`picked`, `manual` or
 `no_variant_passed`; `chosen` and `variant` are `null` for the last), `accept` (the limits
-used), `reserve` (`null`, or the reserve variants, whether they were `released` and the
-second `decision`), and for `no_variant_passed` `responsible_stage` (the stage held
+used; `null` = not gated), `motion` (whether motion limits gated), `reserve` (`null`, or
+the reserve variants, whether they were `released`, the second `decision` and a `note`), and for `no_variant_passed` `responsible_stage` (the stage held
 responsible for the most rejected variants) and `responsible_counts`. Each candidate has
 `job`, `variant`, `complete`, `reserve`, `class` (`acceptable` or `rejected`), `reasons`,
 `responsible` (stages), `violations` (`measure`, `value`, `limit`, `clip`, `stage`,

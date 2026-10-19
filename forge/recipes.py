@@ -373,8 +373,7 @@ def recipe_humanoid(fam, a, st):
         variants.append(entry)
     # The decisions' limits (the order's accept, else the defaults) and the stage held
     # responsible for the painted maps (the mesh stage's TRELLIS.2 bake when paint is skipped).
-    export_settings = stages.chosen_settings("humanoid", a).get("export", {})
-    decision = {"accept": acceptance.limits(a.get("accept"), export_settings),
+    decision = {"accept": acceptance.limits(a.get("accept")),
                 "paint_stage": "paint" if "paint" in opts else "mesh"}
     main, extra = variants[:n], variants[n:]
 

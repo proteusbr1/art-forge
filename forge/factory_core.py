@@ -292,7 +292,9 @@ class Factory(ComfyJobs, LocalSteps):
         if hold:
             # Held until the job it waits for is done with the outcome it waits for.
             gate = self.by_id.get(hold["until"])
-            if gate is None or self.state(gate, cache) != "done" or                     self.entry(hold["until"]).get("outcome") != hold["outcome"]:
+            opened = (gate is not None and self.state(gate, cache) == "done"
+                      and self.entry(hold["until"]).get("outcome") == hold["outcome"])
+            if not opened:
                 cache[jid] = HELD
                 return HELD
         deps = [d for d in refs_of(job) if not hold or d != hold["until"]]

@@ -618,6 +618,10 @@ def review_runner(factory, job, out_dir):
     camera = dict(job.get("args", {}))
     verdicts, summary = factory.decision(job)
     shown = [{"class": v["class"], "reasons": acceptance.first_reasons(v)} for v in verdicts]
+    if not summary["motion_gated"]:
+        for x in shown:  # "acceptable" is not "motion-clean": the motion flags stay on the sheet
+            if x["class"] == "acceptable":
+                x["reasons"] = ["motion not gated"]
     banner = None
     if not summary["acceptable"]:
         top = summary["responsible_stage"] or "unknown"

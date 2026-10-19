@@ -167,16 +167,21 @@ the export (exit code 4).
 `materials` is read from the written GLB itself (its JSON and the bytes of its images,
 `tools/blender/glb_materials.py`), not from Blender's scene: `image_format`, `read_from`,
 `replaced` (maps a better source replaced: the rig's normal map by the exporter's, the
-rig's metallic-roughness map by the paint stage's), `not_carried` (source maps that could
-not be carried, with why) and `slots`: for each of `base_color`, `normal`,
+rig's metallic-roughness map by the paint stage's, a rig metallic-roughness or emissive
+map whose source is JPEG/WebP by the material source's lossless one), `not_carried`
+(source maps that could not be carried, with why), `not_taken` (the material source's own
+base colour and normal map, dropped by design), `notes` (a carried map whose source went
+through a factor node the carry does not reproduce) and `slots`: for each of `base_color`, `normal`,
 `metallic_roughness`, `occlusion`, `emissive` and `opacity`, `present`, `format` (`png`,
 `jpeg`, `webp`), `size`, `lossless`, `image` (its name in the GLB), `source` (whether its
 source map existed) and `source_from` (where it came from: the rig's material, the paint
 stage's map, the material source, the exporter); `opacity` also has the material's
 `alpha_mode` and is present when the mode is `BLEND` or `MASK` and the base colour has an
-alpha channel. A mesh flag `material slot <slot>: ...` is raised for a slot whose source
-existed but that is missing or lossy in the GLB (JPEG anywhere with `lossless`, anywhere
-but the base colour with `compact`) and for a source map that could not be carried; `material
+alpha channel. The GLB decides the formats: a mesh flag `material slot <slot>: ...` is
+raised for every present slot that is lossy where the format forbids it, whether or not the
+exporter saw a source for it (JPEG anywhere with `lossless`; with `compact` anywhere but
+an opaque base colour), for a slot whose source existed but that is missing, and for a
+source map that could not be carried; `material
 source: ...` when the material source itself could not be read.
 
 The bake source must line up with the game mesh: 90 % of the game mesh's vertices within
@@ -226,7 +231,8 @@ The layout file: `size`, `status`, and per variant `label`, `failed`, `reason`, 
 or `null`) and `verdict_reasons`; and `banner` (the line over the sheet, or `null`).
 
 The factory's review job passes each variant's acceptance verdict (forge/acceptance.py)
-with its first two reasons: a line under the header, green for `acceptable`, red for
+with its first two reasons (the worst first): a line under the header, green for
+`acceptable` (`acceptable: motion not gated` when the order set no motion limit), red for
 `rejected`; "pending review" stays. When no variant is acceptable a red banner over the
 sheet says `NO VARIANT PASSED: MOST OFTEN THE <STAGE> (<n> OF <m>)`.
 

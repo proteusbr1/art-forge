@@ -9,15 +9,18 @@ writes the outcome "no_variant_passed".
 """
 
 import json
+import math
 import os
 import re
 
-# The exporter's default thresholds of the motion report (tools/blender/humanoid_export.py):
-# the default limit of each motion measure unless the piece's export stage sets its own.
+# The motion measures of the motion report (tools/blender/humanoid_export.py) and its
+# default thresholds (which flag, not gate).
 MOTION_DEFAULTS = {"foot_slide_cm": 2.0, "hand_socket_cm": 2.0, "reach_shortfall_cm": 1.0, "stretch_p95": 0.5,
                    "penetration_cm": 2.0}
-# accept key -> (type, default, meaning). A motion measure's default None means: the motion
-# report's threshold for it (the piece's export setting, else MOTION_DEFAULTS).
+# accept key -> (type, default, meaning). By default only structural defects reject (a failed
+# job, any mesh flag, missing clips, an unreadable report, a non-finite motion value): a
+# default None means "not gated" until the order sets that limit. Motion values still rank
+# the acceptable variants and show on the sheet.
 ACCEPT = {
     "mesh_flags": ("int", 0, "mesh flags a variant may have (mesh_report.json flags)"),
     "missing_clips": ("int", 0, "clips of the library the exported GLB may lack"),
@@ -26,8 +29,9 @@ ACCEPT = {
     "reach_shortfall_cm": ("number", None, "largest IK reach shortfall, cm"),
     "stretch_p95": ("number", None, "95th percentile of edge stretch, worst frame"),
     "penetration_cm": ("number", None, "deepest body vertex inside a held item's box, cm"),
-    "bake_source_offset_m": ("number", 0.05, "how far the bake source's bounds are from the game mesh's after "
-                                             "any fit, metres"),
+    "bake_source_offset_m": ("number", None, "how far the bake source's bounds are from the game mesh's after "
+                                             "any fit, metres (a source that does not line up is already a "
+                                             "mesh flag)"),
 }
 CLASSES = ("acceptable", "rejected")
 NO_VARIANT_PASSED = "no_variant_passed"
@@ -39,9 +43,12 @@ STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", 
 # first matching row wins; no row: "unknown". "paint" is the stage that painted the mesh
 # (the mesh stage itself when TRELLIS.2's own texture stays with paint skipped).
 MESH_FLAG_STAGES = (
+    (r"^material slot [a-z_]+: .*could not be carried", "paint",
+     "a painted map (the paint stage's or the painted mesh's) the exporter cannot read"),
+    (r"^material slot [a-z_]+: .*(is missing from the exported GLB|which is lossy)", "export",
+     "the exporter writes the GLB's images"),
     (r"^material slot normal:", "export", "the exporter bakes and writes the normal map"),
-    (r"^material slot (base_color|metallic_roughness|occlusion|emissive|opacity):", "paint",
-     "the painted maps come from the paint stage"),
+    (r"^material slot ", "unknown", "any other material slot flag"),
     (r"^material source:", "paint", "the material source is the painted mesh"),
     (r"no base-colour texture", "paint", "the painted mesh has no base colour"),
     (r"vertices have no weight", "rig", "the rig's skin weights"),
@@ -58,6 +65,7 @@ RESPONSIBLE = {
     "missing_clip": "export",     # a clip the exporter wrote that the GLB does not have
     "bake_source_offset_m": "mesh",
     "report_unreadable": "export",  # a report the exporter wrote cannot be read
+    "motion_not_finite": "unknown",  # a NaN or infinite motion value (degenerate skin or retarget)
     "not_finished": "unknown",    # a variant that stopped without a failed job
 }
 
@@ -84,17 +92,15 @@ def check(where, accept, problems):
             problems.append("%s: accept %s must be a number of at least 0, not %r" % (where, k, v))
 
 
-def limits(accept=None, export_settings=None):
-    """The full limits of a piece: its "accept", else the defaults (a motion measure's default
-    is the motion report's threshold: the export stage's setting, else MOTION_DEFAULTS)."""
-    export_settings = export_settings or {}
+def limits(accept=None):
+    """The full limits of a piece: its "accept" over the defaults (None: not gated)."""
     accept = accept if isinstance(accept, dict) else {}
-    out = {}
-    for k, (_, default, _) in ACCEPT.items():
-        if default is None:
-            default = export_settings.get(k, MOTION_DEFAULTS[k])
-        out[k] = (accept or {}).get(k, default)
-    return out
+    return {k: accept.get(k, default) for k, (_, default, _) in ACCEPT.items()}
+
+
+def motion_gated(lim):
+    """The motion measures a set of limits gates (the others only rank and show)."""
+    return [k for k in MOTION_DEFAULTS if lim.get(k) is not None]
 
 
 def mesh_flag_stage(flag, paint_stage="paint"):
@@ -179,7 +185,7 @@ def classify(records, lim, paint_stage="paint"):
                         vs.append(_violation("mesh_flags", mesh_flag_stage(f, paint_stage), "mesh: " + f,
                                              len(flags), lim["mesh_flags"]))
                 off = mesh.get("bake_source_offset_m")
-                if is_number(off) and off > lim["bake_source_offset_m"]:
+                if lim["bake_source_offset_m"] is not None and is_number(off) and off > lim["bake_source_offset_m"]:
                     vs.append(_violation("bake_source_offset_m", RESPONSIBLE["bake_source_offset_m"],
                                          "bake source %.3f m off, over %s" % (off, lim["bake_source_offset_m"]),
                                          off, lim["bake_source_offset_m"]))
@@ -198,11 +204,14 @@ def classify(records, lim, paint_stage="paint"):
                 for clip, e in sorted(_clip_values(motion).items()):
                     for k in MOTION_DEFAULTS:
                         v = e.get(k)
-                        if is_number(v) and v > lim[k]:
+                        if is_number(v) and not math.isfinite(v):
+                            vs.append(_violation(k, RESPONSIBLE["motion_not_finite"], "%s %s is %s" % (clip, k, v),
+                                                 v, lim[k], clip))
+                        elif is_number(v) and lim[k] is not None and v > lim[k]:
                             over.append(_violation(k, RESPONSIBLE["motion"], "%s %s %.3g over %s" % (clip, k, v, lim[k]),
                                                    v, lim[k], clip))
                 # The worst first (the furthest over its limit, relatively): a label shows the first.
-                over.sort(key=lambda x: -(x["value"] / x["limit"]) if x["limit"] > 0 else -float("inf"))
+                over.sort(key=lambda x: -(x["value"] / x["limit"]) if x["limit"] > 0 else -math.inf)
                 vs += over
         verdicts.append({"job": r["job"], "variant": r["variant"], "violations": vs})
     # The same clip over a limit on every variant that has a motion report (at least two):
@@ -211,11 +220,11 @@ def classify(records, lim, paint_stage="paint"):
     if len(measured) >= 2:
         failing = None
         for v in measured:
-            clips = set(x["clip"] for x in v["violations"] if x["measure"] in MOTION_DEFAULTS)
+            clips = set(x["clip"] for x in v["violations"] if _gated_motion(x))
             failing = clips if failing is None else failing & clips
         for v in measured:
             for x in v["violations"]:
-                if x["measure"] in MOTION_DEFAULTS and x["clip"] in failing:
+                if _gated_motion(x) and x["clip"] in failing:
                     x["stage"] = RESPONSIBLE["motion_every_variant"]
     counts = {}
     for v in verdicts:
@@ -228,8 +237,13 @@ def classify(records, lim, paint_stage="paint"):
     summary = {"acceptable": [v["job"] for v in verdicts if v["class"] == "acceptable"],
                "rejected": [v["job"] for v in verdicts if v["class"] == "rejected"],
                "responsible_counts": {s: counts[s] for s in top},
-               "responsible_stage": top[0] if top else None}
+               "responsible_stage": top[0] if top else None, "motion_gated": motion_gated(lim)}
     return verdicts, summary
+
+
+def _gated_motion(x):
+    """A violation of a motion limit the order set (not a non-finite value)."""
+    return x["measure"] in MOTION_DEFAULTS and x["stage"] == RESPONSIBLE["motion"] and x["clip"] is not None
 
 
 def _clip_values(motion):

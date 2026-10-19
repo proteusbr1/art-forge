@@ -234,6 +234,28 @@ class GlbReader(unittest.TestCase):
         slots = gm.material_slots(path)
         self.assertFalse(slots["opacity"]["present"])
         self.assertEqual(slots["opacity"]["alpha_mode"], "BLEND")
+        # The base colour above carried the opacity as JPEG: lossy even in compact.
+        flags = gm.slot_flags(slots, {}, "compact")
+        self.assertEqual(list(flags), ["base_color"])
+        self.assertIn("carries the opacity", flags["base_color"])
+
+    def test_a_lossy_technical_map_is_flagged_without_a_recorded_source(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools", "blender"))
+        import glb_materials as gm
+        path = self.glb([("base", self.encoded("RGB", "JPEG")), ("mr", self.encoded("RGB", "JPEG"))],
+                        {"pbrMetallicRoughness": {"baseColorTexture": {"index": 0},
+                                                  "metallicRoughnessTexture": {"index": 1}}})
+        slots = gm.material_slots(path)
+        # No source recorded for either (the exporter did not see them): the GLB decides.
+        flags = gm.slot_flags(slots, {}, "compact")
+        self.assertEqual(list(flags), ["metallic_roughness"])  # an opaque base colour may be JPEG
+        self.assertIn("written as jpeg, which is lossy", flags["metallic_roughness"])
+        self.assertEqual(sorted(gm.slot_flags(slots, {}, "lossless")), ["base_color", "metallic_roughness"])
+        # A source that existed but is missing; a source map that could not be carried.
+        flags = gm.slot_flags(slots, {"normal": "the exporter"}, "compact",
+                              {"occlusion": "the map of the material source p.glb could not be carried: x"})
+        self.assertIn("is missing from the exported GLB", flags["normal"])
+        self.assertTrue(flags["occlusion"].endswith("could not be carried: x; the exported GLB has none"))
 
 
 class RunnerChecks(unittest.TestCase):
@@ -424,6 +446,9 @@ class SyntheticExport(unittest.TestCase):
                              (True, "png", True), slot)
             self.assertIn("painted_source.glb", slots[slot]["source_from"])
         self.assertEqual(mesh["flags"], [])
+        # The material source's own base colour is dropped by design, and said so.
+        self.assertTrue(any(x.startswith("base_color: the material source's map") and "is not taken" in x
+                            for x in mesh["materials"]["not_taken"]), mesh["materials"])
         r = check_glb(files["glb"], files["model"])
         self.assertEqual(r["material"]["metallic_roughness"]["format"], "png")
         self.assertTrue(r["material"]["opacity"])

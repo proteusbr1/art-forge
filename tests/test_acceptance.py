@@ -42,37 +42,51 @@ def failed(job, stage, error):
 class LimitsTest(unittest.TestCase):
     def test_defaults_and_custom_limits(self):
         d = acceptance.limits()
-        self.assertEqual(d, {"mesh_flags": 0, "missing_clips": 0, "foot_slide_cm": 2.0, "hand_socket_cm": 2.0,
-                             "reach_shortfall_cm": 1.0, "stretch_p95": 0.5, "penetration_cm": 2.0,
-                             "bake_source_offset_m": 0.05})
-        # A motion measure follows the export stage's threshold unless accept gives it.
-        self.assertEqual(acceptance.limits(None, {"stretch_p95": 0.7})["stretch_p95"], 0.7)
-        self.assertEqual(acceptance.limits({"stretch_p95": 0.9}, {"stretch_p95": 0.7})["stretch_p95"], 0.9)
+        # By default only structural defects gate: motion and the bake offset are not gated.
+        self.assertEqual(d, {"mesh_flags": 0, "missing_clips": 0, "foot_slide_cm": None, "hand_socket_cm": None,
+                             "reach_shortfall_cm": None, "stretch_p95": None, "penetration_cm": None,
+                             "bake_source_offset_m": None})
+        self.assertEqual(acceptance.motion_gated(d), [])
         lim = acceptance.limits({"mesh_flags": 1, "foot_slide_cm": 5.0})
-        self.assertEqual((lim["mesh_flags"], lim["foot_slide_cm"], lim["penetration_cm"]), (1, 5.0, 2.0))
+        self.assertEqual((lim["mesh_flags"], lim["foot_slide_cm"], lim["penetration_cm"]), (1, 5.0, None))
+        self.assertEqual(acceptance.motion_gated(lim), ["foot_slide_cm"])
 
     def test_classification_with_default_and_custom_limits(self):
         records = [done("f/p/v1/export"),
                    done("f/p/v2/export", motion={"walk": {"foot_slide_cm": 3.0}}),
                    done("f/p/v3/export", mesh_flags=["3 vertices have no weight"]),
                    done("f/p/v4/export", offset=0.08)]
+        # Default: only the mesh flag rejects; the slide and the offset are not gated.
         verdicts, summary = acceptance.classify(records, acceptance.limits())
-        self.assertEqual([v["class"] for v in verdicts], ["acceptable", "rejected", "rejected", "rejected"])
-        self.assertEqual(summary["acceptable"], ["f/p/v1/export"])
+        self.assertEqual([v["class"] for v in verdicts], ["acceptable", "acceptable", "rejected", "acceptable"])
+        self.assertEqual(summary["motion_gated"], [])
+        # Custom limits: the slide and the offset gate, one mesh flag is allowed.
+        lim = acceptance.limits({"foot_slide_cm": 2.0, "mesh_flags": 1, "bake_source_offset_m": 0.05})
+        verdicts, summary = acceptance.classify(records, lim)
+        self.assertEqual([v["class"] for v in verdicts], ["acceptable", "rejected", "acceptable", "rejected"])
         self.assertEqual(verdicts[1]["violations"][0]["measure"], "foot_slide_cm")
         self.assertEqual((verdicts[1]["violations"][0]["value"], verdicts[1]["violations"][0]["limit"]), (3.0, 2.0))
         self.assertIn("walk foot_slide_cm 3 over 2.0", verdicts[1]["reasons"])
-        # Custom limits let the slide, one mesh flag and the offset pass.
-        lim = acceptance.limits({"foot_slide_cm": 4.0, "mesh_flags": 1, "bake_source_offset_m": 0.1})
-        verdicts, _ = acceptance.classify(records, lim)
-        self.assertEqual([v["class"] for v in verdicts], ["acceptable"] * 4)
+        self.assertEqual(summary["motion_gated"], ["foot_slide_cm"])
+
+    def test_a_non_finite_motion_value_always_rejects(self):
+        for value in (float("nan"), float("inf")):
+            with self.subTest(value=value):
+                verdicts, _ = acceptance.classify([done("f/p/v1/export", motion={"walk": {"stretch_p95": value}})],
+                                                  acceptance.limits())
+                self.assertEqual(verdicts[0]["class"], "rejected")
+                self.assertEqual(verdicts[0]["stages"], ["unknown"])
+                self.assertIn("walk stretch_p95 is", verdicts[0]["reasons"][0])
 
 
 class ResponsibleStageTest(unittest.TestCase):
     # One row per entry of acceptance.MESH_FLAG_STAGES: a flag text and the stage it gives.
     MESH_ROWS = (
-        ("material slot normal: written as jpeg, which is lossy", "export"),
-        ("material slot metallic_roughness: its source map (x) is missing from the exported GLB", "paint"),
+        ("material slot metallic_roughness: the paint stage's map mr.png could not be carried: cannot be read; "
+         "the exported GLB has none", "paint"),
+        ("material slot base_color: written as jpeg, which is lossy (every map is PNG ...)", "export"),
+        ("material slot normal: something the exporter did", "export"),
+        ("material slot emissive: something new", "unknown"),
         ("material source: painted.glb cannot be imported: none of its maps could be carried", "paint"),
         ("the material has no base-colour texture", "paint"),
         ("3 vertices have no weight", "rig"),
@@ -93,7 +107,13 @@ class ResponsibleStageTest(unittest.TestCase):
                 self.assertEqual(verdicts[0]["stages"], [stage])
                 self.assertEqual(summary["responsible_stage"], stage)
         # With paint skipped, TRELLIS.2's own texture is the mesh stage's.
-        self.assertEqual(acceptance.mesh_flag_stage("material slot opacity: x", paint_stage="mesh"), "mesh")
+        self.assertEqual(acceptance.mesh_flag_stage(
+            "material slot opacity: the map of the material source p.glb could not be carried: x",
+            paint_stage="mesh"), "mesh")
+        # A lost or lossy map after export is the exporter's, whatever its source.
+        self.assertEqual(acceptance.mesh_flag_stage(
+            "material slot metallic_roughness: its source map (the rig's material) is missing from the exported GLB"),
+            "export")
 
     def test_failures_bone_map_bake_offset_and_reports(self):
         rows = ((failed("f/p/v1/mesh", "mesh", "finished without the output(s) raw_mesh"), "mesh"),
@@ -101,13 +121,13 @@ class ResponsibleStageTest(unittest.TestCase):
                 (failed("f/p/v1/export", "export", "export failed (exit 1), see x"), "export"),
                 (failed("f/p/v1/rig", "rig", "rig timed out"), "rig"),
                 (failed("f/p/v1/x", None, "not finished"), "unknown"),
-                (done("f/p/v1/export", offset=0.2), "mesh"),
+                (done("f/p/v1/export", offset=0.2), "mesh"),  # with a limit set (below)
                 (dict(done("f/p/v1/export"), mesh_report="unreadable"), "export"),
                 (dict(done("f/p/v1/export"), motion_report={"clips": {"walk": {"found": False}}, "flags": []}),
                  "export"))
         for rec, stage in rows:
             with self.subTest(rec=rec["failure"] or rec["mesh_report"]):
-                verdicts, _ = acceptance.classify([rec], acceptance.limits())
+                verdicts, _ = acceptance.classify([rec], acceptance.limits({"bake_source_offset_m": 0.05}))
                 self.assertEqual(verdicts[0]["class"], "rejected")
                 self.assertEqual(verdicts[0]["stages"], [stage])
         self.assertEqual(acceptance.RESPONSIBLE["bone_map"], "rig")
@@ -115,19 +135,20 @@ class ResponsibleStageTest(unittest.TestCase):
     def test_motion_is_the_rig_or_the_library_when_every_variant_fails_the_clip(self):
         walk = {"walk": {"foot_slide_cm": 3.0}}
         both = {"walk": {"foot_slide_cm": 3.0}, "idle": {"stretch_p95": 0.9}}
+        lim = acceptance.limits({"foot_slide_cm": 2.0, "stretch_p95": 0.5})
         verdicts, summary = acceptance.classify([done("f/p/v1/export", motion=both),
-                                                 done("f/p/v2/export", motion=walk)], acceptance.limits())
+                                                 done("f/p/v2/export", motion=walk)], lim)
         by = {(x["clip"], x["measure"]): x["stage"] for x in verdicts[0]["violations"]}
         self.assertEqual(by, {("walk", "foot_slide_cm"): "library", ("idle", "stretch_p95"): "rig"})
         self.assertEqual(verdicts[1]["stages"], ["library"])
         self.assertEqual(summary["responsible_stage"], "library")
         self.assertEqual(summary["responsible_counts"], {"library": 2, "rig": 1})
         # One variant alone cannot tell the clip from the rig.
-        verdicts, _ = acceptance.classify([done("f/p/v1/export", motion=walk)], acceptance.limits())
+        verdicts, _ = acceptance.classify([done("f/p/v1/export", motion=walk)], lim)
         self.assertEqual(verdicts[0]["stages"], ["rig"])
         # A failed variant does not count as "every variant".
         verdicts, _ = acceptance.classify([done("f/p/v1/export", motion=walk), done("f/p/v2/export"),
-                                           failed("f/p/v3/export", "export", "x")], acceptance.limits())
+                                           failed("f/p/v3/export", "export", "x")], lim)
         self.assertEqual(verdicts[0]["stages"], ["rig"])
 
 
@@ -280,7 +301,7 @@ class NightTest(Base):
     def test_all_rejected_is_no_variant_passed_with_an_empty_final(self):
         v = ["v%d" % s for s in seeds_for("crew/tech", 3)]
         tools = Tools(fail_export=[v[0]], flagged=[v[1], v[2]])
-        m = self.run_night(tools)
+        m = self.run_night(tools, {"accept": {"foot_slide_cm": 2.0}})
         pick = self.read("crew", "tech", "pick_final.json")
         self.assertEqual(pick["outcome"], "no_variant_passed")
         self.assertIsNone(pick["chosen"])
@@ -291,6 +312,7 @@ class NightTest(Base):
         self.assertEqual(pick["candidates"][1]["responsible"], ["library"])
         self.assertEqual(pick["responsible_stage"], "library")
         self.assertEqual(pick["responsible_counts"], {"library": 2, "rig": 1})
+        self.assertEqual(pick["motion"], "gated on foot_slide_cm")
         self.assertFalse(os.path.exists(os.path.join(self.out, "crew", "tech", "final")))
         self.assertEqual(m["crew/tech/final"]["outcome"], "no_variant_passed")
         self.assertEqual(sorted(m["crew/tech/final"]["files"]), ["pick"])
@@ -304,7 +326,7 @@ class NightTest(Base):
         del m["crew/tech/final"]
         with open(os.path.join(self.out, "manifest.json"), "w", encoding="utf-8") as fh:
             json.dump(m, fh)
-        self.run_night(tools)
+        self.run_night(tools, {"accept": {"foot_slide_cm": 2.0}})
         self.assertFalse(os.path.exists(final))
 
     def test_every_variant_failed_still_decides(self):
@@ -320,10 +342,17 @@ class NightTest(Base):
     def test_reserve_variants_are_held_until_no_variant_passed(self):
         seeds = seeds_for("crew/tech", 4)
         v = ["v%d" % s for s in seeds]
-        # The main variants pass: the reserve is never run and does not keep the night going.
-        tools = Tools()
+        # The main variants pass (by default a motion flag does not gate, it only ranks): the
+        # reserve is never run and does not keep the night going.
+        tools = Tools(flagged=[v[0]])
         m = self.run_night(tools, {"reserve": 2}, variants=2)
-        self.assertEqual(self.read("crew", "tech", "pick_final.json")["outcome"], "picked")
+        pick = self.read("crew", "tech", "pick_final.json")
+        self.assertEqual(pick["outcome"], "picked")
+        self.assertEqual(pick["chosen"], "crew/tech/%s/export" % v[1])
+        self.assertEqual([c["class"] for c in pick["candidates"]], ["acceptable", "acceptable"])
+        self.assertTrue(pick["motion"].startswith("not gated"), pick["motion"])
+        [review] = [c for c in tools.calls if c[0] == "review"]
+        self.assertEqual(review[4]["verdicts"], [{"class": "acceptable", "reasons": ["motion not gated"]}] * 2)
         for s in v[2:]:
             self.assertFalse(any(jid.startswith("crew/tech/%s/" % s) for jid in m), s)
         self.assertNotIn("crew/tech/final_reserve", m)
@@ -363,6 +392,29 @@ class NightTest(Base):
         self.fake.reset_log()
         self.run_night(tools, {"reserve": 2}, variants=2)
         self.assertEqual((tools.calls, self.fake.submitted), ([], []))
+        # The decisions share final/: the first one run again removes the copy, then the
+        # second one, its files gone, copies its pick again.
+        path = os.path.join(self.out, "manifest.json")
+        with open(path, encoding="utf-8") as fh:
+            m = json.load(fh)
+        del m["crew/tech/final"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(m, fh)
+        m = self.run_night(tools, {"reserve": 2}, variants=2)
+        self.assertEqual(m["crew/tech/final"]["outcome"], "no_variant_passed")
+        self.assertEqual(m["crew/tech/final_reserve"]["chosen"], "crew/tech/%s/export" % v[2])
+        with open(os.path.join(self.out, "crew", "tech", "final", "model.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["variant"], v[2])
+        self.assertEqual(self.fake.submitted, [])
+
+    def test_a_library_failure_notes_that_the_reserve_will_likely_fail_too(self):
+        tools = Tools(flagged=["v%d" % s for s in seeds_for("crew/tech", 3)])
+        self.run_night(tools, {"reserve": 1, "accept": {"foot_slide_cm": 2.0}}, variants=2)
+        first = self.read("crew", "tech", "pick_final.json")
+        self.assertEqual((first["outcome"], first["responsible_stage"]), ("no_variant_passed", "library"))
+        self.assertTrue(first["reserve"]["released"])
+        self.assertIn("will likely fail the same way", first["reserve"]["note"])
+        self.assertEqual(self.read("crew", "tech", "pick_final_reserve.json")["outcome"], "no_variant_passed")
 
     def test_with_no_reserve_left_the_outcome_stays_no_variant_passed(self):
         v = ["v%d" % s for s in seeds_for("crew/tech", 3)]
