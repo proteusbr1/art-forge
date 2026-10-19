@@ -32,7 +32,11 @@ imports its modules on this machine). A humanoid piece may also wear an approved
 (`inputs.body`, 2026-10-19): every variant is conformed to a body the exporter wrote and
 exported on its skeleton, with the same motions on every outfit; it is tested on synthetic
 figures in Blender on the CPU and was checked on copies of a real night's armours (CPU only);
-the factory has not yet run it in a night. See the
+the factory has not yet run it in a night. The motion bench (`python -m forge.bench`,
+[docs/bench.md](docs/bench.md), 2026-10-19) exports one figure with a motion library and one
+held item and renders each clip from the game's camera and from close into animated previews
+and a page of measures; it is smoke-tested on the synthetic humanoid and was used on one real
+rig. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).

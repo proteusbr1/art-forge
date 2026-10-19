@@ -74,6 +74,10 @@ format in [docs/order.md](docs/order.md) and the design in
   own Python, its readiness and import check) and `tools/motion/hymotion_entry.py` (the
   model's entry, run by that Python). `data/motions/` holds the starter motion library
   (`@starter`) and its provenance note; `data/` is stored byte for byte.
+- `forge/bench.py`: the motion bench (`python -m forge.bench`, [docs/bench.md](docs/bench.md)): a
+  figure, a motion library and one held item exported and rendered clip by clip
+  (`tools/review_godot/bench.gd`) into previews and a page of measures; no GPU lock, nothing
+  sent to ComfyUI.
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree and the way the
   figure faces, `body_facing`, no `bpy`) and
@@ -95,7 +99,7 @@ format in [docs/order.md](docs/order.md) and the design in
   snapshot): keep those scripts' line endings as a fresh checkout has them.
 - `tools/review_godot/`: the Godot project of the review sheets (off screen): `main.gd`
   (humanoid), `sheet.gd` / `sheet.tscn` (articulated and creature) and `item_sheet.gd` /
-  `item_sheet.tscn` (held_item).
+  `item_sheet.tscn` (held_item); `bench.gd` / `bench.tscn` (the motion bench).
 - `tools/rig/skintokens_entry.py`: SkinTokens with a fixed seed, run by its own Python.
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
@@ -240,6 +244,9 @@ figure turned 30 degrees, with its feet or its body askew, must face glTF +z in 
 `tests/test_humanoid_body_smoke.py` also runs only Blender on the CPU: it exports two synthetic
 approved bodies (`local/fixtures/humanoid_body/`, the sample order's) and conforms two variants
 of other proportions to one (`local/smoke/humanoid_body/`).
+`tests/test_bench.py` tests the bench's clip selection, views, measures and page, and runs it
+on the synthetic humanoid when Blender and Godot are configured (no GPU lock; outputs in
+`local/smoke/bench/`).
 `tests/test_humanoid_motions.py` and `tests/test_launcher.py` need no tool: HY-Motion is
 replaced by `tests/fixtures/motion/hymotion_standin.py` (`FORGE_HYMOTION_ENTRY`), and the
 launcher test starts a factory detached (WMI) against the fake server with a private lock
