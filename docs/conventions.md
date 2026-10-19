@@ -82,6 +82,86 @@ Without a placement the item follows the right palm and both hands stay as the c
 them. A class without items in `--items` gets no sockets: its item bone follows the right
 palm.
 
+## Motions list
+
+The humanoid's `motions` ([order.md](order.md#motions-of-a-humanoid)) end in clips of the motion
+library above (`forge/motion_clips.py`, no bpy). From a source's positions (any units and up
+axis) a clip is made in this order:
+
+1. **Body coordinates.** Left from the hips (averaged over the clip), up the source's up axis,
+   forward = left x up (turned round when the toes point the other way: a mirrored source);
+   the floor is the lowest ankle or toe of the clip; positions are divided by the standing
+   height (the tallest head over the floor; 0.97 times the bones' lengths when the clip never
+   reaches 0.85 of that, a clip that never stands up); the first frame's pelvis is over the
+   origin.
+2. **Time.** A one-shot is resampled over its whole length to `frames`. A loop takes the
+   window whose ends are most alike (pose relative to the pelvis, and speed), 0.8 to 1.25
+   times `frames / fps` long, resampled to `frames`; the pelvis's drift over the window is
+   removed (the figure walks in place) and becomes `travel`; the pose's residual at the window's
+   end is spread linearly over the clip (`cycle_closure`). A travel under 0.02 body heights is
+   dropped.
+3. **Contacts**: the entry's `contacts`, else a library clip's `stance`, else detected: frames
+   where an ankle is at most `contact_height` above its lowest and moves at most
+   `contact_speed` in the ground frame (the body's travel added), one-frame gaps filled, runs
+   shorter than `contact_min_frames` dropped. A foot planted on every frame is `"all"`.
+4. **Hip height** (`hip_height`): when a planted ankle is off the clip's median planted ankle
+   height by more than `ground`, each frame with a planted foot is lifted or lowered so its
+   lowest planted ankle stands at that height (frames between interpolated, smoothed).
+5. **Foot contacts** (`foot_contacts`): when a planted ankle moves more than `foot_slide_fix`
+   within a run (ground frame), it is held at the run's median place, its toe moved with it,
+   the frames next to the run moved half way, the knee placed by two-bone IK with the bones'
+   lengths; the reach it lacked is reported.
+6. **Below ground** (`below_ground`): the lowest joint may be at most `ground` below the floor
+   (not checked for `feet` `lie`).
+
+Thresholds (body heights; 0.01 is 1.8 cm on a 1.8 m figure), the constants `THRESHOLDS`:
+`contact_height` 0.02, `contact_speed` 0.15 a second, `contact_min_frames` 3, `foot_slide`
+0.004 (the check after the cleanup), `foot_slide_fix` 0.002, `ground` 0.004, `seam_factor` 2 and
+`seam_min` 0.004 (a loop's seam jump may be the larger of `seam_factor` times its median frame
+step and `seam_min`), `window_min` 0.8 and `window_max` 1.25.
+
+A clip's report (`forge-motion-clip-report`): `name`, `source`, `source_frames`,
+`source_fps`, `frames`, `fps`, `loop`, `scale` (`height_source_units`, `height_from`,
+`mirrored`), `window` (loops: `start`, `frames`, `seconds`, `cost`), `contacts` (`how`:
+`given` or `detected`, `left`, `right`), `corrections` (each: `name`, `applied`, `threshold`,
+`before`, `after`, `passed`; `cycle_closure`'s `before` is the residual at the window's end,
+its `after` the seam jump, with `median_step`; `foot_contacts` also `reach_shortfall`),
+`thresholds`, `units`, `feet`, `travel`, `flags` (a failed check: `<name>: <after> over
+<threshold>`) and `valid`.
+
+Readers: **bvh** (`read_bvh`: the hierarchy's joints and end sites by forward kinematics, the
+rotation order of each joint's channels, position channels on any joint; joint names matched
+after dropping a `prefix:` and case: CMU's BVH conversion (`Hips`, `LeftUpLeg`, `Spine1`,
+`Neck1`, `LeftFingerBase`, ...) and Mixamo's; the top of the head, a hand, a collar, the chest
+and the neck are derived when missing). **HY-Motion** (`smpl_canon`: the SMPL body order of its
+`keypoints3d` (52 joints, the middle fingers' first joints as the hands) plus `transl`, which
+the keypoints leave out; y up).
+
+**Made clips** (`<out>/<family>/_motions/<name>/`): `clip.json` (a motion library holding the
+one clip, named as the entry), `report.json`; for `text` also `motion.npz` (HY-Motion's arrays
+as it wrote them), `hymotion.json` (its record: model, text, seed, steps, guidance, duration,
+fps, frames, checkpoint and config SHA-256, torch and CUDA versions, times, peak VRAM),
+`prompt.txt`, `motion_text.provenance.json` (as the other local tools': the entry script and
+`motion_clips.py` hashed, the checkout's git revision, the checkpoint, the seed, the effective
+settings, the prompt, the command) and its logs.
+
+**The piece's library** (`<out>/<family>/<piece>/motions/`): `library.json` (the entries in the
+list's order, each named as the entry, its `kind` and `holds` as the entry gives them; the
+hold placements of `inputs.clips` and of the library files used, the first one of a name
+kept) and `report.json` (`forge-motions-report`: per clip the library clip's report, or the
+made clip's job and flags; `flags`, `valid`).
+
+**HY-Motion Lite** (`tools/motion/hymotion_entry.py`, run by `forge/motion_text.py`): the
+configured `hymotion_python` with `hymotion_dir` (and `hymotion_pythonpath`) on its path,
+`HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` set and `-B` (no bytecode written into the
+checkout). The text encoders (`hymotion_text_encoder`, `hymotion_clip`) encode the prompt and
+are freed, the motion model is built from `config.yml` next to `hymotion_model` (with the
+checkout as the working folder, for its bundled body assets) and loads the checkpoint (every
+learned parameter must match; only the body model's buffers may be missing), then generates
+`duration` seconds at its own 30 fps with the seed, steps and guidance. No prompt rewriting,
+no duration estimate. `-Check` imports the entry's modules in that Python
+(`forge/motion_text.py` `import_check`), nothing more.
+
 ## Held-item socket file (`inputs.items`)
 
 A folder with one `<name>.json` per item, next to its `<name>.glb` (item space). The

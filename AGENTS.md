@@ -64,6 +64,13 @@ format in [docs/order.md](docs/order.md) and the design in
   tools' own modules; `forge/sheet_layout.py`: the layout of the articulated and creature
   review sheet (Godot only renders it); `forge/item_sheet_layout.py`: the layout of the
   held-item review sheet.
+- The humanoid's motions list: `forge/motion_clips.py` (every source to canonical joints, the
+  corrections and their thresholds, the BVH and HY-Motion readers, the list's check; no
+  `bpy`), `forge/motion_jobs.py` (the family's made clips and the piece's library as jobs, and
+  their local steps), `forge/motion_text.py` (the `motion_text` runner: HY-Motion Lite in its
+  own Python, its readiness and import check) and `tools/motion/hymotion_entry.py` (the
+  model's entry, run by that Python). `data/motions/` holds the starter motion library
+  (`@starter`) and its provenance note; `data/` is stored byte for byte.
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
   `humanoid_export.py` (the humanoid export, run by `blender_python`) and
@@ -75,8 +82,10 @@ format in [docs/order.md](docs/order.md) and the design in
   `held_item_geometry.py` (the item frame, class templates, socket proposal and checks, no
   `bpy`), `held_item_export.py` (the item tool) and `held_item_figure.py` (a reference figure
   made ready for the humanoid exporter).
-  The humanoid's scripts are left unchanged by the new recipes (their hashes are in the
-  humanoid jobs' specifications).
+  The humanoid's scripts are in the humanoid jobs' specifications: changing one redoes those
+  jobs (the exporter changed on purpose on 2026-10-19, see the design's section 13). The
+  hashes are taken from the files as checked out (CRLF here, as `git archive` gives a night's
+  snapshot): keep those scripts' line endings as a fresh checkout has them.
 - `tools/review_godot/`: the Godot project of the review sheets (off screen): `main.gd`
   (humanoid), `sheet.gd` / `sheet.tscn` (articulated and creature) and `item_sheet.gd` /
   `item_sheet.tscn` (held_item).
@@ -84,8 +93,10 @@ format in [docs/order.md](docs/order.md) and the design in
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
   orders (`order_generic.json`, `order_humanoid.json`, `order_articulated.json`,
-  `order_creature.json`, `order_held_item.json`), `tests/fixtures/humanoid/` the synthetic
-  humanoid (generator, library, item), `tests/fixtures/articulated/` and
+  `order_creature.json`, `order_held_item.json`, `order_humanoid_motions.json`),
+  `tests/fixtures/humanoid/` the synthetic humanoid (generator, library, item, the pose
+  checker), `tests/fixtures/motion/` the HY-Motion stand-in and a synthetic capture,
+  `tests/motion_synth.py` the synthetic walk, `tests/fixtures/articulated/` and
   `tests/fixtures/creature/` the generators of the new tools' Blender fixtures and a
   role-space library, `tests/fixtures/held_item/` the synthetic carbine's generator and the
   held items' library;
@@ -209,4 +220,10 @@ driver and exits by itself. They hold this user's machine-wide GPU lock while th
 and are skipped when a factory run holds it. With `FORGE_SMOKE_RIG` (a rigged GLB) and `FORGE_SMOKE_CLIPS`
 (a motion library), and optionally `FORGE_SMOKE_ITEMS`, it also exports that rig and makes
 its sheet in `local/smoke/real/`. Never commit those files. Never run SkinTokens or UniRig
-from a test (they need the GPU).
+from a test (they need the GPU). `tests/test_export_pose_smoke.py` runs only Blender, on the
+CPU and without a bake (outputs in `local/smoke/pose/`): the synthetic figure facing -y, +x and
+-x and with its bones' tails off their children must export an idle with straight legs.
+`tests/test_humanoid_motions.py` and `tests/test_launcher.py` need no tool: HY-Motion is
+replaced by `tests/fixtures/motion/hymotion_standin.py` (`FORGE_HYMOTION_ENTRY`), and the
+launcher test starts a factory detached (WMI) against the fake server with a private lock
+folder.

@@ -40,7 +40,9 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 (two humanoids; see [the humanoid recipe](#the-humanoid-recipe)),
 [tests/fixtures/order_articulated.json](../tests/fixtures/order_articulated.json),
 [tests/fixtures/order_creature.json](../tests/fixtures/order_creature.json) and
-[tests/fixtures/order_held_item.json](../tests/fixtures/order_held_item.json).
+[tests/fixtures/order_held_item.json](../tests/fixtures/order_held_item.json), and
+[tests/fixtures/order_humanoid_motions.json](../tests/fixtures/order_humanoid_motions.json)
+(a humanoid motions list with every source).
 
 ## Top level
 
@@ -129,7 +131,7 @@ New keys:
 | `accept` | hard limits a variant must meet to be picked (humanoid, articulated, creature, held_item; [below](#acceptance-and-reserve-variants)) |
 | `reserve` | extra variants run only when no variant passed (humanoid, articulated, creature, held_item; a whole number of at least 0, default 0) |
 | `parts` | the parts of an articulated piece ([below](#the-articulated-recipe)) |
-| `body`, `motions` | the body plan or template and the movements of a creature ([below](#the-creature-recipe)) |
+| `body`, `motions` | the body plan or template and the movements of a creature ([below](#the-creature-recipe)); `motions` also lists a humanoid's movements ([below](#motions-of-a-humanoid)) |
 | `item` | the hold class and socket template of a held item ([below](#the-held-item-recipe)) |
 
 `review`, `accept` and `reserve` do not apply to the core recipes. The stage catalogue is `forge/stages.py`.
@@ -206,7 +208,7 @@ Without settings a piece's jobs are the same as before (no hash changes).
 |---|---|---|
 | `reference` | object_3d, prop | an RGBA image (background removed) that replaces the concepts: the piece goes straight to the mesh, with no concept seeds and no pick |
 | `reference` | humanoid with reference `input_image` | the picture of the figure that replaces the generated reference (every variant starts from it); with pose skipped and cutout `birefnet` it must have a transparent background |
-| `clips` | humanoid export | the motion library (JSON, [conventions.md](conventions.md)); without it the GLB has the rest pose only |
+| `clips` | humanoid export | the motion library (JSON, [conventions.md](conventions.md)); without it (and without `motions`) the GLB has the rest pose only. With `motions` it is the default library of their `library` entries |
 | `items` | humanoid export | a folder of held items (`<name>.json` sockets next to `<name>.glb`); it enters the hash by the files inside it |
 | `figure` | held item's hold | a rigged humanoid GLB that holds the item on the review sheet ([below](#the-held-item-recipe)) |
 | `clips` | held item's hold | the motion library whose clips holding the item's class the figure plays |
@@ -346,6 +348,55 @@ piece's `review/` holds `sheet.png` and its layout.
   (metallic-roughness, opacity, emissive, occlusion; with `trellis2_texture` TRELLIS.2's
   own) are taken from the painted mesh. The written GLB is read back: a map that is lost,
   lossy or cannot be carried is a mesh flag ([conventions.md](conventions.md)).
+
+### Motions of a humanoid
+
+`motions` (piece, or family as a default; [design](superpowers/specs/2026-10-18-art-forge-design.md),
+section 13) lists the clips the exported figure gets, one entry per movement, in the
+creature's format. With a list the export plays exactly those clips (the piece's motion
+library, made by the job `<family>/<piece>/motions`); without one it plays `inputs.clips` as
+it is. The export stage must not be skipped.
+
+| Key | Meaning |
+|---|---|
+| `name` | the clip name the game looks up (lower case, letters, digits, `_`; unique in the list) |
+| `source` | `library`, `text` or `bvh` (`procedural` motion kinds are the creature's) |
+| `library` | `library`: `{"file": path, "clip": name}`; the file defaults to `inputs.clips`, the clip to the entry's name; the file `@starter` is the factory's starter library ([data/motions](../data/motions/README.md)); a path is relative to the order |
+| `prompt` | `text`: what the movement is, described plainly (at most 60 words) |
+| `file` | `bvh`: the capture file (relative to the order); the frame range is the setting `range` |
+| `frames`, `fps` | the length and rate the game wants: required (`frames`, 2 to 600) for `text` and `bvh`; a library clip is resampled to `frames` when given. `fps` defaults to 24 (a library clip keeps its own) |
+| `loop` | the clip closes on itself (default false; a library clip keeps its own) |
+| `kind` | the clip's kind for the review sheet (`idle`, `walk`, `start`, `stop` or another word; default the name's first word) |
+| `holds` | the hold kind during the clip (`<class>` or `<class>_<mode>`, as the library's `holds`) or `null`; a library clip keeps its own when absent |
+| `contacts` | `{"left": [frames] or "all", "right": ...}`: where each foot is planted; else a library clip's `stance`, else detected |
+| `settings` | per source (below) |
+| `note` | a comment |
+
+Settings: `text`: `steps` (int 1-200, default 50), `seed` (int 0 to 2^31 - 1, default derived
+from `<family>/_motions/<name>`), `guidance` (number 0-20, default 5), `duration` (seconds
+generated, 0.7-12; default the clip's length for a one-shot, twice it plus a second, at least
+3, for a loop, to find a cycle in), `feet` (`auto`, `clip`, `walk`, `lie`, `free`: how the
+exporter stands the feet; `auto` takes `walk` for a loop that travels, `lie` for a one-shot
+that ends low, else `clip`). `bvh`: `range` ([first, last] frames of the capture, default all),
+`up` (`y` or `z`, default `y`), `joints` (`{canonical joint: capture joint name}` for joints
+the name table misses: CMU's BVH conversion and Mixamo names are known), `feet` as above.
+`library`: none.
+
+Jobs: each `text` and `bvh` entry of a family's humanoid pieces is one job of the family,
+`<family>/_motions/<name>` (folder `<out>/<family>/_motions/<name>/`; the name gets 8
+characters of its specification's hash when two entries of one name differ), shared by every
+piece that lists it. `text` is a local GPU job (tool `motion_text`: HY-Motion Lite in its own
+Python, [conventions.md](conventions.md#motions-list)); `bvh` a local step. Then
+`<family>/<piece>/motions` (a local step) writes the piece's `motions/library.json` and
+`motions/report.json`, and every export of the piece takes that library. A piece cannot be
+named `_motions`. The order check refuses: an unknown key or source, a key of another source,
+`text` or `bvh` without `frames`, an empty or too long prompt, a missing capture file or a
+capture without the joints it needs, a range past its last frame, a library or clip that does
+not exist, a `library` entry without a file when there is no `inputs.clips`, an unknown or
+invalid setting, `motions` with the export skipped, and a `text` entry when
+`forge.local.json` lacks the HY-Motion keys (`hymotion_python`, `hymotion_dir`,
+`hymotion_model`, `hymotion_text_encoder`, `hymotion_clip`; README). Complete sample:
+[tests/fixtures/order_humanoid_motions.json](../tests/fixtures/order_humanoid_motions.json).
 
 ### Acceptance and reserve variants
 
@@ -772,6 +823,7 @@ In `<out>/<family>/<piece>/`, each file as `<step>_<role>.<ext>`:
 - humanoid: the step of a variant's job is `v<seed>_<stage>`; local GPU jobs write into
   the folder `<step>/`; plus `review/`, `pick_final.json` and `final/`, and with
   `reserve` also `review_reserve/` and `pick_final_reserve.json` (see the humanoid recipe);
+  with `motions`, the piece's `motions/` and the family's `<out>/<family>/_motions/<name>/`;
 - articulated and creature: as the humanoid, with the folders `v<seed>_parts/` and
   `v<seed>_export/` ([conventions.md](conventions.md));
 - held item: as the humanoid, with the folders `v<seed>_item/` and `v<seed>_hold/`, and the

@@ -19,10 +19,9 @@ coordination) are detailed in the implementation plan.
 
 ## 2. Out of scope for this phase
 
-- Generating new motion (text-to-motion). In this phase a humanoid's animation comes from
-  a motion library supplied by the order, and a creature's from procedural motion kinds and
-  role-space libraries (section 7); HY-Motion Lite is the planned motion option of the next
-  phase.
+- Generating new motion (text-to-motion) for creatures. A humanoid's motions come from
+  libraries, captures and HY-Motion Lite (section 13, built 2026-10-19); a creature's from
+  procedural motion kinds and role-space libraries (section 7).
 - Finger rigs, hand grafting and fine contact with held items: they cost a lot and the
   first use case sees characters from above and from afar.
 - Game-side adapters (how a game installs what the factory produces). They live in each
@@ -412,9 +411,17 @@ shows two.
 ## 8. Running and the GPU
 
 Launcher `Run-Forge.ps1`: `-Order <order> -Out <folder>`, plus `-Check`, `-Estimate`,
-`-Status`, `-Stop`, `-Now`, `-Foreground`, `-RetryFailed`, `-Only`, `-Limit`. It runs
-detached from the console; the output folder belongs to the game, never to this
+`-Status`, `-Stop`, `-Now`, `-Foreground`, `-RetryFailed`, `-Only`, `-Limit`, `-Server`. It
+runs detached from the console; the output folder belongs to the game, never to this
 repository.
+
+The machine-wide GPU lock lives in `%USERPROFILE%\.art-forge` (decision of 2026-10-19). It
+was in `%LOCALAPPDATA%`, but a packaged desktop application redirects the AppData writes of
+the processes it starts into a private copy: a night started detached (WMI) and the tests or
+tools started from such an application locked two different files, and each believed it
+held the card. A lock file that resolves to another file than its path is now refused, and
+the launcher passes its lock folder and server to the detached factory on its command line,
+because a WMI process does not inherit the console's environment.
 
 - ComfyUI jobs: at most 6 factory prompts in the server queue, Hunyuan jobs alone after
   `/free`, bursts of the same model, and interactive users can jump the queue with
@@ -468,6 +475,11 @@ repository.
   `-Check` and `-Estimate` on its sample order; and smoke tests of the item tool, the hold
   (on the synthetic humanoid and on a figure the exporter wrote) and the item sheet on
   synthetic Blender fixtures. Nothing of it has run on a generated mesh.
+- The humanoid's motions list (2026-10-19): see the end of section 13 for what was verified
+  and what never ran. The exporter's fix of the same day is checked by a Blender smoke test
+  on the CPU (a synthetic figure facing -y, +x and -x, its bones' tails turned off their
+  children: the idle's knees and ankles) and on copies of two real SkinTokens rigs of the
+  first night and one UniRig rig (knees as the clip has them, no crouch).
 
 ## 11. Who writes and runs orders
 
@@ -483,9 +495,10 @@ recipe before spending a night on a full art list.
 3. `articulated` and `creature` (built 2026-10-19, section 7): their first real night,
    which will say whether the default frame (`params.front`) and the regions fit generated
    meshes and how the rig tools' skeletons map onto body plans.
-4. The order's `motions` list (section 13) for the remaining sources: `text` (HY-Motion
-   Lite) and `bvh` for the humanoid and the creature, and `library` for the humanoid. The
-   creature already reads the list with `procedural` and `library`.
+4. The order's `motions` list (section 13): built for the humanoid on 2026-10-19 (`library`,
+   `text`, `bvh`); next, its first real night, the first HY-Motion Lite run through the
+   factory. For the creature, `bvh` with a capture-joint-to-role map, and `text` once a local
+   creature text-to-motion model exists.
 5. Held items with sockets for creatures beyond the item bones of `body.holds`.
 6. `held_item` (built 2026-10-19): its first real night, which will say how the mesh
    generators orient a side view, whether the templates' stations fit generated items and
@@ -527,9 +540,97 @@ State on 2026-10-19: the creature recipe reads this list (keys `name`, `source`,
 are refused by the order check until they exist. A creature's canonical clip format is
 role space (accumulated turns along each chain), the creature's counterpart of the
 canonical joints; a text-to-motion source for creatures will have to end in it. The
-humanoid does not read the list yet.
+humanoid reads the list since the same day (below).
 
-Open points for that phase's design: HY-Motion Lite runs through its own ComfyUI node and
-a separate server instance; generated motion needed contact, hip and cycle corrections in
-earlier research, so the correction steps and their acceptance thresholds have to be
-part of the stage, not manual work.
+Open points for that phase's design (as written before it was built): HY-Motion Lite runs
+through its own ComfyUI node and a separate server instance; generated motion needed
+contact, hip and cycle corrections in earlier research, so the correction steps and their
+acceptance thresholds have to be part of the stage, not manual work.
+
+### The humanoid's motions list (built 2026-10-19)
+
+A humanoid piece, or its family as a default, lists its motions with the creature's keys
+(`name`, `source`, `kind`, `settings`, `library`, `prompt`, `file`, `frames`, `fps`, `loop`,
+`holds`, `contacts`, `note`) and the same kind of check. Sources: `library` (a clip of a
+motion library: the order's `inputs.clips` by default, a file, or the factory's starter
+library `@starter`), `text` (HY-Motion Lite from a plain description) and `bvh` (a capture
+file and a frame range). Every source ends in the canonical joints the exporter already
+retargets (`forge/motion_clips.py`); the format and the jobs are in
+[order.md](../../order.md#motions-of-a-humanoid) and
+[conventions.md](../../conventions.md#motions-list).
+
+Decisions, each with its reason:
+
+1. **Made clips belong to the family.** Each `text` or `bvh` entry of a family's humanoid
+   pieces is one job, `<family>/_motions/<name>` (with the first 8 characters of its
+   specification's hash after the name when two entries of one name differ), shared by
+   every piece and variant that lists it, with its own provenance (model, prompt, seed,
+   effective settings) and its corrections' report. Reason: the request; a generated
+   movement is reviewed once and reused, and a night pays for it once.
+2. **The piece's own library, the exporter unchanged.** A piece with motions gets one local
+   job, `<family>/<piece>/motions`, that puts its entries into one motion library in the
+   list's order, and the export takes that file as its clips. Without motions nothing
+   changes: the export reads `inputs.clips` as before. Job arguments name no paths (a
+   library is an input, a capture the made job's input), so moving the order redoes nothing.
+   Reason: the library format is what the exporter already plays; the list only decides
+   which clips the library holds.
+3. **HY-Motion Lite in a process of its own, not a ComfyUI node in a second server.** The text
+   job is a local GPU job: it waits for the empty ComfyUI queue, `/free` and the GPU lock as
+   every local tool, then runs `tools/motion/hymotion_entry.py` in the configured Python with
+   the HY-Motion checkout on its path, offline and without writing bytecode (text encoded,
+   encoders freed, motion model loaded, one clip generated, process exits). Reason: the
+   factory's local GPU discipline already gives the card to one tool at a time; a process
+   that exits releases all its VRAM, needs no port, no node installed into a server and no
+   rule about who owns a second server (the earlier lab's ComfyUI node kept its pipeline on
+   the card between prompts). SkinTokens runs the same way.
+4. **Corrections act past a threshold, and every threshold is recorded and checked.** The
+   stage measures, corrects when the measure is over its threshold and measures again: the
+   loop's closure (the window of the generated clip whose ends are most alike, 0.8 to 1.25
+   times the wanted length, resampled; the pelvis's drift becomes `travel`, the pose's
+   residual is spread over the clip), the hip height (each frame with a planted foot lifted
+   or lowered so its planted ankle stands at the clip's planted height), the foot contacts
+   (a planted ankle held at its run's median place in the ground frame, the knee by two-bone
+   IK) and nothing below the ground. The thresholds are constants of
+   `forge/motion_clips.py`, written in every clip's report; a check that still fails is a
+   flag of the clip's report and of the piece's motions report, logged, and the night goes
+   on. Reason: the request (no manual work); the values are starting points until generated
+   motion has been measured. The flags do not gate a variant and do not reach the review
+   sheet yet: the exporter's motion report, which does, measures the feet on the exported
+   figure.
+5. **Contacts: given, then the clip's, then detected.** An entry's `contacts`, else a library
+   clip's `stance`, else the frames where the ankle is within 0.02 body heights of its
+   lowest and moves under 0.15 body heights a second in the ground frame (runs of at least
+   3 frames). Reason: the order knows best; generated and captured clips carry none.
+6. **Body heights from the figure.** Source positions are scaled by the tallest head over the
+   floor, or by the bones' lengths when the clip never stands up. Reason: sources come in
+   their own units; the canonical format is in body heights.
+7. **`frames` is required for `text` and `bvh`; `fps` defaults to 24.** Reason: a generated
+   clip has no length the game would want; 24 is the library format's default.
+8. **The creature keeps `bvh` and `text` refused.** Reason: a capture's joints map onto a body
+   plan's roles only with a map the order would have to give and a rest-pose alignment that
+   cannot be checked on the synthetic fixtures; no creature text-to-motion model is installed
+   on this machine.
+9. **A starter library ships with the factory** (`data/motions/starter_humanoid.json`, named
+   `@starter`, its provenance in `data/motions/README.md`): CMU motion capture and MoMask
+   clips with generic hold classes, stored byte for byte (`-text`), because its content
+   enters the specification of the jobs that read it. Reason: a game can have walking
+   figures without generating anything.
+
+Verified without inference: the canonical steps on synthetic motion (a walk with planted
+feet, the same walk with floating hips and sliding feet, an idle, a one-shot), the BVH and
+HY-Motion joint readers, the starter library through the stage, the order check, the jobs
+and their path-free specifications, a night with the fake server where a stand-in replaces
+HY-Motion's entry, and `-Check` on this machine (HY-Motion's files present, its modules
+imported in its Python). HY-Motion has not generated a clip through the factory: the entry
+script has never run.
+
+### The exporter and the joints' axes (2026-10-19)
+
+The first real night's SkinTokens rigs came out crouching in every clip: the exporter turned
+each bone by its own axis, and those rigs' joints carry orientations whose axes do not point
+to their children. Bones are now turned by the line from their joint to the next mapped
+joint (the last bone of a chain by its own axis unless that is more than 45 degrees off its
+parent's line), the two-bone IK is solved exactly on the joints, and the figure is turned
+about the vertical so that its front is glTF +z. Reason: the joints are what the rig tool
+predicts; axes are an artefact of the import. The humanoid exports' specification changes
+(the exporter is in it), on purpose.

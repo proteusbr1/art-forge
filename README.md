@@ -23,7 +23,12 @@ exporter with its role map and procedural clips, the layout sheet) are smoke-tes
 synthetic Blender fixtures only: none of them has run on a generated mesh or a predicted
 creature skeleton yet. The `held_item` recipe (2026-10-19) is built and tested the same way:
 its item tool, its hold (the humanoid exporter on a reference figure) and its review sheet
-are smoke-tested on a synthetic carbine and the synthetic humanoid only. See the
+are smoke-tested on a synthetic carbine and the synthetic humanoid only. The humanoid's
+`motions` list (2026-10-19) chooses its clips from motion libraries (a starter library ships
+in `data/motions/`), BVH captures and HY-Motion Lite, every source brought to the library's
+canonical joints with recorded corrections; it is tested on synthetic motion and with a
+stand-in for HY-Motion: HY-Motion has not generated a clip through the factory yet (`-Check`
+imports its modules on this machine). See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).
@@ -105,12 +110,14 @@ only `GET /object_info`). More in [AGENTS.md](AGENTS.md); tests:
 | `gpu_busy_mb` | VRAM in MB another process may hold before a local GPU job waits (default 2048) |
 | `gpu_used_busy_mb` | when the driver reports no VRAM per process (Windows display drivers): the VRAM in MB the whole card may have in use before a local GPU job waits (default 4096; measured with `nvidia-smi --query-gpu`, else the server's `/system_stats`) |
 | `queue_wait_warn` | seconds a local GPU job may wait for the card before the log and `state.json` call it stalled (default 3600; it keeps waiting) |
+| `hymotion_python`, `hymotion_dir`, `hymotion_model`, `hymotion_text_encoder`, `hymotion_clip` | the humanoid motions' `text` source: a Python with PyTorch (CUDA) and HY-Motion's requirements, the HY-Motion checkout, its checkpoint (`HY-Motion-1.0-Lite/latest.ckpt`, `config.yml` next to it), the Qwen3-8B folder and the CLIP ViT-L/14 folder |
+| `hymotion_pythonpath` | optional: a folder put first on HY-Motion's Python path (packages its Python lacks) |
 
 Relative paths are relative to the file (the launcher runs a copy of it from its snapshot
 folder and passes `--config-base` with this repository, so they resolve as with `-Check`). The Blender, rig and Godot keys are for the
 humanoid's and creature's rig, export and review stages, the articulated recipe's parts
 and review stages and the held-item recipe's item, hold and review stages; the other recipes
-need only ComfyUI. `python -m forge.local_gpu` says
+need only ComfyUI; the `hymotion_*` keys only the humanoid motions' `text` source. `python -m forge.local_gpu` says
 which local tools of this machine are ready.
 
 ## Models
@@ -132,6 +139,10 @@ licence text on each model's page is what counts. Check it before using the outp
 | [BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet) (background removal) | `klein_t2i.json`, `qwen_*` | MIT |
 | [UniRig](https://huggingface.co/VAST-AI/UniRig) | `humanoid` and `creature` rig option `unirig` | MIT |
 | [SkinTokens](https://huggingface.co/VAST-AI/SkinTokens) | `humanoid` and `creature` rig (default) | the code is MIT (its repository's LICENSE file); check the model page for the weights |
+| [HY-Motion 1.0 Lite](https://huggingface.co/tencent/HY-Motion-1.0) (with Qwen3-8B and CLIP ViT-L/14 as its text encoders) | the humanoid motions' `text` source | Tencent HY-Motion 1.0 Community License (its checkout's License.txt); its territory excludes the European Union, the United Kingdom and South Korea |
+
+The starter motion library (`data/motions/`) holds data, not a model: CMU motion capture and
+MoMask clips, with their terms in [data/motions/README.md](data/motions/README.md).
 
 The text and image encoders and VAEs the workflows load (named in each workflow and
 recorded in every job's provenance) come with their own models' terms too.
