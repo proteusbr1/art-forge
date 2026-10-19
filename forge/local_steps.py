@@ -1,6 +1,6 @@
 """Local steps of the factory (no GPU): seed picks, view sheets, the roll / unroll of
-seamless materials, the cutout of a figure and the final copy of a humanoid's chosen
-variant. Mixed into Factory (factory_core.py)."""
+seamless materials, the cutout of a figure and the final decision of a humanoid piece
+(forge/acceptance.py). Mixed into Factory (factory_core.py)."""
 
 import json
 import os
@@ -10,6 +10,7 @@ import time
 import numpy as np
 from PIL import Image
 
+from . import acceptance
 from .factory_util import sha_file, slug, write_json
 from .provenance import local_record
 from .scoring import METRICS, cross_mask, load_rgba, save_rgb
@@ -198,19 +199,31 @@ class LocalSteps:
                     excess += 1.0  # a flag without a measure (a missing clip) counts as one
         return (flags if seen else None), (mesh_n, motion_n, round(excess, 4))
 
+    def decision(self, job):
+        """(verdicts, summary) of a review or final job: every variant it covers classified
+        acceptable or rejected against the job's limits (forge/acceptance.py)."""
+        records = acceptance.variant_records(self, job)
+        return acceptance.classify(records, job.get("accept") or acceptance.limits(), job.get("paint_stage", "paint"))
+
     def final(self, job, d, rec, files):
-        """The chosen variant of a humanoid piece copied to <piece>/final/. The pick file
-        pick_final.json works as every pick: "manual": true with another candidate in
-        "chosen" changes it. The automatic pick is provisional: of the variants that
-        finished every stage, the one with the fewest mesh flags, then the fewest motion
-        flags, then the smallest excess over the thresholds (the first in order on a tie);
-        it is always marked pending review."""
+        """The decision of a humanoid piece: the best acceptable variant copied to
+        <piece>/final/. The pick file pick_<step>.json works as every pick: "manual": true with
+        another candidate in "chosen" changes it. Every variant is classified first
+        (acceptable or rejected, with the limits it violates and the stage held responsible);
+        the automatic pick is provisional and only among the acceptable variants: the one with
+        the fewest mesh flags, then the fewest motion flags, then the smallest excess over the
+        thresholds (the first in order on a tie), always pending review. With none acceptable
+        the outcome is "no_variant_passed": nothing is copied (an earlier copy is removed) and
+        the piece's reserve variants, if any, are released."""
+        verdicts, summary = self.decision(job)
         cands, inputs = [], []
-        for v in job["variants"]:
+        for v, verdict in zip(job["variants"], verdicts):
             c = v["job"]
             done = self.done_ok(c)
             flags, rank = self.variant_flags(c) if done else (None, None)
-            cands.append({"job": c, "variant": v["variant"], "complete": done,
+            cands.append({"job": c, "variant": v["variant"], "complete": done, "reserve": bool(v.get("reserve")),
+                          "class": verdict["class"], "reasons": verdict["reasons"], "responsible": verdict["stages"],
+                          "violations": verdict["violations"],
                           "flags": flags, "status": self.entry(c).get("status") or "not run",
                           "rank": None if rank is None else {"mesh_flags": rank[0], "motion_flags": rank[1],
                                                               "excess": rank[2]}})
@@ -219,32 +232,50 @@ class LocalSteps:
         manual = self.manual_choice(job)
         if manual and not self.done_ok(manual):
             raise ValueError("the manual pick %s in pick_%s.json has not finished" % (manual, slug(job["id"])))
-        finished = [x for x in cands if x["complete"]]
-        best = min(finished, key=lambda x: (x["rank"]["mesh_flags"], x["rank"]["motion_flags"], x["rank"]["excess"]))
-        chosen = manual or best["job"]
+        acceptable = [x for x in cands if x["complete"] and x["class"] == "acceptable"]
+        best = min(acceptable, key=lambda x: (x["rank"]["mesh_flags"], x["rank"]["motion_flags"], x["rank"]["excess"]),
+                   default=None)
+        chosen = manual or (best["job"] if best else None)
         if manual:
-            why = "manual"
-        elif not best["flags"]:
-            why = "complete variant without mesh or motion flags (the first such)"
+            outcome, why = "manual", "manual"
+        elif best is None:
+            outcome = acceptance.NO_VARIANT_PASSED
+            why = "no variant is acceptable (most often responsible: %s)" % (summary["responsible_stage"] or "unknown")
         else:
-            why = ("complete variant with the fewest and smallest flags (every one has flags): %d mesh, "
-                   "%d motion, excess %.2f" % (best["rank"]["mesh_flags"], best["rank"]["motion_flags"],
-                                              best["rank"]["excess"]))
+            outcome = "picked"
+            why = ("acceptable variant without mesh or motion flags (the first such)" if not best["flags"] else
+                   "acceptable variant with the fewest and smallest flags: %d mesh, %d motion, excess %.2f" % (
+                       best["rank"]["mesh_flags"], best["rank"]["motion_flags"], best["rank"]["excess"]))
         dest = os.path.join(d, "final")
         if os.path.isdir(dest):
             shutil.rmtree(dest)  # the copy of an earlier pick
-        os.makedirs(dest)
-        for role, (rel, _) in sorted(self.entry(chosen)["files"].items()):
-            src = os.path.join(self.out, rel)
-            p = os.path.join(dest, os.path.basename(src))
-            shutil.copyfile(src, p)
-            files[role] = [os.path.relpath(p, self.out), sha_file(p)]
+        if chosen:
+            os.makedirs(dest)
+            for role, (rel, _) in sorted(self.entry(chosen)["files"].items()):
+                src = os.path.join(self.out, rel)
+                p = os.path.join(dest, os.path.basename(src))
+                shutil.copyfile(src, p)
+                files[role] = [os.path.relpath(p, self.out), sha_file(p)]
+        reserve = job.get("reserve") or {}
+        if not reserve.get("variants"):
+            reserve_info = None
+        elif reserve.get("decision"):
+            reserve_info = {"variants": reserve["variants"], "released": outcome == acceptance.NO_VARIANT_PASSED,
+                            "decision": reserve["decision"]}
+        else:
+            reserve_info = {"variants": reserve["variants"], "released": True, "left": 0}
+        doc = {"outcome": outcome, "chosen": chosen,
+               "variant": next((x["variant"] for x in cands if x["job"] == chosen), None),
+               "manual": bool(manual), "review": "manual" if manual else "pending", "metric": why,
+               "accept": job.get("accept"), "candidates": cands, "reserve": reserve_info,
+               "how_to_change": "set chosen to another candidate job id and manual to true; "
+                                "the factory redoes only the copy to final/"}
+        if outcome == acceptance.NO_VARIANT_PASSED:
+            doc.update(responsible_stage=summary["responsible_stage"],
+                       responsible_counts=summary["responsible_counts"])
         pick_path = os.path.join(d, "pick_%s.json" % slug(job["id"]))
-        write_json(pick_path, {"chosen": chosen, "variant": next(x["variant"] for x in cands if x["job"] == chosen),
-                               "manual": bool(manual), "review": "manual" if manual else "pending",
-                               "metric": why, "candidates": cands,
-                               "how_to_change": "set chosen to another candidate job id and manual to true; "
-                                                "the factory redoes only the copy to final/"})
+        write_json(pick_path, doc)
         files["pick"] = [os.path.relpath(pick_path, self.out), sha_file(pick_path)]
         rec["chosen"] = chosen
+        rec["outcome"] = outcome
         return inputs

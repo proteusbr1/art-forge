@@ -4,7 +4,7 @@ One JSON file per order, written by the game's operator (a person or an LLM agen
 from the game's art list) and kept in the game's own repository. Keys are in English. It
 keeps the job-list format of the factory core (`version`, `style`, `families`, `assets`,
 `tasks`) and adds per-piece keys (`recipe`, `variants`, `stages`, `skip`, `params`,
-`inputs`, `review`). Families are in priority order; each piece (an entry of a family's
+`inputs`, `review`, `accept`, `reserve`). Families are in priority order; each piece (an entry of a family's
 `assets`) expands into jobs through its recipe.
 
 Check an order before a night's run:
@@ -17,7 +17,7 @@ Check an order before a night's run:
 1. **The order** (`forge.order.check_order`, without the server): `order: valid`, or every
    problem it finds. It checks the format, known recipes and stage options, stage settings
    (known names, types and ranges, settings that land on no job), valid `skip` names,
-   `variants`, `params` types, that `inputs` files exist, that the style texts the recipes
+   `variants`, `params` types, `accept` keys and limits, `reserve`, that `inputs` files exist, that the style texts the recipes
    need are present, that the tools the chosen stages need are set in `forge.local.json`
    and exist, and that every `set` lands on a node the job keeps.
 2. **The environment** (`forge.readiness.check_environment`), only when the order is
@@ -117,8 +117,10 @@ New keys:
 | `params` | piece settings (table below) |
 | `inputs` | files the game supplies `{name: path}`; paths are absolute or relative to the order file |
 | `review` | review-sheet camera, for recipes with a review stage (table below) |
+| `accept` | hard limits a variant must meet to be picked (humanoid; [below](#acceptance-and-reserve-variants)) |
+| `reserve` | extra variants run only when no variant passed (humanoid; a whole number of at least 0, default 0) |
 
-`review` does not apply to the core recipes. The stage catalogue is `forge/stages.py`.
+`review`, `accept` and `reserve` do not apply to the core recipes. The stage catalogue is `forge/stages.py`.
 
 ### Stages and settings
 
@@ -181,6 +183,7 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `texture` | whole number above 0 | texture size in pixels | object_3d, prop, vehicle, figure; humanoid paint (512 to 4096, a multiple of 512) or TRELLIS.2 bake (256 to 8192, a multiple of 256), and the export's normal map (default 2048) |
 | `height` | number above 0 | figure height in metres | humanoid export |
 | `head`, `hands`, `feet`, `widen` | number above 0 | proportions of a figure | humanoid export |
+| `image_format` | `lossless` or `compact` | images of the exported GLB: `lossless` (default) writes every map as PNG; `compact` writes the base colour as JPEG at quality 92 (PNG when it carries opacity) and the technical maps (normal, metallic-roughness, occlusion, emissive) as PNG. A normal or metallic-roughness map or an opacity mask is never JPEG | humanoid export |
 
 `inputs`:
 
@@ -222,13 +225,15 @@ Job ids: `family/piece/step`, with steps `concept_s<seed>`, `pick`, `view_90`,
 `view_180`, `view_270` (figure), `view_side`, `view_back`, `view_other_side`, `view_top`
 (vehicle), `sheet`, `emissive`, `mesh`, and for materials `raw_s<seed>`, `pick`, `2k`,
 `rolled`, `seam`, `seamless`. A humanoid's ids are `family/piece/v<seed>/<stage>` per
-variant, plus `family/piece/review` and `family/piece/final`.
+variant, plus `family/piece/review` and `family/piece/final` (with `reserve`, also
+`family/piece/review_reserve` and `family/piece/final_reserve`).
 
 ## The humanoid recipe
 
 A skinned figure with a human skeleton. Each variant (one per seed of `variants`, default
 4, derived from `family/piece`) goes through every stage without waiting for a person;
-then one review sheet shows every variant and one final job copies the chosen variant.
+then one review sheet shows every variant and one final job decides: it copies the best
+acceptable variant, or says that none passed.
 Everything it delivers is a candidate pending human review.
 
 | Stage | Default | Other options | Skippable | Hands on |
@@ -239,7 +244,7 @@ Everything it delivers is a candidate pending human review.
 | `mesh` | `trellis2` (TRELLIS.2 at 1024, remesh, reduction to `params.tris`) | `hunyuan21` (Hunyuan3D 2.1 shape only, reduced to `params.tris`; heavy) | no | `game_mesh` (reduced) and `raw_mesh` (before the reduction) |
 | `paint` | `hunyuan_paint` (Hunyuan3D Paint 2.1 over `game_mesh` by its local path, 10 steps, `params.texture`; heavy) | `trellis2_texture` (the mesh job keeps TRELLIS.2's own bake, at `params.texture`) | yes: TRELLIS.2's texture stays | `painted_mesh` |
 | `rig` | `skintokens` (seed 9001, 10 beams: the validated setting; the `seed` setting overrides it) | `unirig` (seed 9001) | yes, with export (a statue) | `rig` |
-| `export` | `humanoid_export` (Blender: bone map, Godot humanoid names, `raw_mesh` as `--bake-source`, `params`, `inputs.clips`, `inputs.items`, `inputs.bone_map`) | | yes | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report` |
+| `export` | `humanoid_export` (Blender: bone map, Godot humanoid names, `raw_mesh` as `--bake-source`, the painted mesh as `--material-source`, Hunyuan3D Paint's `metal_roughness` as `--metal-roughness`, `params`, `inputs.clips`, `inputs.items`, `inputs.bone_map`) | | yes | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report` |
 | `review` | `godot_sheet` (Godot off screen, the piece's `review` camera) | | no | `sheet`, `layout` |
 
 The order check refuses: a skipped paint or `trellis2_texture` with mesh `hunyuan21`
@@ -303,14 +308,64 @@ piece's `review/` holds `sheet.png` and its layout.
   Godot project): a fixed tool redoes its jobs and what depends on them.
 - `review` runs once no variant is still active and at least one finished; a variant that
   did not finish appears as a failure mark with the stage and the error.
-- `final` waits likewise for at least one complete variant. `pick_final.json` works as
-  every pick: the automatic choice is provisional (of the variants that finished every
-  stage, the one with the fewest mesh flags, then the fewest motion flags, then the
-  smallest total excess over the thresholds, `value / threshold - 1` summed; the first in
-  order on a tie; each candidate's `rank` is in the file) and always
-  `"review": "pending"`; `"manual": true` with another candidate in `chosen` redoes
-  only the copy. The chosen variant's files of its last stage (the export's, or the painted
-  mesh of a statue) are copied to `<out>/<family>/<piece>/final/`.
+- `review` and `final` also run when every variant failed (the sheet shows only failure
+  marks, the decision is `no_variant_passed`).
+- `final` is the piece's decision. Every variant is classified `acceptable` or `rejected`
+  against the piece's limits ([below](#acceptance-and-reserve-variants)); the automatic
+  pick is only among the acceptable ones (the one with the fewest mesh flags, then the
+  fewest motion flags, then the smallest total excess over the thresholds,
+  `value / threshold - 1` summed; the first in order on a tie; each candidate's `rank` is
+  in the file), provisional and always `"review": "pending"`. `pick_final.json` works as
+  every pick: `"manual": true` with another candidate in `chosen` redoes only the copy.
+  The chosen variant's files of its last stage (the export's, or the painted mesh of a
+  statue) are copied to `<out>/<family>/<piece>/final/`. With no acceptable variant the
+  outcome is `no_variant_passed`: nothing is copied (an earlier copy is removed), the file
+  names the stage held responsible most often, and the sheet says so.
+- The export carries the painted maps into the GLB: the paint stage's metallic-roughness
+  map (Hunyuan3D Paint) replaces the rig's, and maps the rig's material lacks
+  (metallic-roughness, opacity, emissive, occlusion; with `trellis2_texture` TRELLIS.2's
+  own) are taken from the painted mesh. The written GLB is read back: a map that is lost,
+  lossy or cannot be carried is a mesh flag ([conventions.md](conventions.md)).
+
+### Acceptance and reserve variants
+
+`accept` (piece or family; a family's object merges key by key into its pieces) gives
+hard limits, separate from the ranking. A variant violating any of them is `rejected`;
+the others are `acceptable`.
+
+| Key | Type | Default | Limit on |
+|---|---|---|---|
+| `mesh_flags` | whole number, at least 0 | 0 | how many mesh flags the variant may have (`mesh_report.json` `flags`; above it, every flag is a violation) |
+| `missing_clips` | whole number, at least 0 | 0 | library clips the exported GLB may lack |
+| `foot_slide_cm`, `hand_socket_cm`, `reach_shortfall_cm`, `penetration_cm` | number, at least 0 | the motion report's threshold (the export setting of that name, else 2, 2, 1 and 2) | the largest value of that measure over the clips |
+| `stretch_p95` | number, at least 0 | the motion report's threshold (the export setting, else 0.5) | the largest edge stretch over the clips |
+| `bake_source_offset_m` | number, at least 0 | 0.05 | `bake_source_offset_m` of the mesh report |
+
+By default, then, a variant is acceptable only without any mesh flag and without any
+motion value over the report's thresholds. A failed variant is always rejected. Each
+violation names the stage held responsible (`forge/acceptance.py`, a conservative table:
+`unknown` rather than a guess):
+
+| Violation | Stage |
+|---|---|
+| a failed job | its stage; an export stopped by an invalid bone map: `rig` |
+| a mesh flag about a painted map (`material slot base_color`, `metallic_roughness`, `occlusion`, `emissive`, `opacity`, `material source`) or no base-colour texture | `paint` (`mesh` when paint is skipped: TRELLIS.2's own texture) |
+| `material slot normal` | `export` (it bakes the normal map) |
+| vertices without weight, weights not normalised | `rig` |
+| a bake source that does not line up, `bake_source_offset_m` | `mesh` |
+| no UV layer, more than one material, any other mesh flag | `unknown` |
+| a motion limit | `rig`; `library` when the same clip is over a limit on every variant that has a motion report (at least two) |
+| a missing clip, an unreadable report | `export` |
+
+`reserve` (piece or family, default 0): that many more variants, with the next seeds of
+`family/piece` (the first `variants` seeds stay the same), are expanded with their whole
+chain but held: they are not ready, do not keep the night going and appear in
+`state.json` counts as `held`. When the first decision (`final`) is
+`no_variant_passed`, they are released and run like the others; then a second sheet
+(`review_reserve`) and a second decision (`final_reserve`, `pick_final_reserve.json`)
+cover every variant, the main and the reserve ones. With no acceptable variant there
+either, the outcome stays `no_variant_passed`. A manual pick in `pick_final.json` holds
+the reserve again. `-Estimate` counts held jobs apart, as "if needed".
 
 Estimates (`-Estimate`, seconds per job on one 24 GB card, from earlier measurements of
 the same workflows, to be replaced by a real night's `timings.csv`): `qwen21_base` 90,
@@ -335,7 +390,8 @@ degrees with 8 directions, the synthetic motion library and held item of
       note: 1013 node classes on the server
       note: 11 model files checked against the loaders' lists
 
-`-Estimate`:
+`-Estimate` (held reserve jobs, when a piece has `reserve`, are counted apart on each
+group's line and in a last line `if needed: <n> held reserve jobs, ~<h> GPU hours more`):
 
     hunyuan_paint     8 jobs,     8 left, ~0.20 GPU h
     local            10 jobs,    10 left, ~0.00 GPU h
@@ -468,11 +524,13 @@ In `<out>/<family>/<piece>/`, each file as `<step>_<role>.<ext>`:
 - material: `raw_s<seed>_rgb.png`, `2k_rgb.png`, `rolled_image.png`, `rolled_mask.png`,
   `seam_rgb.png`, the result `<piece>.png` and the preview `<piece>_tile2x2.png`;
 - humanoid: the step of a variant's job is `v<seed>_<stage>`; local GPU jobs write into
-  the folder `<step>/`; plus `pick_final.json` and `final/` (see the humanoid recipe).
+  the folder `<step>/`; plus `review/`, `pick_final.json` and `final/`, and with
+  `reserve` also `review_reserve/` and `pick_final_reserve.json` (see the humanoid recipe).
 
 At the root of `<out>`: `manifest.json` (each job with its state, specification hash,
 files and hashes, times, tries and provenance), `state.json` (count per state: `done`,
-`failed`, `blocked`, `waiting`, `ready`, `queued`; GPU hours left; server queue;
+`failed`, `blocked`, `waiting`, `ready`, `queued`, `held`; GPU hours left and, for held
+reserve jobs, `estimated_gpu_hours_if_needed`; server queue;
 `gpu_wait` and `local_gpu_running` (above); picks to review; failures and
 `specification_errors`), `timings.csv` (`finished;job;family;asset;group;status;
 exec_seconds;wall_seconds;wait_seconds`), `factory.log`, `program/` (the frozen copy the run uses) and, while
@@ -486,9 +544,16 @@ Picks are automatic: sharpness of the object and a clean background for concepts
 `"manual"`), `metric`, `candidates` (each with `job`, `score` and its measures) and
 `how_to_change`. To change it: put another candidate's id in `chosen` and set
 `"manual": true`; the next pass redoes only what depends on the pick. A humanoid's
-`pick_final.json` has the same keys (each candidate with `job`, `variant`, `complete`,
-`flags`, `rank` and `status`, and the chosen `variant`); its `metric` says how the automatic
-choice was made. `state.json` counts it among the picks to review.
+`pick_final.json` has the same keys plus `outcome` (`picked`, `manual` or
+`no_variant_passed`; `chosen` and `variant` are `null` for the last), `accept` (the limits
+used), `reserve` (`null`, or the reserve variants, whether they were `released` and the
+second `decision`), and for `no_variant_passed` `responsible_stage` (the stage held
+responsible for the most rejected variants) and `responsible_counts`. Each candidate has
+`job`, `variant`, `complete`, `reserve`, `class` (`acceptable` or `rejected`), `reasons`,
+`responsible` (stages), `violations` (`measure`, `value`, `limit`, `clip`, `stage`,
+`text`), `flags`, `rank` and `status`; `metric` says how the automatic choice was made.
+`pick_final_reserve.json` is the same for the second decision. `state.json` counts each
+among the picks to review.
 
 ## Provenance
 

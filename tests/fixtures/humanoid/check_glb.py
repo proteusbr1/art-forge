@@ -44,6 +44,40 @@ for mat in body.data.materials:
             src = n.inputs["Base Color"].links[0].from_node
             if src.type == "TEX_IMAGE" and src.image is not None:
                 base_color = list(src.image.size)
+
+
+def _fmt(image):
+    data = image.packed_file.data[:4] if image.packed_file else b""
+    return "png" if data[:4] == b"\x89PNG" else "jpeg" if data[:3] == b"\xff\xd8\xff" else "other"
+
+
+def _image_above(socket, depth=4):
+    """The image node feeding a socket through Separate Color or Normal Map nodes, or None."""
+    if not socket.is_linked:
+        return None
+    node = socket.links[0].from_node
+    if node.type == "TEX_IMAGE":
+        return node if node.image is not None else None
+    if depth == 0:
+        return None
+    for inp in node.inputs:
+        found = _image_above(inp, depth - 1)
+        if found is not None:
+            return found
+    return None
+
+
+# The material as Blender's importer rebuilt it: per slot the image's format and size.
+material = {}
+for mat in body.data.materials:
+    bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        continue
+    for slot, socket in (("base_color", "Base Color"), ("normal", "Normal"), ("metallic_roughness", "Roughness"),
+                         ("emissive", "Emission Color")):
+        node = _image_above(bsdf.inputs[socket]) if socket in bsdf.inputs else None
+        material[slot] = {"format": _fmt(node.image), "size": list(node.image.size)} if node else None
+    material["opacity"] = bsdf.inputs["Alpha"].is_linked
 groups = set(g.name for g in body.vertex_groups)
 bones = [b.name for b in arm.data.bones]
 anims = {}
@@ -74,7 +108,8 @@ for clip in info.get("animations", []):
     hands[clip["name"]] = worst
 print("RESULT " + json.dumps({"bones": bones, "groups_match": groups <= set(bones), "animations": anims,
                               "height": max(zs) - min(zs), "floor": min(zs), "images": images,
-                              "base_color": base_color, "normal_map": normal_map, "hands": hands,
+                              "base_color": base_color, "normal_map": normal_map, "material": material,
+                              "hands": hands,
                               "triangles": sum(len(p.vertices) - 2 for p in body.data.polygons)}), flush=True)
 sys.stdout.flush()
 os._exit(0)

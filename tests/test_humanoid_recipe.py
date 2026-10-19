@@ -2,7 +2,7 @@
 params and inputs, specification hashes), what the order check refuses, and, with the fake
 server and stand-ins for the local tools, a night where one variant fails: the others go
 on, the review sheet marks the failure and the provisional final pick prefers a variant
-without flags, pending review."""
+without flags, pending review (acceptance itself: tests/test_acceptance.py)."""
 
 import contextlib
 import io
@@ -37,8 +37,8 @@ STYLE = {"global": "Plain test style.",
          "view_humanoid": "Full body figure in an A-pose, open empty hands held away from the body, "
                           "plain grey background, even light."}
 STAGES = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export")
-ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "rig", "glb", "model", "mesh_report",
-         "motion_report")
+ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_roughness", "rig", "glb", "model",
+         "mesh_report", "motion_report")
 # The local tools' configuration keys of the default stages, pointed at existing paths (the
 # order check wants them present; nothing runs them here).
 TOOLS = ("blender_python", "godot", "skintokens_python")
@@ -543,7 +543,7 @@ class FakeTools:
                 json.dump(dict(data, variant=v), f)
         return files
 
-    def review(self, glbs, out, config, camera=None, labels=None):
+    def review(self, glbs, out, config, camera=None, labels=None, verdicts=None, banner=None):
         self.calls.append(("review", list(glbs), list(labels), dict(camera)))
         os.makedirs(out, exist_ok=True)
         files = {"sheet": os.path.join(out, "sheet.png"), "layout": os.path.join(out, "sheet.png.json")}
@@ -651,22 +651,25 @@ class NightTest(Base):
         self.assertEqual(m2["crew/tech/review"]["spec"], m["crew/tech/review"]["spec"])
 
     def test_every_variant_flagged_picks_the_fewest_and_smallest_flags(self):
-        # v0: two motion flags; v1: one large; v2: one small. The rank: mesh flags, then the
+        # v0: two motion flags; v1: one large; v2: one small. The order's limits accept them
+        # all (forge/acceptance.py); the rank orders the acceptable ones: mesh flags, then the
         # number of motion flags, then how far they are over their thresholds.
         tools = FakeTools(flagged={self.v[0]: [("foot_slide_cm", 2.2, 2.0), ("stretch_p95", 0.55, 0.5)],
                                    self.v[1]: [("stretch_p95", 0.9, 0.5)],
                                    self.v[2]: [("stretch_p95", 0.6, 0.5)]})
-        self.run_night(tools)
+        loose = {"accept": {"foot_slide_cm": 3.0, "stretch_p95": 1.0, "mesh_flags": 1}}
+        self.run_night(tools, loose)
         pick = self.pick()
         self.assertEqual(pick["chosen"], "crew/tech/%s/export" % self.v[2])
         self.assertEqual(pick["review"], "pending")
-        self.assertIn("every one has flags", pick["metric"])
+        self.assertEqual([c["class"] for c in pick["candidates"]], ["acceptable"] * 3)
+        self.assertIn("fewest and smallest flags", pick["metric"])
         self.assertEqual([c["rank"]["motion_flags"] for c in pick["candidates"]], [2, 1, 1])
         self.assertAlmostEqual(pick["candidates"][1]["rank"]["excess"], 0.8, places=3)
         # A mesh flag weighs more than any number of motion flags.
         shutil.rmtree(self.out)
         self.run_night(FakeTools(flagged={self.v[0]: [("stretch_p95", 0.6, 0.5)] * 3},
-                                 mesh_flagged=[self.v[1], self.v[2]]))
+                                 mesh_flagged=[self.v[1], self.v[2]]), loose)
         self.assertEqual(self.pick()["chosen"], "crew/tech/%s/export" % self.v[0])
 
     def test_a_missing_raw_mesh_fails_only_its_variant(self):

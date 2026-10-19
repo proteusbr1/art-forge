@@ -216,7 +216,7 @@ HUMANOID_OPTIONS = {
             "kind": "local_gpu", "tool": "export", "group": "local_gpu",
             "outputs": ("glb", "model", "regions_mask", "bone_map", "mesh_report", "motion_report"),
             "tools": ("blender_python",), "inputs": ("clips", "items", "bone_map"),
-            "params": ("tris", "texture", "height", "head", "hands", "feet", "widen"),
+            "params": ("tris", "texture", "height", "head", "hands", "feet", "widen", "image_format"),
             "settings": {
                 "normal_map": {"type": "int", "min": 256, "max": 8192, "arg": "normal_map",
                                "meaning": "size of the baked normal map (default: params.texture)"},
@@ -279,7 +279,8 @@ OVERRIDDEN = {
     "hunyuan21_paint_mesh.json": {"9.seed": PAINT_SEED},
 }
 
-# Piece "params": name -> (type, meaning). "int" and "number" must be greater than zero.
+# Piece "params": name -> (type, meaning). "int" and "number" must be greater than zero; a
+# "choice" is one of PARAM_CHOICES[name].
 PARAMS = {
     "tris": ("int", "triangle (face) budget of a mesh"),
     "texture": ("int", "texture size in pixels"),
@@ -288,7 +289,10 @@ PARAMS = {
     "hands": ("number", "hand scale"),
     "feet": ("number", "foot scale"),
     "widen": ("number", "body width scale"),
+    "image_format": ("choice", "image formats of an exported GLB: lossless (every map PNG) or compact "
+                               "(base colour JPEG at quality 92, the technical maps PNG)"),
 }
+PARAM_CHOICES = {"image_format": ("lossless", "compact")}
 
 # Params and inputs a recipe reads itself (besides those of its stage options).
 RECIPE_PARAMS = {

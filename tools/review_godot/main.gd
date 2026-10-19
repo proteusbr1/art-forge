@@ -2,8 +2,9 @@ extends Node
 ## Review sheet of humanoid variants: every variant seen by the review camera (small, in
 ## every direction, orthographic) and from the front (large), an animated strip (frames of
 ## the walk, plus start and stop when the model has them) and the flags of its mesh and
-## motion reports. Every candidate is labelled "pending review". Renders off screen and
-## exits by itself.
+## motion reports. Every candidate is labelled "pending review", and, when the factory
+## classified it, "acceptable" or "rejected" with its first reasons; a banner over the sheet
+## says when no variant passed. Renders off screen and exits by itself.
 ##
 ## User arguments (after "--"):
 ##   --out <sheet.png>                 the sheet; <sheet.png>.json gets the layout
@@ -19,6 +20,9 @@ extends Node
 ##                                     at the frame where both ankles are lowest
 ##   --strip-frames <n>                frames of each strip clip (8)
 ##   --strip-yaw <degrees>             direction of the strip (default: the second yaw)
+##   --verdict <label>=<class>[:<reason>|<reason>...]
+##                                     acceptable or rejected, with its first reasons
+##   --banner <text>                   a line over the sheet (no variant passed)
 ## Next to each GLB it reads model.json (height, animation kinds), motion_report.json and
 ## mesh_report.json when present. Exit code 0 when the sheet was written.
 
@@ -26,11 +30,13 @@ const BACK := Color(0.12, 0.13, 0.15, 1.0)
 const TEXT := Color(0.92, 0.93, 0.95)
 const FLAG := Color(1.0, 0.72, 0.30)
 const FAIL := Color(0.86, 0.16, 0.16, 1.0)
+const PASS := Color(0.45, 0.85, 0.50)
 const PAD := 6
 const LINE := 18
 
 var _args := {}
 var _variants: Array = []
+var _verdicts := {}
 var _vp: SubViewport
 var _cam: Camera3D
 var _pivot: Node3D
@@ -66,6 +72,17 @@ func _parse_args() -> void:
 				_variants.append({"label": label, "failed": true, "reason": what.trim_prefix("!")})
 			else:
 				_variants.append({"label": label, "failed": false, "glb": what})
+		elif k == "verdict":
+			var eq := v.find("=")
+			var rest := v.substr(eq + 1) if eq >= 0 else ""
+			var colon := rest.find(":")
+			var cls := rest.substr(0, colon) if colon >= 0 else rest
+			var reasons: Array = []
+			if colon >= 0:
+				for r in rest.substr(colon + 1).split("|"):
+					if r.strip_edges() != "":
+						reasons.append(r.strip_edges())
+			_verdicts[v.substr(0, eq) if eq >= 0 else v] = {"class": cls, "reasons": reasons}
 		else:
 			_args[k] = v
 
@@ -266,15 +283,18 @@ func _text(s: String, color: Color, size := 13) -> Image:
 	label.add_theme_color_override("font_color", color)
 	vp.add_child(label)
 	add_child(vp)
-	var font := ThemeDB.fallback_font
-	var w := int(ceil(font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x)) + 4
-	vp.size = Vector2i(maxi(w, 4), LINE)
+	vp.size = Vector2i(maxi(_text_width(s, size), 4), LINE)
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	var img := vp.get_texture().get_image()
 	img.convert(Image.FORMAT_RGBA8)
 	vp.queue_free()
 	return img
+
+
+func _text_width(s: String, size: int) -> int:
+	# The label draws a little wider than the fallback font measures (upper case most).
+	return int(ceil(ThemeDB.fallback_font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x * 1.1)) + 8
 
 
 func _flags(v: Dictionary) -> Array[String]:
@@ -354,14 +374,31 @@ func _run() -> int:
 	var blocks: Array = []
 	var width := 0
 	var y := PAD
+	var banner := str(_args.get("banner", ""))
+	var banner_text: Array = []
+	if banner != "":
+		banner_text.append({"at": Vector2i(PAD, y), "text": banner.to_upper(), "color": FAIL, "size": 15})
+		width = maxi(width, PAD * 2 + _text_width(banner.to_upper(), 15))
+		y += LINE + 6
 	for v: Dictionary in _variants:
 		var b := {"label": v["label"], "failed": v["failed"], "reason": v.get("reason", ""), "cells": [],
-			"texts": [], "flags": []}
+			"texts": [], "flags": [], "verdict": null, "verdict_reasons": []}
 		var x := PAD
 		b["texts"].append({"at": Vector2i(x, y), "text": "%s   %s" % [v["label"],
 			("FAILED: " + str(v.get("reason", ""))) if v["failed"] else "pending review"],
 			"color": FAIL if v["failed"] else TEXT, "size": 14})
 		y += LINE + 2
+		if _verdicts.has(v["label"]):
+			var vd: Dictionary = _verdicts[v["label"]]
+			b["verdict"] = vd["class"]
+			b["verdict_reasons"] = vd["reasons"]
+			var line := str(vd["class"])
+			if not vd["reasons"].is_empty():
+				line += ": " + "; ".join(PackedStringArray(vd["reasons"]))
+			b["texts"].append({"at": Vector2i(x, y), "text": line,
+				"color": PASS if vd["class"] == "acceptable" else FAIL, "size": 13})
+			width = maxi(width, PAD * 2 + _text_width(line, 13))
+			y += LINE
 		if v["failed"]:
 			var w := yaws.size() * (small.x + PAD) - PAD
 			var r := Rect2i(x, y, maxi(w, small.x), small.y)
@@ -417,13 +454,20 @@ func _run() -> int:
 		blocks.append(b)
 	var sheet := Image.create(maxi(width, 64), y, false, Image.FORMAT_RGBA8)
 	sheet.fill(Color(0, 0, 0, 0))
-	var layout := {"size": [sheet.get_width(), sheet.get_height()], "status": "pending review", "variants": []}
+	var layout := {"size": [sheet.get_width(), sheet.get_height()], "status": "pending review",
+		"banner": banner if banner != "" else null, "variants": []}
+	for t: Dictionary in banner_text:
+		var img := await _text(t["text"], t["color"], t["size"])
+		var band := Rect2i(t["at"], Vector2i(mini(img.get_width(), sheet.get_width() - PAD), img.get_height()))
+		sheet.fill_rect(band, BACK)
+		sheet.blend_rect(img, Rect2i(Vector2i.ZERO, band.size), t["at"])
 	for i in blocks.size():
 		var b: Dictionary = blocks[i]
 		var v: Dictionary = _variants[i]
 		var lv := {"label": b["label"], "failed": b["failed"], "reason": b["reason"], "pose": b.get("pose", ""),
 			"pose_frame": b.get("pose_frame", -1), "pose_time": b.get("pose_time", 0.0),
-			"pose_how": b.get("pose_how", ""), "flags": b["flags"], "cells": []}
+			"pose_how": b.get("pose_how", ""), "flags": b["flags"], "verdict": b["verdict"],
+			"verdict_reasons": b["verdict_reasons"], "cells": []}
 		for c: Dictionary in b["cells"]:
 			var r: Rect2i = c["rect"]
 			if c["kind"] == "failure":

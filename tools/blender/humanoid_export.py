@@ -9,7 +9,8 @@ Runs with a Python that imports bpy (Blender as a module):
       [--clips LIBRARY.json] [--items DIR] [--glow [--glow-hues 165,225]]
       [--bake-source HIGH.glb] [--bone-map MAP.json] [--device GPU|CPU] [--only idle,walk]
       [--max-foot-slide 2] [--max-hand-socket 2] [--max-reach 1] [--max-stretch 0.5]
-      [--max-penetration 2]
+      [--max-penetration 2] [--metal-roughness MAP.png] [--material-source PAINTED.glb]
+      [--image-format lossless|compact]
 
 Steps (formats in docs/conventions.md):
 1. The bone map: a map given with --bone-map wins, then <out>/bone_map.json when it is
@@ -27,11 +28,19 @@ Steps (formats in docs/conventions.md):
    or, without it, from the mesh before the reduction; the relief of the
    painted texture is added to it. The painted texture keeps its size. Weights are limited
    to 4 influences and normalised; <out>/mesh_report.json checks the result.
+   The material keeps the rig's maps; --metal-roughness (the paint stage's map) replaces
+   the rig's metallic-roughness map, and the maps the rig lacks (metallic-roughness,
+   opacity, emissive, occlusion) are carried from --material-source (the painted mesh).
 4. With --clips, every clip of the library (canonical joints in body coordinates) is
    retargeted by bone directions, the feet planted as the clip says and the hands put on
    the held item's sockets by IK. Without it the GLB has the rest pose only.
 5. Writes <out>/<name>.glb, <out>/model.json and <out>/regions_mask.png (red: skin, green:
-   hair of the head, blue: what glows, with --glow).
+   hair of the head, blue: what glows, with --glow). The normal, metallic-roughness and
+   occlusion maps and an opacity mask are never JPEG: --image-format lossless (default)
+   writes every map as PNG, compact the base colour as JPEG (quality 92). The written GLB
+   is read back (glb_materials.py): mesh_report.json gets its "materials" section, and a
+   slot whose source map existed but is missing or lossy, or a source map that could not
+   be carried, is a flag.
 6. With --clips, the exported GLB is loaded again and every clip played on it:
    <out>/motion_report.json (foot slide, hand to socket, reach shortfall, deformation,
    held-item penetration; flags over the thresholds). Every candidate is pending review.
@@ -77,6 +86,12 @@ ap.add_argument("--max-hand-socket", type=float, default=2.0, help="cm, holding 
 ap.add_argument("--max-reach", type=float, default=1.0, help="cm of IK target beyond reach")
 ap.add_argument("--max-stretch", type=float, default=0.5, help="95th percentile of edge stretch (|length / rest - 1|)")
 ap.add_argument("--max-penetration", type=float, default=2.0, help="cm of the item's box inside the body")
+ap.add_argument("--metal-roughness", default="",
+                help="the paint stage's metallic-roughness map (roughness green, metallic blue)")
+ap.add_argument("--material-source", default="",
+                help="the painted mesh the rig was made from: maps the rig's material lacks are carried from it")
+ap.add_argument("--image-format", default="lossless", choices=("lossless", "compact"),
+                help="lossless: every map PNG; compact: base colour JPEG (quality 92), technical maps PNG")
 a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 OUT = os.path.abspath(a.out)
 os.makedirs(OUT, exist_ok=True)
@@ -158,6 +173,100 @@ def fit_bake_source(high, body):
     rec.update({"corrected": True, "scale": round(s, 6), "translation_m": [round(float(x), 5) for x in t],
                 "bounds_offset_after_m": round(offset, 4), "distance_after_m": dist, "used": dist["p90"] <= tol})
     return offset, rec
+
+
+# ---- material slots ------------------------------------------------------------------------
+# The texture slots of a glTF material as Blender's glTF importer lays them out, and how a
+# map missing from the rig's material is carried into it. The exported GLB is read back
+# file by file (glb_materials.py): mesh_report.json "materials".
+JPEG_QUALITY = 92
+LOSSY_EXT = (".jpg", ".jpeg", ".jpe", ".webp")
+
+
+def image_above(socket, depth=4):
+    """(image node, the name of its output) that feeds a shader socket, directly or through
+    Separate Color, Normal Map or math nodes; (None, None) when no image does."""
+    if socket is None or not socket.is_linked:
+        return None, None
+    link = socket.links[0]
+    node = link.from_node
+    if node.type == "TEX_IMAGE":
+        return (node, link.from_socket.name) if node.image is not None else (None, None)
+    if depth == 0:
+        return None, None
+    for inp in node.inputs:
+        found = image_above(inp, depth - 1)
+        if found[0] is not None:
+            return found
+    return None, None
+
+
+def socket_of(node, *names):
+    return next((node.inputs[n] for n in names if n in node.inputs), None)
+
+
+def occlusion_group(tree):
+    """The glTF settings group node of a material (the one with an Occlusion input), or None."""
+    return next((n for n in tree.nodes if n.type == "GROUP" and n.node_tree is not None and "Occlusion" in n.inputs),
+                None)
+
+
+def find_slots(tree, shader):
+    """{slot: image node} of the texture slots a material has."""
+    out = {"base_color": image_above(socket_of(shader, "Base Color"), 0)[0]}
+    node, output = image_above(socket_of(shader, "Alpha"))
+    out["opacity"] = node if output == "Alpha" else None
+    out["metallic_roughness"] = (image_above(socket_of(shader, "Roughness"))[0]
+                                 or image_above(socket_of(shader, "Metallic"))[0])
+    out["normal"] = image_above(socket_of(shader, "Normal"))[0]
+    out["emissive"] = image_above(socket_of(shader, "Emission Color", "Emission"))[0]
+    grp = occlusion_group(tree)
+    out["occlusion"] = image_above(grp.inputs["Occlusion"])[0] if grp is not None else None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def load_map(path):
+    """(image, None) of a map file, or (None, why it cannot be used)."""
+    if not os.path.isfile(path):
+        return None, "not found"
+    try:
+        img = bpy.data.images.load(os.path.abspath(path), check_existing=False)
+    except RuntimeError as ex:
+        return None, "cannot be read (%s)" % ex
+    if img.size[0] == 0 or img.size[1] == 0:
+        bpy.data.images.remove(img)
+        return None, "cannot be read (not a picture Blender knows)"
+    return img, None
+
+
+def material_source(path):
+    """({material, shader, slots}, None) of the painted mesh's material, or (None, why)."""
+    before = set(bpy.data.objects)
+    try:
+        bpy.ops.import_scene.gltf(filepath=os.path.abspath(path))
+    except Exception as ex:  # an importer failure is reported, not fatal
+        return None, "cannot be imported (%s)" % ex
+    new = [o for o in bpy.data.objects if o not in before]
+    mat = next((m for o in new if o.type == "MESH" for m in o.data.materials if m is not None and m.use_nodes), None)
+    for o in new:
+        bpy.data.objects.remove(o)
+    if mat is None:
+        return None, "has no material"
+    shader = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if shader is None:
+        return None, "its material has no Principled BSDF"
+    mat.use_fake_user = True  # kept (with its images) while the export runs
+    return {"material": mat, "shader": shader, "slots": find_slots(mat.node_tree, shader)}, None
+
+
+def lossy_source(img):
+    """True when Blender's glTF exporter would keep the image as JPEG or WebP (its source)."""
+    if img.source != "FILE":
+        return False
+    if img.packed_file is not None:
+        data = img.packed_file.data[:12]
+        return data[:3] == b"\xff\xd8\xff" or data[8:12] == b"WEBP"
+    return img.filepath_raw.lower().endswith(LOSSY_EXT)
 
 
 library = {}
@@ -261,7 +370,7 @@ CH = {"hips": nm(CH0["hips"]), "spine": [nm(b) for b in CH0["spine"]], "head": [
       "legs": {s: [nm(b) for b in CH0["legs"][s]] for s in hb.SIDES}}
 
 # ---- 3. the mesh: reduction, weights, normal map ------------------------------------------
-mesh_report = {"format": "forge-mesh-report", "version": 1, "status": "pending review", "problems": []}
+mesh_report = {"format": "forge-mesh-report", "version": 2, "status": "pending review", "problems": []}
 tris_in = sum(len(p.vertices) - 2 for p in body.data.polygons)
 if not body.data.uv_layers:
     mesh_report["problems"].append("the mesh has no UV layer")
@@ -282,6 +391,20 @@ if mesh_report["problems"]:
 mat = mats[0]
 nt = mat.node_tree
 bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+RIG_SLOTS = find_slots(nt, bsdf)
+# Where each slot's map comes from ("sources"), maps a better one replaced and source maps
+# that could not be carried (each a flag of the mesh report).
+MATERIAL = {"image_format": a.image_format, "sources": {s: "the rig's material" for s in RIG_SLOTS},
+            "replaced": [], "not_carried": []}
+NOT_CARRIED = {}  # slot -> why its source map could not be carried
+SOURCE = None
+if a.material_source:
+    SOURCE, _why = material_source(a.material_source)
+    if SOURCE is None:
+        MATERIAL["not_carried"].append("material source %s: %s" % (os.path.basename(a.material_source), _why))
+        NOT_CARRIED["material_source"] = "%s %s: none of its maps could be carried" % (
+            os.path.basename(a.material_source), _why)
+        print("MATERIAL SOURCE", _why, flush=True)
 
 high = None
 bake_offset = None
@@ -425,13 +548,104 @@ _nn.image = normal_img
 _nm = nt.nodes.new("ShaderNodeNormalMap")
 nt.links.new(_nn.outputs["Color"], _nm.inputs["Color"])
 nt.links.new(_nm.outputs["Normal"], bsdf.inputs["Normal"])
+if "normal" in RIG_SLOTS:
+    MATERIAL["replaced"].append("normal: the rig's normal map %s, by the exporter's" % RIG_SLOTS["normal"].image.name)
+MATERIAL["sources"]["normal"] = "the exporter (%s)" % (
+    "baked from %s, with the painted texture's relief" % (BAKE_FROM or "the mesh before reduction") if BAKED
+    else "the painted texture's relief")
+
+
+def texture(img, colour=True):
+    node = nt.nodes.new("ShaderNodeTexImage")
+    node.image = img
+    if not colour:
+        img.colorspace_settings.name = "Non-Color"
+    return node
+
+
+def link_metal_roughness(img, roughness=True, metallic=True):
+    """A metallic-roughness map (glTF: roughness green, metallic blue) on the shader."""
+    sep = nt.nodes.new("ShaderNodeSeparateColor")
+    nt.links.new(texture(img, colour=False).outputs["Color"], sep.inputs["Color"])
+    if roughness:
+        nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
+    if metallic:
+        nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
+
+
+def carry(slot, src):
+    """Carry one slot's map of the material source into the rig's material; None when it was
+    carried, else why not."""
+    img = src["slots"][slot].image
+    sh = src["shader"]
+    if slot == "metallic_roughness":
+        rough, metal = socket_of(sh, "Roughness"), socket_of(sh, "Metallic")
+        link_metal_roughness(img, rough is not None and rough.is_linked, metal is not None and metal.is_linked)
+    elif slot == "emissive":
+        nt.links.new(texture(img).outputs["Color"], socket_of(bsdf, "Emission Color", "Emission"))
+        strength = socket_of(sh, "Emission Strength")
+        if strength is not None and "Emission Strength" in bsdf.inputs:
+            bsdf.inputs["Emission Strength"].default_value = strength.default_value or 1.0
+    elif slot == "opacity":
+        nt.links.new(texture(img).outputs["Alpha"], bsdf.inputs["Alpha"])
+        for attr in ("blend_method", "surface_render_method"):
+            try:
+                setattr(mat, attr, getattr(src["material"], attr))
+            except (AttributeError, TypeError):
+                pass
+    elif slot == "occlusion":
+        group = occlusion_group(src["material"].node_tree)
+        if group is None:
+            return "its glTF settings group is missing"
+        node = nt.nodes.new("ShaderNodeGroup")
+        node.node_tree = group.node_tree
+        sep = nt.nodes.new("ShaderNodeSeparateColor")
+        nt.links.new(texture(img, colour=False).outputs["Color"], sep.inputs["Color"])
+        nt.links.new(sep.outputs["Red"], node.inputs["Occlusion"])
+    else:
+        return "the exporter does not carry this slot"
+    return None
+
+
+# The paint stage's metallic-roughness map wins over the rig's (the rig tool may have
+# re-encoded it); then every map the rig's material lacks is carried from the painted mesh.
+if a.metal_roughness:
+    _name = os.path.basename(a.metal_roughness)
+    _img, _why = load_map(a.metal_roughness)
+    if _img is None:
+        NOT_CARRIED["metallic_roughness"] = "the paint stage's map %s could not be carried: %s" % (_name, _why)
+        MATERIAL["not_carried"].append("metallic_roughness: %s %s" % (_name, _why))
+        MATERIAL["sources"].setdefault("metallic_roughness", "the paint stage's map %s (not carried)" % _name)
+    else:
+        if "metallic_roughness" in RIG_SLOTS:
+            MATERIAL["replaced"].append("metallic_roughness: the rig's map %s, by the paint stage's %s" % (
+                RIG_SLOTS["metallic_roughness"].image.name, _name))
+        link_metal_roughness(_img)
+        MATERIAL["sources"]["metallic_roughness"] = "the paint stage's map %s" % _name
+if SOURCE is not None:
+    _have = find_slots(nt, bsdf)
+    _src_name = os.path.basename(a.material_source)
+    for _slot in ("metallic_roughness", "opacity", "emissive", "occlusion"):
+        if _slot in _have or _slot not in SOURCE["slots"]:
+            continue
+        _why = carry(_slot, SOURCE)
+        if _why:
+            NOT_CARRIED[_slot] = "; ".join(x for x in (NOT_CARRIED.get(_slot), "the map of the material source %s "
+                                                       "could not be carried: %s" % (_src_name, _why)) if x)
+            MATERIAL["not_carried"].append("%s: %s's map: %s" % (_slot, _src_name, _why))
+            MATERIAL["sources"][_slot] = "the material source %s (not carried)" % _src_name
+        else:
+            MATERIAL["sources"][_slot] = "the material source %s" % _src_name
+    # The base colour and normal map of the material source are not carried: the rig's
+    # base colour is the one its UVs were painted with, the normal map is baked here.
+print("MATERIAL", json.dumps(MATERIAL["sources"], sort_keys=True), flush=True)
 
 if unweighted:
     mesh_report["problems"].append("%d vertices have no weight" % unweighted)
 if worst_sum > 1e-3:
     mesh_report["problems"].append("weights are not normalised (worst sum off by %.4f)" % worst_sum)
 mesh_report.update({
-    "uv_layers": len(body.data.uv_layers), "materials": len(mats), "base_color_texture": base_node.image.name,
+    "uv_layers": len(body.data.uv_layers), "material_count": len(mats), "base_color_texture": base_node.image.name,
     "texture_size": list(base_node.image.size), "vertices": len(body.data.vertices),
     "unweighted_vertices": unweighted, "weight_sum_error": round(worst_sum, 6),
     "max_influences": max_inf, "influence_limit": MAX_INFLUENCES,
@@ -1013,11 +1227,58 @@ body.select_set(True)
 ref.select_set(True)
 body.name = "body"
 GLB = os.path.join(OUT, a.name + ".glb")
+# The images' formats: Blender's glTF exporter ("AUTO") writes an image whose source is a
+# JPEG or WebP file as that, every other image as PNG. Lossless: every lossy source becomes a
+# PNG. Compact: the base colour is written once as JPEG at quality 92 (PNG when it carries
+# the opacity), the technical maps as PNG. The normal map is made here (PNG).
+MAPS = os.path.join(OUT, "_maps")
+
+
+def rewritten(img, fmt):
+    """A packed copy of an image as a PNG or JPEG file (same pixels, name and colour space)."""
+    os.makedirs(MAPS, exist_ok=True)
+    w, h = img.size
+    px = np.empty(w * h * 4, np.float32)
+    img.pixels.foreach_get(px)
+    px = np.clip(np.round(px.reshape(h, w, 4) * 255.0), 0, 255).astype(np.uint8)[::-1]
+    alpha = fmt == "png" and img.channels == 4 and bool((px[..., 3] < 255).any())
+    pic = PILImage.fromarray(np.ascontiguousarray(px if alpha else px[..., :3]), "RGBA" if alpha else "RGB")
+    name = img.name
+    path = os.path.join(MAPS, "%d.%s" % (len(os.listdir(MAPS)), "jpg" if fmt == "jpeg" else "png"))
+    if fmt == "jpeg":
+        pic.save(path, quality=JPEG_QUALITY)
+    else:
+        pic.save(path)
+    img.name = name + "_source"
+    new = bpy.data.images.load(path, check_existing=False)
+    new.colorspace_settings.name = img.colorspace_settings.name
+    new.pack()
+    new.name = name
+    return new
+
+
+FINAL_SLOTS = find_slots(nt, bsdf)
+_done = {}
+for _slot, _node in sorted(FINAL_SLOTS.items()):
+    _img = _node.image
+    if _slot == "base_color" and a.image_format == "compact" and "opacity" not in FINAL_SLOTS:
+        _fmt = "jpeg"
+    elif lossy_source(_img):
+        _fmt = "png"
+    else:
+        continue
+    _key = (_img.name, _fmt)
+    if _key not in _done:
+        print("IMAGE", _slot, _img.name, "->", _fmt, flush=True)
+        _done[_key] = rewritten(_img, _fmt)
+    for _n in nt.nodes:  # every node of that picture (the base colour and its alpha)
+        if _n.type == "TEX_IMAGE" and _n.image == _img:
+            _n.image = _done[_key]
 bpy.ops.export_scene.gltf(filepath=GLB, export_format="GLB", use_selection=True,
                           export_animations=True, export_animation_mode="NLA_TRACKS", export_skins=True,
                           export_def_bones=False, export_frame_range=False, export_force_sampling=False,
-                          export_optimize_animation_size=False, export_image_format="JPEG",
-                          export_jpeg_quality=92,
+                          export_optimize_animation_size=False, export_image_format="AUTO",
+                          export_image_quality=JPEG_QUALITY, export_jpeg_quality=JPEG_QUALITY,
                           # No Draco: the GLB stays plain (and the exporter does not log the
                           # missing Draco library as an error).
                           export_draco_mesh_compression_enable=False)
@@ -1025,6 +1286,47 @@ print("EXPORTED", GLB, flush=True)
 # Blender's glTF exporter checks for its Draco library whenever it starts and logs "ERROR
 # Draco mesh compression is not available" when the module build has none.
 print("NOTE the Draco line above is harmless: the GLB is written without Draco compression", flush=True)
+if os.path.isdir(MAPS):
+    import shutil  # noqa: E402
+    shutil.rmtree(MAPS, ignore_errors=True)
+
+# The materials as the written GLB holds them (its JSON and image bytes, not this scene): a
+# slot whose source map existed but that is missing or lossy is a mesh flag, and so is a
+# source map that could not be carried.
+import glb_materials  # noqa: E402
+_read = glb_materials.material_slots(GLB)
+_slots, _flags = {}, {}
+for _slot in glb_materials.SLOTS:
+    _r = _read[_slot]
+    _src = MATERIAL["sources"].get(_slot)
+    _slots[_slot] = {"present": _r["present"], "format": _r["format"], "size": _r["size"], "lossless": _r["lossless"],
+                     "image": _r["image"], "source": _src is not None, "source_from": _src}
+    if _src is None:
+        continue
+    if not _r["present"]:
+        _flags[_slot] = "its source map (%s) is missing from the exported GLB" % _src
+    elif not _r["lossless"] and (a.image_format == "lossless" or _slot != "base_color"):
+        _flags[_slot] = "written as %s, which is lossy (%s)" % (
+            _r["format"], "every map is PNG with image_format lossless" if a.image_format == "lossless"
+            else "only the base colour may be JPEG with image_format compact")
+for _slot, _why in NOT_CARRIED.items():
+    if _slot in _slots and not _slots[_slot]["present"]:
+        _why += "; the exported GLB has none"
+    elif _slot in _slots:
+        _why += "; " + (_flags.get(_slot) or "the exported GLB has the map of %s" % _slots[_slot]["source_from"])
+    _flags[_slot] = _why
+_slots["opacity"]["alpha_mode"] = _read["opacity"].get("alpha_mode")
+mesh_report["materials"] = {"image_format": a.image_format, "read_from": os.path.basename(GLB) + " as written",
+                            "slots": _slots, "replaced": MATERIAL["replaced"], "not_carried": MATERIAL["not_carried"]}
+for _slot in sorted(_flags):
+    mesh_report["problems"].append("%s: %s" % ("material source" if _slot == "material_source"
+                                               else "material slot " + _slot, _flags[_slot]))
+mesh_report["valid"] = not mesh_report["problems"]
+mesh_report["flags"] = list(mesh_report["problems"])
+write_json("mesh_report.json", mesh_report)
+print("MATERIALS", json.dumps({k: v["format"] for k, v in _slots.items() if v["present"]}, sort_keys=True),
+      len(_flags), "flags", flush=True)
+info["mesh"]["image_format"] = a.image_format
 info["seconds_export"] = round(time.time() - T0, 1)
 write_json("model.json", info)
 

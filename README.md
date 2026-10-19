@@ -14,8 +14,8 @@ and the `humanoid` recipe (reference, pose, cutout, mesh, paint, rig, export, re
 sheet and final pick, each variant end to end) are in place and tested against a fake
 server with stand-ins for the local tools. The local tools themselves are smoke-tested
 without GPU inference: the humanoid exporter (bone map, Godot humanoid bone names,
-retarget of a motion library, normal map, mesh and motion reports) and the Godot review
-sheet; the rig runners (SkinTokens, UniRig) have not run while building. See the
+retarget of a motion library, normal map, lossless technical maps checked in the written
+GLB, mesh and motion reports) and the Godot review sheet; the rig runners (SkinTokens, UniRig) have not run while building. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).
@@ -27,7 +27,8 @@ sheet; the rig runners (SkinTokens, UniRig) have not run while building. See the
   `prop`, `vehicle` (rigid, seen whole) and `figure` (a figure with views and an unrigged
   mesh) and `humanoid` (skinned, human skeleton: every variant goes from a generated
   reference to an exported, animated GLB, then one review sheet and a provisional final
-  pick). Planned: `articulated` (rigid parts on pivots) and `creature` (skinned, own
+  pick among the variants that meet the order's acceptance limits, or the outcome
+  `no_variant_passed`, which can release reserve variants). Planned: `articulated` (rigid parts on pivots) and `creature` (skinned, own
   skeleton) when an order needs them.
 - **The order says everything else**, piece by piece: recipe, prompt, number of variants,
   budgets (triangles, texture size), input files, the model of each stage and its named

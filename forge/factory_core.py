@@ -42,6 +42,9 @@ HEAVY_MIN_VRAM_GB = 3.0  # Hunyuan shape + Paint peaked at 7.6 and 8.8 GB; margi
 SAME_GROUP_BURST = 24  # jobs of one model in a row before others' ready jobs get a turn
 STOP_FILE = "STOP"
 ACTIVE = ("ready", "waiting", "queued")
+# A job "held" (a reserve variant's, until its piece's first decision is "no_variant_passed")
+# is not active: it neither runs nor keeps the night going.
+HELD = "held"
 # Words of an out-of-memory failure in a local tool's error or log.
 OOM_MARKERS = ("out of memory", "outofmemoryerror", "cuda_error_out_of_memory", "cudaerrormemoryallocation",
                "failed to allocate", "not enough memory")
@@ -285,18 +288,31 @@ class Factory(ComfyJobs, LocalSteps):
         if e.get("status") == "queued":
             cache[jid] = "queued"
             return "queued"
-        deps = refs_of(job)
+        hold = job.get("hold")
+        if hold:
+            # Held until the job it waits for is done with the outcome it waits for.
+            gate = self.by_id.get(hold["until"])
+            if gate is None or self.state(gate, cache) != "done" or                     self.entry(hold["until"]).get("outcome") != hold["outcome"]:
+                cache[jid] = HELD
+                return HELD
+        deps = [d for d in refs_of(job) if not hold or d != hold["until"]]
         st = None
         if job["kind"] == "pick" or job.get("partial"):
-            # Over candidates: waits while one still runs, goes with those that finished.
+            # Over candidates: waits while one still runs, goes with those that finished
+            # (a decision, "even_if_none", also when every candidate failed).
             sts = [self.state(self.by_id[d], cache) for d in deps]
             if any(s in ACTIVE for s in sts):
                 st = "waiting"
-            elif not any(s == "done" for s in sts):
+            elif any(s == HELD for s in sts):
+                st = HELD
+            elif not any(s == "done" for s in sts) and not job.get("even_if_none"):
                 st = "blocked"
         else:
             for d in deps:
                 s = self.state(self.by_id[d], cache)
+                if s == HELD:
+                    st = HELD
+                    break
                 if s in ("failed", "blocked"):
                     st = "blocked"
                     break
@@ -612,17 +628,20 @@ class Factory(ComfyJobs, LocalSteps):
 
     def write_state(self, states, running, pending):
         count = {}
-        left = 0.0
+        left = held = 0.0
         for j in self.jobs:
             s = states[j["id"]]
             count[s] = count.get(s, 0) + 1
             if s in ACTIVE:
                 left += ESTIMATE.get(j["group"], 30)
+            elif s == HELD:
+                held += ESTIMATE.get(j["group"], 30)
         review = sorted(j["id"] for j in self.jobs if j["kind"] in ("pick", "final") and states[j["id"]] == "done"
                         and not self.manual_choice(j))
         write_json(os.path.join(self.out, "state.json"), {
             "updated": time.strftime("%Y-%m-%d %H:%M:%S"), "pid": os.getpid(), "counts": count,
             "estimated_gpu_hours_left": round(left / 3600, 2),
+            "estimated_gpu_hours_if_needed": round(held / 3600, 2),
             "server_queue": {"running": running, "pending": pending},
             "gpu_wait": self.wait_state(), "local_gpu_running": self.running_local,
             "picks_to_review": len(review),
@@ -711,19 +730,33 @@ class Factory(ComfyJobs, LocalSteps):
                 s = self.state(j, cache)
             except Exception:
                 s = "waiting"
-            g = groups.setdefault(j["group"], {"total": 0, "left": 0})
+            g = groups.setdefault(j["group"], {"total": 0, "left": 0, "held": 0})
             g["total"] += 1
             if s in ACTIVE:
                 g["left"] += 1
-        tot = 0.0
+            elif s == HELD:
+                g["held"] += 1  # reserve jobs: counted apart, run only if needed
+        tot = held_h = 0.0
+        held_n = 0
         fams = {}
         for j in self.jobs:
+            if cache.get(j["id"]) == HELD:
+                continue
             n, h = fams.get(j["family"], (0, 0.0))
             fams[j["family"]] = (n + 1, h + ESTIMATE.get(j["group"], 30) / 3600)
         for g, c in sorted(groups.items()):
             h = c["left"] * ESTIMATE.get(g, 30) / 3600
             tot += h
-            print("%-13s %5d jobs, %5d left, ~%.2f GPU h" % (g, c["total"], c["left"], h))
+            line = "%-13s %5d jobs, %5d left, ~%.2f GPU h" % (g, c["total"], c["left"], h)
+            if c["held"]:
+                hh = c["held"] * ESTIMATE.get(g, 30) / 3600
+                held_h += hh
+                held_n += c["held"]
+                line += ", %d held (if needed, ~%.2f GPU h)" % (c["held"], hh)
+            print(line)
         for fam, (n, h) in fams.items():
             print("  %-18s %5d jobs, ~%.2f GPU h in all" % (fam, n, h))
         print("total %d jobs, ~%.1f GPU hours left (estimate)" % (len(self.jobs), tot))
+        if held_n:
+            print("if needed: %d held reserve jobs, ~%.1f GPU hours more (they run only when a piece's first "
+                  "decision is no_variant_passed)" % (held_n, held_h))

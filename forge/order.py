@@ -9,13 +9,13 @@ import copy
 import json
 import os
 
-from . import stages
+from . import acceptance, stages
 from .config import missing_tools
 
 # Per-piece keys a family may set as defaults for its pieces. Dictionaries merge key by key
 # (the piece wins); the other keys are taken from the family when the piece has none.
-PIECE_KEYS = ("recipe", "variants", "stages", "skip", "params", "inputs", "review")
-DICT_KEYS = ("stages", "params", "inputs", "review")
+PIECE_KEYS = ("recipe", "variants", "stages", "skip", "params", "inputs", "review", "accept", "reserve")
+DICT_KEYS = ("stages", "params", "inputs", "review", "accept")
 FORMAT_VERSION = 1
 
 
@@ -190,6 +190,10 @@ def _check_piece(where, recipe, piece, config, problems):
         elif name not in allowed:
             problems.append("%s: param %r is not used by recipe %s with these stages (used: %s)" % (
                 where, name, recipe, ", ".join(sorted(allowed)) or "none"))
+        elif stages.PARAMS[name][0] == "choice":
+            if v not in stages.PARAM_CHOICES[name]:
+                problems.append("%s: param %s must be one of %s, not %r" % (
+                    where, name, ", ".join(stages.PARAM_CHOICES[name]), v))
         elif not _type_ok(stages.PARAMS[name][0], v):
             problems.append("%s: param %s must be %s, not %r" % (where, name, _type_text(stages.PARAMS[name][0]), v))
     inputs = piece.get("inputs", {})
@@ -230,6 +234,18 @@ def _check_piece(where, recipe, piece, config, problems):
                         where, k, ", ".join(stages.REVIEW_KEYS)))
                 elif not _type_ok(stages.REVIEW_KEYS[k], v):
                     problems.append("%s: review %s must be %s, not %r" % (where, k, _type_text(stages.REVIEW_KEYS[k]), v))
+    # Acceptance criteria and reserve variants: only a recipe with a final decision (humanoid).
+    decides = "review" in stages.stages_of(recipe)
+    if "accept" in piece:
+        if decides:
+            acceptance.check(where, piece["accept"], problems)
+        else:
+            problems.append("%s: recipe %s has no acceptance criteria; remove accept" % (where, recipe))
+    if "reserve" in piece:
+        if not (_is_int(piece["reserve"]) and piece["reserve"] >= 0):
+            problems.append("%s: reserve must be a whole number of at least 0, not %r" % (where, piece["reserve"]))
+        elif not decides:
+            problems.append("%s: recipe %s has no reserve variants; remove reserve" % (where, recipe))
     for p in missing_tools(config, stages.tools_needed(recipe, piece)):
         problems.append("%s: %s" % (where, p))
     from .recipes import PIECE_CHECKS

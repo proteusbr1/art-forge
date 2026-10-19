@@ -44,7 +44,10 @@ format in [docs/order.md](docs/order.md) and the design in
 - `forge/factory_core.py`: job states, scheduling, `state.json`, estimate.
 - `forge/comfy_jobs.py`: builds a workflow's prompt, submits it, collects its outputs.
 - `forge/local_steps.py`, `forge/scoring.py`: local steps without GPU (picks, sheets,
-  seamless materials, a humanoid's cutout and final copy) and the pick scores.
+  seamless materials, a humanoid's cutout and final decision) and the pick scores.
+- `forge/acceptance.py`: a humanoid's acceptance limits (`accept`), the classification of
+  its variants (acceptable or rejected, with the stage held responsible) and the outcome
+  `no_variant_passed` that releases reserve variants.
 - `forge/provenance.py`: provenance records and export.
 - `forge/comfy_server.py`, `forge/factory_util.py`: HTTP client and helpers.
 - `forge/local_gpu.py`: runners of the local tools that use the card (`run_rig`,
@@ -52,7 +55,8 @@ format in [docs/order.md](docs/order.md) and the design in
   `local_gpu` job kind: `rig`, `export`, `review`).
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
-  `humanoid_export.py` (the humanoid export, run by `blender_python`).
+  `humanoid_export.py` (the humanoid export, run by `blender_python`) and
+  `glb_materials.py` (what a written GLB's material holds, read from the file; no `bpy`).
 - `tools/review_godot/`: the Godot project of the review sheets (off screen).
 - `tools/rig/skintokens_entry.py`: SkinTokens with a fixed seed, run by its own Python.
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.

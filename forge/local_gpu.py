@@ -30,6 +30,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, "tools")
 EXPORT_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_export.py")
 BONES_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_bones.py")
+MATERIALS_SCRIPT = os.path.join(TOOLS, "blender", "glb_materials.py")
 REVIEW_PROJECT = os.path.join(TOOLS, "review_godot")
 REVIEW_FILES = ("project.godot", "main.tscn", "main.gd")
 SKINTOKENS_ENTRY = os.path.join(TOOLS, "rig", "skintokens_entry.py")
@@ -46,6 +47,9 @@ THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "hand_socket_cm": "--max-hand
               "penetration_cm": "--max-penetration"}
 # Exit codes of the exporter when the bone map is invalid and when the mesh cannot be
 # exported (no UV layer or base colour): another try would fail the same way.
+# Image formats of the exported GLB (params.image_format): "lossless" writes every map as
+# PNG; "compact" writes the base colour as JPEG (quality 92) and the technical maps as PNG.
+IMAGE_FORMATS = ("lossless", "compact")
 EXIT_BONE_MAP = 3
 EXIT_MESH = 4
 
@@ -138,8 +142,8 @@ def _git_revision(folder):
 
 def tool_fingerprint(job, config):
     """What a local GPU job's specification takes from the tool it runs: the SHA-256 of the
-    scripts its runner uses (rig: the SkinTokens entry; export: the exporter and the bone
-    map module; review: the Godot review project) and, for the rig, the checked-out git
+    scripts its runner uses (rig: the SkinTokens entry; export: the exporter, the bone map
+    module and the GLB materials reader; review: the Godot review project) and, for the rig, the checked-out git
     revision of the configured checkout. A fixed tool redoes its jobs; weight files are left
     to the provenance record. None for a runner this module does not know."""
     tool = job.get("tool")
@@ -151,7 +155,7 @@ def tool_fingerprint(job, config):
         folder = (config or {}).get(key) if key else None
         extra = {"checkout_revision": _git_revision(folder) if folder else None}
     elif tool == "export":
-        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT], {}
+        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT], {}
     elif tool == "review":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in REVIEW_FILES], {}
     else:
@@ -339,14 +343,19 @@ EXPORT_PARAMS = {"tris": "--tris", "height": "--height", "head": "--head", "hand
 
 @_gpu_locked("export")
 def run_export(rig, out, config, params=None, clips=None, items=None, name="model", bake_source=None,
-               bone_map=None, glow=None, device=None, thresholds=None, timeout=7200):
+               bone_map=None, glow=None, device=None, thresholds=None, metal_roughness=None,
+               material_source=None, image_format=None, timeout=7200):
     """The humanoid export (tools/blender/humanoid_export.py in blender_python).
 
     params: tris, height, head, hands, feet, widen (piece params), normal_map (normal map
     size; default texture, else 2048). clips: motion library; items: held-item folder;
     bake_source: the raw high mesh; bone_map: the order's bone map (a JSON file); glow: True
     or (low, high) hues; device: Cycles device (default: the configuration's bake_device);
-    thresholds: motion report thresholds by name (THRESHOLDS).
+    thresholds: motion report thresholds by name (THRESHOLDS); metal_roughness: the paint
+    stage's metallic-roughness map (glTF convention: roughness green, metallic blue);
+    material_source: the painted mesh the rig was made from (maps the rig's material lacks
+    are carried from it); image_format: "lossless" (default: every map PNG) or "compact"
+    (base colour JPEG at quality 92, the technical maps PNG).
     Returns {glb, model, regions_mask, bone_map, mesh_report[, motion_report]}."""
     _require(config, "export")
     params = dict(params or {})
@@ -357,7 +366,11 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
            "--device", device]
     tex = params.pop("normal_map", None) or params.get("texture") or 2048
     cmd += ["--tex", str(int(tex))]
-    settings = {"name": name, "normal_map": int(tex), "device": device}
+    image_format = image_format or "lossless"
+    if image_format not in IMAGE_FORMATS:
+        raise ValueError("unknown image format %r (known: %s)" % (image_format, ", ".join(IMAGE_FORMATS)))
+    cmd += ["--image-format", image_format]
+    settings = {"name": name, "normal_map": int(tex), "device": device, "image_format": image_format}
     for k, opt in EXPORT_PARAMS.items():
         if params.get(k) is not None:
             cmd += [opt, str(params[k])]
@@ -375,6 +388,12 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
     if bone_map:
         cmd += ["--bone-map", os.path.abspath(bone_map)]
         inputs.append(_input("bone_map", bone_map))
+    if metal_roughness:
+        cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
+        inputs.append(_input("metal_roughness", metal_roughness))
+    if material_source:
+        cmd += ["--material-source", os.path.abspath(material_source)]
+        inputs.append(_input("material_source", material_source))
     if glow:
         cmd.append("--glow")
         settings["glow"] = True
@@ -401,7 +420,7 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
         raise ToolError("export did not write %s, see %s" % (", ".join(missing), os.path.join(out, "export.stdout.log")))
     version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
     tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
-    rec = _record(EXPORT_SCRIPT, [EXPORT_SCRIPT, BONES_SCRIPT], tools, settings, inputs)
+    rec = _record(EXPORT_SCRIPT, [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT], tools, settings, inputs)
     rec["exec_seconds"] = seconds
     rec["command"] = cmd
     _write_provenance(out, "export", rec, files)
@@ -422,13 +441,16 @@ def _failure(g):
 
 
 @_gpu_locked("review")
-def run_review(glbs, out, config, camera=None, labels=None, name="sheet", timeout=900):
+def run_review(glbs, out, config, camera=None, labels=None, name="sheet", verdicts=None, banner=None, timeout=900):
     """One review sheet of a piece's variants (tools/review_godot in Godot, off screen).
 
     glbs: per variant a GLB path, or a failure mark (None, "!reason" or {"failed": reason}).
     camera: pitch (degrees, default 60), yaws (list of degrees) or directions (count, default
     8), figure_height (px, default 96), front (bool, default True), front_height (px),
     animation (default: the first idle), strip_frames (8), strip_yaw (degrees).
+    verdicts: per variant {"class": "acceptable" | "rejected", "reasons": [text]} (the
+    sheet labels it besides "pending review"); banner: a line over the sheet (the outcome
+    "no_variant_passed").
     Returns {"sheet": <out>/<name>.png, "layout": <out>/<name>.png.json}."""
     _require(config, "review")
     cam = dict(camera or {})
@@ -448,8 +470,15 @@ def run_review(glbs, out, config, camera=None, labels=None, name="sheet", timeou
             args += [opt, str(cam[key])]
     inputs = []
     labels = list(labels or [])
+    verdicts = list(verdicts or [])
+    if banner:
+        args += ["--banner", _arg_text(banner)]
     for i, g in enumerate(glbs):
         label = labels[i] if i < len(labels) else "v%d" % (i + 1)
+        if i < len(verdicts) and verdicts[i]:
+            v = verdicts[i]
+            args += ["--verdict", "%s=%s%s" % (label, v["class"], (":" + "|".join(
+                _arg_text(r) for r in v.get("reasons") or [])) if v.get("reasons") else "")]
         reason = _failure(g)
         if reason is not None:
             args += ["--variant", "%s=!%s" % (label, reason)]
@@ -476,6 +505,10 @@ def run_review(glbs, out, config, camera=None, labels=None, name="sheet", timeou
     scripts = [os.path.join(REVIEW_PROJECT, f) for f in REVIEW_FILES]
     settings = {"pitch": cam.get("pitch", 60), "yaws": yaws, "figure_height": int(cam.get("figure_height", 96)),
                 "front": bool(cam.get("front", True))}
+    if verdicts:
+        settings["verdicts"] = [v["class"] if v else None for v in verdicts]
+    if banner:
+        settings["banner"] = banner
     for key in ("front_height", "animation", "strip_frames", "strip_yaw"):
         if cam.get(key) is not None:
             settings[key] = cam[key]
@@ -484,6 +517,13 @@ def run_review(glbs, out, config, camera=None, labels=None, name="sheet", timeou
     rec["command"] = cmd
     _write_provenance(out, "review", rec, files)
     return files
+
+
+def _arg_text(text, limit=160):
+    """A text for one Godot argument: one line, no "|" (the reasons' separator), not
+    starting with "--"."""
+    t = " ".join(str(text).split()).replace("|", "/")[:limit]
+    return t.lstrip("-") or "-"
 
 
 # ---- runners of the local_gpu job kind -------------------------------------------------------
@@ -511,13 +551,15 @@ def rig_runner(factory, job, out_dir):
 
 def export_runner(factory, job, out_dir):
     """The humanoid export of a variant's rig, with its raw mesh as the bake source and the
-    order's motion library, held items and bone map (args: name, tris, normal_map, height,
-    head, hands, feet, widen, glow and the motion thresholds). An invalid bone map stops it
+    order's motion library, held items and bone map, the paint stage's metallic-roughness map
+    and the painted mesh as the material source (args: name, tris, normal_map, height, head,
+    hands, feet, widen, glow, image_format and the motion thresholds). An invalid bone map stops it
     with the report (ToolError, not retried)."""
     args = job.get("args", {})
     ins = job["inputs"]
     rig, _ = factory.resolve(ins["rig"])
     bake = factory.resolve(ins["bake_source"])[0] if "bake_source" in ins else None
+    maps = {k: factory.resolve(ins[k])[0] for k in ("metal_roughness", "material_source") if k in ins}
     params = {k: args[k] for k in EXPORT_PARAMS if k in args}
     if args.get("normal_map"):
         params["normal_map"] = args["normal_map"]
@@ -527,7 +569,9 @@ def export_runner(factory, job, out_dir):
                        items=ins["items"]["folder"] if "items" in ins else None,
                        name=args.get("name", "model"), bake_source=bake,
                        bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
-                       glow=True if args.get("glow") else None, thresholds=thresholds or None)
+                       glow=True if args.get("glow") else None, thresholds=thresholds or None,
+                       metal_roughness=maps.get("metal_roughness"), material_source=maps.get("material_source"),
+                       image_format=args.get("image_format"))
     rec = _step_record(out_dir, "export")
     settings = rec.get("settings", {})
     passed = {k: settings[k] for k in args if k in settings}
@@ -566,11 +610,20 @@ def review_variants(factory, job):
 
 
 def review_runner(factory, job, out_dir):
-    """One review sheet of every variant of a piece, failures marked (args: the review
-    camera: pitch, directions, figure_height, front, front_height, strip_frames)."""
+    """One review sheet of every variant of a piece, failures marked, each variant labelled
+    acceptable or rejected with its first reasons and, when none passed, a banner (args:
+    the review camera: pitch, directions, figure_height, front, front_height, strip_frames)."""
+    from . import acceptance
     glbs, labels = review_variants(factory, job)
     camera = dict(job.get("args", {}))
-    files = run_review(glbs, out_dir, factory.config, camera=camera, labels=labels)
+    verdicts, summary = factory.decision(job)
+    shown = [{"class": v["class"], "reasons": acceptance.first_reasons(v)} for v in verdicts]
+    banner = None
+    if not summary["acceptable"]:
+        top = summary["responsible_stage"] or "unknown"
+        banner = "no variant passed: most often the %s (%d of %d)" % (
+            top, summary["responsible_counts"].get(top, 0), len(verdicts))
+    files = run_review(glbs, out_dir, factory.config, camera=camera, labels=labels, verdicts=shown, banner=banner)
     rec = _step_record(out_dir, "review")
     settings = dict(rec.get("settings", {}))
     if "yaws" in settings:

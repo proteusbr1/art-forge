@@ -106,12 +106,72 @@ def check_glb(glb, model=None):
     return json.loads(line[len("RESULT "):])
 
 
+def material(files):
+    """The materials section of an export's mesh report."""
+    return load(files["mesh_report"])["materials"]
+
+
+def metal_roughness_png(path, size=128):
+    """A metallic-roughness map in the glTF convention: roughness in green, metallic in blue."""
+    g = np.tile(np.linspace(40, 220, size).astype(np.uint8), (size, 1))
+    img = np.dstack([np.full_like(g, 255), g, np.full_like(g, 30)])
+    Image.fromarray(img, "RGB").save(path)
+    return path
+
+
 def fresh(*parts):
     path = os.path.join(SMOKE, *parts)
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path)
     return path
+
+
+# A Blender script: the fixture rig's mesh with a metallic-roughness map and an alpha channel
+# in its base colour (opacity), saved as a painted mesh GLB. Arguments: rig, out, map.
+PAINTED_SOURCE = """import os, sys, bpy
+import numpy as np
+rig, out, mr = sys.argv[-3:]
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath=rig)
+for o in list(bpy.data.objects):
+    if o.type != "MESH":
+        bpy.data.objects.remove(o)
+body = next(o for o in bpy.data.objects if o.type == "MESH")
+body.modifiers.clear()
+mat = body.data.materials[0]
+nt = mat.node_tree
+bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+base = bsdf.inputs["Base Color"].links[0].from_node.image
+w, h = base.size
+px = np.empty(w * h * 4, np.float32)
+base.pixels.foreach_get(px)
+px = px.reshape(h, w, 4)
+px[: h // 2, :, 3] = 0.4
+rgba = bpy.data.images.new("painted_rgba", w, h, alpha=True)
+rgba.pixels.foreach_set(px.ravel())
+rgba.filepath_raw = os.path.join(os.path.dirname(out), "painted_rgba.png")
+rgba.file_format = "PNG"
+rgba.save()
+tex = nt.nodes.new("ShaderNodeTexImage")
+tex.image = rgba
+nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+nt.links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+img = bpy.data.images.load(mr)
+img.colorspace_settings.name = "Non-Color"
+mtex = nt.nodes.new("ShaderNodeTexImage")
+mtex.image = img
+sep = nt.nodes.new("ShaderNodeSeparateColor")
+nt.links.new(mtex.outputs["Color"], sep.inputs["Color"])
+nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
+nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
+bpy.ops.object.select_all(action="DESELECT")
+body.select_set(True)
+bpy.ops.export_scene.gltf(filepath=out, export_format="GLB", use_selection=True, export_skins=False,
+                          export_animations=False, export_draco_mesh_compression_enable=False)
+sys.stdout.flush()
+os._exit(0)
+"""
 
 
 class FixtureData(unittest.TestCase):
@@ -123,6 +183,57 @@ class FixtureData(unittest.TestCase):
         lib = make_fixtures.library()
         self.assertEqual(len(lib["anims"]["walk"]["frames"]), 8)
         self.assertEqual(sorted(lib["anims"]["idle"]["frames"][0]), sorted(make_fixtures.CANON))
+
+
+class GlbReader(unittest.TestCase):
+    """The materials reader of tools/blender/glb_materials.py on hand-made GLBs (no Blender)."""
+
+    def glb(self, images, material):
+        import struct
+        binary, views, imgs = b"", [], []
+        for name, data in images:
+            views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+            imgs.append({"name": name, "bufferView": len(views) - 1, "mimeType": "image/png"})
+            binary += data + b"\0" * (-len(data) % 4)
+        doc = {"asset": {"version": "2.0"}, "buffers": [{"byteLength": len(binary)}], "bufferViews": views,
+               "images": imgs, "textures": [{"source": i} for i in range(len(imgs))], "materials": [material],
+               "meshes": [{"primitives": [{"attributes": {}, "material": 0}]}], "nodes": [{"name": "body", "mesh": 0}]}
+        js = json.dumps(doc).encode()
+        js += b" " * (-len(js) % 4)
+        body = struct.pack("<II", len(js), 0x4E4F534A) + js + struct.pack("<II", len(binary), 0x004E4942) + binary
+        path = os.path.join(SMOKE, "reader", "test.glb")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(struct.pack("<III", 0x46546C67, 2, 12 + len(body)) + body)
+        return path
+
+    def encoded(self, mode, fmt, size=(6, 4)):
+        import io
+        buf = io.BytesIO()
+        Image.new(mode, size).save(buf, fmt)
+        return buf.getvalue()
+
+    def test_slots_formats_sizes_and_opacity(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools", "blender"))
+        import glb_materials as gm
+        path = self.glb([("base", self.encoded("RGBA", "PNG")), ("mr", self.encoded("RGB", "JPEG", (8, 2)))],
+                        {"name": "m", "alphaMode": "BLEND",
+                         "pbrMetallicRoughness": {"baseColorTexture": {"index": 0},
+                                                  "metallicRoughnessTexture": {"index": 1}}})
+        slots = gm.material_slots(path)
+        self.assertEqual(slots["base_color"], {"present": True, "format": "png", "size": [6, 4], "alpha": True,
+                                               "lossless": True, "image": "base"})
+        self.assertEqual((slots["metallic_roughness"]["format"], slots["metallic_roughness"]["size"],
+                          slots["metallic_roughness"]["lossless"]), ("jpeg", [8, 2], False))
+        self.assertTrue(slots["opacity"]["present"])
+        for slot in ("normal", "occlusion", "emissive"):
+            self.assertFalse(slots[slot]["present"], slot)
+        # A base colour without alpha has no opacity, whatever the alpha mode says.
+        path = self.glb([("base", self.encoded("RGB", "JPEG"))],
+                        {"alphaMode": "BLEND", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}})
+        slots = gm.material_slots(path)
+        self.assertFalse(slots["opacity"]["present"])
+        self.assertEqual(slots["opacity"]["alpha_mode"], "BLEND")
 
 
 class RunnerChecks(unittest.TestCase):
@@ -157,11 +268,14 @@ class SyntheticExport(unittest.TestCase):
         cls.clips = os.path.join(FIX, "library.json")
         cls.items = os.path.join(FIX, "items")
         cls.params = {"tris": 8000, "height": 1.8, "normal_map": 256}
+        os.makedirs(os.path.join(SMOKE, "synthetic"), exist_ok=True)
+        cls.mr = metal_roughness_png(os.path.join(SMOKE, "synthetic", "metal_roughness.png"))
         cls.rest_dir = fresh("synthetic", "rest")
         cls.rest = local_gpu.run_export(cls.rig, cls.rest_dir, CONFIG, cls.params, device="CPU", name="figure")
         cls.lib_dir = fresh("synthetic", "library")
         cls.lib = local_gpu.run_export(cls.rig, cls.lib_dir, CONFIG, dict(cls.params, tris=25000), clips=cls.clips,
-                                       items=cls.items, bake_source=cls.high, device="CPU", name="figure")
+                                       items=cls.items, bake_source=cls.high, device="CPU", name="figure",
+                                       metal_roughness=cls.mr)
 
     def test_rest_pose_export(self):
         files = self.rest
@@ -193,8 +307,22 @@ class SyntheticExport(unittest.TestCase):
         mask = np.asarray(Image.open(files["regions_mask"]).convert("RGB"))
         self.assertGreater((mask[..., 0] > 0).sum(), 0)  # skin
         self.assertGreater((mask[..., 1] > 0).sum(), 0)  # hair
+        # Lossless by default: every map PNG, read back from the written GLB.
+        mats = material(files)
+        self.assertEqual(mats["image_format"], "lossless")
+        slots = mats["slots"]
+        for slot in ("base_color", "normal"):
+            self.assertEqual((slots[slot]["present"], slots[slot]["format"], slots[slot]["source"]),
+                             (True, "png", True), slot)
+        self.assertEqual(slots["base_color"]["size"], [256, 256])
+        self.assertEqual(slots["normal"]["size"], [256, 256])
+        for slot in ("metallic_roughness", "occlusion", "emissive", "opacity"):
+            self.assertEqual((slots[slot]["present"], slots[slot]["source"]), (False, False), slot)
+        self.assertEqual(r["material"]["base_color"]["format"], "png")
+        self.assertEqual(r["material"]["normal"]["format"], "png")
         prov = local_gpu.provenance(self.rest_dir, "export")
         self.assertEqual(prov["inputs"][0]["role"], "rig")
+        self.assertEqual(prov["settings"]["image_format"], "lossless")
         self.assertTrue(prov["tools"]["blender_python"]["version"].startswith("bpy "))
 
     def test_library_export(self):
@@ -223,6 +351,17 @@ class SyntheticExport(unittest.TestCase):
         self.assertEqual(mesh["triangles"], mesh["triangles_in"])
         self.assertEqual(r["triangles"], mesh["triangles"])
         self.assertLess(mesh["bake_source_offset_m"], 0.05)
+        # The metallic-roughness map given to the exporter is in the GLB, lossless.
+        slots = mesh["materials"]["slots"]
+        mr = slots["metallic_roughness"]
+        self.assertEqual((mr["present"], mr["format"], mr["size"], mr["source"]), (True, "png", [128, 128], True))
+        self.assertIn("metal_roughness.png", mr["source_from"])
+        self.assertEqual(r["material"]["metallic_roughness"]["format"], "png")
+        self.assertEqual(r["material"]["metallic_roughness"]["size"], [128, 128])
+        self.assertTrue(all(x["format"] == "png" for x in slots.values() if x["present"]), slots)
+        self.assertEqual(mesh["flags"], [])
+        prov = local_gpu.provenance(self.lib_dir, "export")
+        self.assertIn("metal_roughness", [i["role"] for i in prov["inputs"]])
         motion = load(files["motion_report"])
         self.assertEqual(motion["status"], "pending review")
         self.assertEqual(sorted(motion["clips"]), sorted(lib))
@@ -234,6 +373,60 @@ class SyntheticExport(unittest.TestCase):
         self.assertIsNotNone(idle["stretch_p95"])
         self.assertLess(motion["clips"]["walk"]["foot_slide_cm"], 2.0)
         self.assertNotIn("approved", json.dumps(motion).lower())
+
+    def test_compact_writes_jpeg_only_for_the_base_colour(self):
+        out = fresh("synthetic", "compact")
+        files = local_gpu.run_export(self.rig, out, CONFIG, self.params, device="CPU", name="figure",
+                                     metal_roughness=self.mr, image_format="compact")
+        mesh = load(files["mesh_report"])
+        slots = mesh["materials"]["slots"]
+        self.assertEqual(mesh["materials"]["image_format"], "compact")
+        self.assertEqual(slots["base_color"]["format"], "jpeg")
+        self.assertEqual(slots["normal"]["format"], "png")
+        self.assertEqual(slots["metallic_roughness"]["format"], "png")
+        self.assertEqual(mesh["flags"], [])
+        r = check_glb(files["glb"], files["model"])
+        self.assertEqual(r["material"]["base_color"]["format"], "jpeg")
+        self.assertEqual(r["material"]["metallic_roughness"]["format"], "png")
+        self.assertEqual(local_gpu.provenance(out, "export")["settings"]["image_format"], "compact")
+
+    def test_a_source_map_that_cannot_be_carried_is_reported(self):
+        # A metallic-roughness "map" that is no picture: reported and flagged, not dropped silently.
+        out = fresh("synthetic", "broken_map")
+        broken = os.path.join(out, "broken_metal_roughness.png")
+        with open(broken, "wb") as f:
+            f.write(b"not a picture")
+        files = local_gpu.run_export(self.rig, os.path.join(out, "export"), CONFIG, self.params, device="CPU",
+                                     name="figure", metal_roughness=broken)
+        mesh = load(files["mesh_report"])
+        mr = mesh["materials"]["slots"]["metallic_roughness"]
+        self.assertEqual((mr["source"], mr["present"]), (True, False))
+        self.assertTrue(any("broken_metal_roughness.png" in x for x in mesh["materials"]["not_carried"]),
+                        mesh["materials"])
+        self.assertTrue(any(f.startswith("material slot metallic_roughness:") for f in mesh["flags"]), mesh["flags"])
+        self.assertFalse(mesh["valid"])
+
+    def test_the_painted_mesh_maps_are_carried(self):
+        # The painted mesh (the rig's input) has a metallic-roughness map and opacity the rig
+        # lost: the exporter carries them from --material-source.
+        source = os.path.join(SMOKE, "synthetic", "painted_source.glb")
+        script = os.path.join(SMOKE, "synthetic", "painted_source.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(PAINTED_SOURCE)
+        blender([script, self.rig, source, self.mr])
+        out = fresh("synthetic", "carried")
+        files = local_gpu.run_export(self.rig, out, CONFIG, self.params, device="CPU", name="figure",
+                                     material_source=source)
+        mesh = load(files["mesh_report"])
+        slots = mesh["materials"]["slots"]
+        for slot in ("metallic_roughness", "opacity"):
+            self.assertEqual((slots[slot]["present"], slots[slot]["format"], slots[slot]["source"]),
+                             (True, "png", True), slot)
+            self.assertIn("painted_source.glb", slots[slot]["source_from"])
+        self.assertEqual(mesh["flags"], [])
+        r = check_glb(files["glb"], files["model"])
+        self.assertEqual(r["material"]["metallic_roughness"]["format"], "png")
+        self.assertTrue(r["material"]["opacity"])
 
     def test_the_machine_lock_is_held(self):
         self.assertEqual(gpu_lock.holder(MACHINE_LOCK)["what"], "art-forge smoke tests")
@@ -338,6 +531,23 @@ class SyntheticExport(unittest.TestCase):
         v = load(sheet["layout"])["variants"][0]
         self.assertEqual((v["pose_frame"], v["pose_how"]), (1, "pose_frame of the clip"))
 
+    @unittest.skipUnless(HAVE_GODOT, "godot is not configured")
+    def test_the_sheet_says_when_no_variant_passed(self):
+        out = fresh("synthetic", "review_none")
+        files = local_gpu.run_review([self.rest["glb"], "!export failed"], out, CONFIG,
+                                     {"pitch": 60, "directions": 2, "figure_height": 64, "front": False},
+                                     verdicts=[{"class": "rejected", "reasons": ["mesh: 3 vertices have no weight"]},
+                                               {"class": "rejected", "reasons": ["export failed"]}],
+                                     banner="no variant passed: most often the rig (2 of 2)")
+        layout = load(files["layout"])
+        self.assertEqual(layout["banner"], "no variant passed: most often the rig (2 of 2)")
+        self.assertEqual([v["verdict"] for v in layout["variants"]], ["rejected", "rejected"])
+        img = np.asarray(Image.open(files["sheet"]).convert("RGBA"))
+        band = img[:24]  # the banner line, in red over its dark band
+        self.assertGreater(((band[..., 0] > 150) & (band[..., 1] < 90) & (band[..., 3] > 200)).sum(), 50)
+        first = min(c["rect"][1] for c in layout["variants"][0]["cells"])
+        self.assertGreater(first, 2 * 18)  # the figures start below the banner, header and verdict
+
     def test_feet_sliding_in_declared_stance_are_flagged(self):
         lib = load(self.clips)
         bad = json.loads(json.dumps(lib["anims"]["idle"]))
@@ -375,7 +585,11 @@ class SyntheticExport(unittest.TestCase):
     def test_review_sheet_and_provenance(self):
         out = fresh("synthetic", "review")
         camera = {"pitch": 60, "directions": 8, "figure_height": 96, "front": True}
-        files = local_gpu.run_review([self.rest["glb"], self.lib["glb"], "!rig failed"], out, CONFIG, camera)
+        verdicts = [{"class": "acceptable", "reasons": []},
+                    {"class": "rejected", "reasons": ["walk foot_slide_cm 3 over 2.0", "mesh: a | b"]},
+                    {"class": "rejected", "reasons": ["rig failed"]}]
+        files = local_gpu.run_review([self.rest["glb"], self.lib["glb"], "!rig failed"], out, CONFIG, camera,
+                                     verdicts=verdicts)
         img = np.asarray(Image.open(files["sheet"]).convert("RGBA"))
         layout = load(files["layout"])
         self.assertEqual([img.shape[1], img.shape[0]], layout["size"])
@@ -404,6 +618,10 @@ class SyntheticExport(unittest.TestCase):
         self.assertEqual(layout["variants"][0]["pose"], "rest")
         self.assertIn("motion: no report", layout["variants"][0]["flags"])
         self.assertEqual(layout["variants"][1]["flags"], ["no flags"])
+        # Each variant labelled acceptable or rejected with its first reasons; no banner.
+        self.assertEqual([v["verdict"] for v in layout["variants"]], ["acceptable", "rejected", "rejected"])
+        self.assertEqual(layout["variants"][1]["verdict_reasons"], ["walk foot_slide_cm 3 over 2.0", "mesh: a / b"])
+        self.assertIsNone(layout["banner"])
         # Provenance of the smoke run, exported with the factory's --provenance.
         manifest = {}
         for jid, d, step in (("smoke/figure/export", self.lib_dir, "export"), ("smoke/figure/review", out, "review")):
@@ -449,6 +667,15 @@ class RealRig(unittest.TestCase):
             self.assertIn(name, r["bones"])
         self.assertAlmostEqual(r["height"], 1.8, delta=0.01)
         self.assertTrue(r["normal_map"] and r["base_color"])
+        # Lossless technical maps after an independent re-import: the normal map always, the
+        # metallic-roughness map when the rig's material has one.
+        slots = load(files["mesh_report"])["materials"]["slots"]
+        self.assertEqual((slots["normal"]["format"], r["material"]["normal"]["format"]), ("png", "png"))
+        if slots["metallic_roughness"]["source"]:
+            self.assertEqual(slots["metallic_roughness"]["format"], "png")
+            self.assertEqual(r["material"]["metallic_roughness"]["format"], "png")
+        print("\nREAL-RIG MATERIALS", json.dumps({k: (v["format"], v["size"]) for k, v in slots.items()
+                                                  if v["present"]}))
         lib = load(clips)["anims"]
         model = load(files["model"])
         self.assertEqual(len(model["animations"]), len(lib))

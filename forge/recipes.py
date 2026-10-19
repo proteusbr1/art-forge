@@ -27,7 +27,7 @@ params.tris and params.texture set the mesh's face budget and texture size (the 
 
 import os
 
-from . import stages
+from . import acceptance, stages
 from .factory_util import seeds_for
 from .stages import apply_settings
 
@@ -219,7 +219,7 @@ HUMANOID_SIZE = (1024, 1536)
 # Qwen Image Edit 2511 with the Lightning LoRA: 4 steps, CFG 1.
 EDIT_VALUES = {"$NEGATIVE$": "", "$STEPS$": 4, "$CFG$": 1.0, "$LORA$": 1.0}
 REVIEW_DEFAULTS = {"pitch": 60, "directions": 8, "figure_height": 96, "front": True}
-EXPORT_PARAMS = ("height", "head", "hands", "feet", "widen")
+EXPORT_PARAMS = ("height", "head", "hands", "feet", "widen", "image_format")
 # The rig's seed unless the order's rig setting "seed" gives another (the lab's SkinTokens
 # setting: seed 9001, 10 beams).
 RIG_SEED = 9001
@@ -247,9 +247,15 @@ def recipe_humanoid(fam, a, st):
     """A skinned figure with a human skeleton. For each seed of seeds_for(family/piece,
     variants) a chain of jobs <family>/<piece>/v<seed>/<stage>: reference -> pose ->
     cutout -> mesh (game_mesh reduced to params.tris, raw_mesh before the reduction) ->
-    paint (painted_mesh) -> rig -> export (raw_mesh as the bake source) ; then one review
-    sheet of every variant and one final copy of the chosen variant. Stage options and
-    skips come from the piece (forge/stages.py HUMANOID_OPTIONS)."""
+    paint (painted_mesh) -> rig -> export (raw_mesh as the bake source, the painted mesh as
+    the material source and the paint stage's metal_roughness) ; then one review sheet of
+    every variant and one final decision (forge/acceptance.py: the best acceptable variant,
+    else "no_variant_passed"). Stage options and skips come from the piece
+    (forge/stages.py HUMANOID_OPTIONS).
+
+    "reserve" (default 0) more variants, with the next seeds, are expanded with every job
+    held (key "hold") until the first final outcome is "no_variant_passed"; then they run
+    and a second review (review_reserve) and decision (final_reserve) cover every variant."""
     fid, aid = fam["id"], a["id"]
     opts = stages.chosen_options("humanoid", a)
     fields = {stage: stages.option("humanoid", stage, o) for stage, o in opts.items()}
@@ -260,12 +266,18 @@ def recipe_humanoid(fam, a, st):
     text, pose_text, cutout_text = humanoid_texts(st, fam, a)
     keep_texture = opts.get("paint", "trellis2_texture") == "trellis2_texture"
     jobs, variants = [], []
-    for s in seeds_for(fid + "/" + aid, variants_of(fam, a, 4)):
+    n = variants_of(fam, a, 4)
+    final_id = "%s/%s/final" % (fid, aid)
+    hold = {"until": final_id, "outcome": acceptance.NO_VARIANT_PASSED}
+    for i, s in enumerate(seeds_for(fid + "/" + aid, n + reserve_of(a))):
         v = "v%d" % s
         chain = []
+        reserve = i >= n
 
         def add(stage, job):
             job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, stage), "stage": stage, "variant": v})
+            if reserve:
+                job["hold"] = dict(hold)
             job.setdefault("group", fields[stage]["group"])
             if fields[stage].get("ignored"):
                 # Arguments the catalogue knows the tool ignores (the provenance says why).
@@ -340,7 +352,12 @@ def recipe_humanoid(fam, a, st):
                 args.update(beams=10, postprocess=False)
             last, role = add("rig", {"kind": "local_gpu", "tool": "rig", "inputs": {"mesh": painted}, "args": args}), "rig"
         if "export" in opts:
-            ins = {"rig": {"ref": last, "role": "rig"}, "bake_source": {"ref": mesh, "role": "raw_mesh"}}
+            # The painted mesh (the rig's input) is the material source; Hunyuan3D Paint's own
+            # metallic-roughness map goes in losslessly.
+            ins = {"rig": {"ref": last, "role": "rig"}, "bake_source": {"ref": mesh, "role": "raw_mesh"},
+                   "material_source": dict(painted)}
+            if opts.get("paint") == "hunyuan_paint":
+                ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
             for name, key in (("clips", "file"), ("items", "folder")):
                 if inputs.get(name):
                     ins[name] = {key: inputs[name]}
@@ -350,19 +367,45 @@ def recipe_humanoid(fam, a, st):
             args = {"name": aid, "tris": tris, "normal_map": tex}
             args.update({k: v for k, v in (a.get("params") or {}).items() if k in EXPORT_PARAMS})
             last, role = add("export", {"kind": "local_gpu", "tool": "export", "inputs": ins, "args": args}), "glb"
-        variants.append({"variant": v, "job": last, "role": role, "chain": list(chain)})
-    last_ids = [x["job"] for x in variants]
-    # review: one sheet of every variant (failures marked), once none is still running
-    review = {"id": "%s/%s/review" % (fid, aid), "kind": "local_gpu", "tool": "review", "stage": "review",
-              "group": fields["review"]["group"], "partial": True, "from": last_ids, "variants": variants,
-              "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))}
-    if fields["review"].get("ignored"):
-        review["ignored"] = dict(fields["review"]["ignored"])
-    jobs.append(review)
-    # final: the chosen variant copied to final/ (automatic pick provisional, pending review)
-    jobs.append({"id": "%s/%s/final" % (fid, aid), "kind": "final", "group": "local", "partial": True,
-                 "from": last_ids, "variants": variants})
+        entry = {"variant": v, "job": last, "role": role, "chain": list(chain)}
+        if reserve:
+            entry["reserve"] = True
+        variants.append(entry)
+    # The decisions' limits (the order's accept, else the defaults) and the stage held
+    # responsible for the painted maps (the mesh stage's TRELLIS.2 bake when paint is skipped).
+    export_settings = stages.chosen_settings("humanoid", a).get("export", {})
+    decision = {"accept": acceptance.limits(a.get("accept"), export_settings),
+                "paint_stage": "paint" if "paint" in opts else "mesh"}
+    main, extra = variants[:n], variants[n:]
+
+    def decide(suffix, covered, held):
+        # review: one sheet of the variants (failures marked), once none is still running;
+        # final: the best acceptable variant copied to final/ (pending review), else none.
+        ids = [x["job"] for x in covered]
+        review = {"id": "%s/%s/review%s" % (fid, aid, suffix), "kind": "local_gpu", "tool": "review",
+                  "stage": "review", "group": fields["review"]["group"], "partial": True, "even_if_none": True,
+                  "from": ids, "variants": covered, "args": dict(REVIEW_DEFAULTS, **(a.get("review") or {}))}
+        review.update(decision)
+        if fields["review"].get("ignored"):
+            review["ignored"] = dict(fields["review"]["ignored"])
+        final = dict({"id": "%s/%s/final%s" % (fid, aid, suffix), "kind": "final", "group": "local",
+                      "partial": True, "even_if_none": True, "from": ids, "variants": covered,
+                      "reserve": {"variants": [x["variant"] for x in extra],
+                                  "decision": "%s/%s/final_reserve" % (fid, aid) if extra and not held else None}},
+                     **decision)
+        if held:
+            review["hold"], final["hold"] = dict(hold), dict(hold)
+        jobs.extend([review, final])
+    decide("", main, False)
+    if extra:
+        decide("_reserve", variants, True)
     return jobs
+
+
+def reserve_of(a):
+    """Reserve variants of a piece (merged from the family by load_order; default 0)."""
+    r = a.get("reserve", 0)
+    return r if isinstance(r, int) and not isinstance(r, bool) and r > 0 else 0
 
 
 def _alpha_problem(path):
@@ -401,7 +444,7 @@ def check_humanoid(where, piece, problems):
                                 "transparent background (or use cutout qwen_edit_character)" % (where, why))
     bone_map = inputs.get("bone_map")
     if isinstance(bone_map, dict):
-        names = ["v%d" % s for s in seeds_for(where, variants_of({}, piece, 4))]
+        names = ["v%d" % s for s in seeds_for(where, variants_of({}, piece, 4) + reserve_of(piece))]
         for key in bone_map:
             if key not in names and "v" + str(key) not in names:
                 problems.append("%s: inputs.bone_map names %r, which is no variant of this piece (variants: %s)" % (
@@ -470,4 +513,6 @@ def refs_of(job):
         if key in job:
             walk(job[key])
     out += job.get("from", []) + job.get("after", [])
+    if job.get("hold"):
+        out.append(job["hold"]["until"])  # a held job waits for that job's outcome
     return out

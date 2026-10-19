@@ -89,9 +89,17 @@ boxes (`model.json` `classes`).
 
 `<out>/<name>.glb`:
 
-- mesh `body`, skinned, at most 4 influences per vertex, weights normalised; the painted
-  base-colour texture at its original size and a tangent-space normal map (`--tex`), both
-  JPEG;
+- mesh `body`, skinned, at most 4 influences per vertex, weights normalised; its material:
+  the painted base-colour texture at its original size, a tangent-space normal map
+  (`--tex`), and the metallic-roughness map (glTF convention: roughness in green, metallic
+  in blue), opacity (the base colour's alpha), emissive and occlusion maps when their
+  source exists. `--metal-roughness` (the paint stage's map) replaces the rig's
+  metallic-roughness map; a map the rig's material lacks (metallic-roughness, opacity,
+  emissive, occlusion) is taken from `--material-source` (the painted mesh the rig was
+  made from, same UVs); its base colour and normal map are not taken. Images: with
+  `--image-format lossless` (default) every map is PNG; with `compact` the base colour is
+  JPEG at quality 92 (PNG when it carries opacity) and every other map PNG. A normal or
+  metallic-roughness map, an occlusion map or an opacity mask is never JPEG;
 - the armature: mapped bones named as Godot's `SkeletonProfileHumanoid` (`Hips`, `Spine`,
   `Chest`, `UpperChest`, `Neck`, `Head`, `LeftShoulder`, `LeftUpperArm`, `LeftLowerArm`,
   `LeftHand`, `LeftUpperLeg`, `LeftLowerLeg`, `LeftFoot`, `LeftToes` and the `Right`
@@ -113,7 +121,8 @@ boxes (`model.json` `classes`).
 `reference`), `classes` (`{class: {items, sockets, box}}`), `items` (`{name: {class}}`),
 `animations` (per clip: `name`, `kind`, `frames`, `fps`, `loop`, `seconds`, `holds`,
 `class`, `follow`, `hands` (`{side: socket}` put on by IK), `feet`, `stance`, `travel`,
-`source`, `pose_frame`), `mesh` (`triangles`, `reduced`, `normal_map`, `normal_baked`, `report`),
+`source`, `pose_frame`), `mesh` (`triangles`, `reduced`, `normal_map`, `normal_baked`, `report`,
+`image_format`),
 `regions` (`mask`, mean luminance of `skin` and `hair` in the painted texture, pixel
 counts, `glow_hues`), `seconds_export`.
 
@@ -144,15 +153,31 @@ hand and foot on the same side; the upper and lower arm and leg of the two sides
 15 % of each other's length. An invalid map stops the export (exit code 3); a manual file
 stays as written and the validation goes to `bone_map_report.json`.
 
-`<out>/mesh_report.json` (`forge-mesh-report`, `status` `pending review`): `uv_layers`,
-`materials`, `base_color_texture`, `texture_size`, `vertices`, `unweighted_vertices`,
+`<out>/mesh_report.json` (`forge-mesh-report`, `version` 2, `status` `pending review`):
+`uv_layers`, `material_count`, `base_color_texture`, `texture_size`, `vertices`, `unweighted_vertices`,
 `weight_sum_error`, `max_influences`, `influence_limit`, `triangles_in`, `triangles`,
 `triangle_budget`, `reduced` (only when the mesh had more than `--tris` triangles),
 `seam_vertices_merged`, `normal_map`, `normal_baked`, `bake_device`, `bake_source`
 (`--bake-source` file name, `mesh before reduction`, or `null`), `bake_source_rejected`
 (the bake source's name when it was left out), `bake_source_offset_m` (how far its bounds
 are from the game mesh's, after any fit), `bake_source_fit`, `problems` and `flags` (the
-same list), `valid`. No UV layer or no base-colour texture stops the export (exit code 4).
+same list), `valid`, and `materials` (below). No UV layer or no base-colour texture stops
+the export (exit code 4).
+
+`materials` is read from the written GLB itself (its JSON and the bytes of its images,
+`tools/blender/glb_materials.py`), not from Blender's scene: `image_format`, `read_from`,
+`replaced` (maps a better source replaced: the rig's normal map by the exporter's, the
+rig's metallic-roughness map by the paint stage's), `not_carried` (source maps that could
+not be carried, with why) and `slots`: for each of `base_color`, `normal`,
+`metallic_roughness`, `occlusion`, `emissive` and `opacity`, `present`, `format` (`png`,
+`jpeg`, `webp`), `size`, `lossless`, `image` (its name in the GLB), `source` (whether its
+source map existed) and `source_from` (where it came from: the rig's material, the paint
+stage's map, the material source, the exporter); `opacity` also has the material's
+`alpha_mode` and is present when the mode is `BLEND` or `MASK` and the base colour has an
+alpha channel. A mesh flag `material slot <slot>: ...` is raised for a slot whose source
+existed but that is missing or lossy in the GLB (JPEG anywhere with `lossless`, anywhere
+but the base colour with `compact`) and for a source map that could not be carried; `material
+source: ...` when the material source itself could not be read.
 
 The bake source must line up with the game mesh: 90 % of the game mesh's vertices within
 1 % of the height from its surface (`bake_source_fit`: `tolerance_m`,
@@ -197,7 +222,22 @@ per motion measure over its threshold. Nothing on the sheet marks a candidate ap
 
 The layout file: `size`, `status`, and per variant `label`, `failed`, `reason`, `pose`,
 `pose_frame`, `pose_time`, `pose_how`, `flags` and `cells` (`kind`: `small`, `front`, `strip` or `failure`; `yaw`, `clip`,
-`time`, `rect` = `[x, y, width, height]` in pixels).
+`time`, `rect` = `[x, y, width, height]` in pixels), `verdict` (`acceptable`, `rejected`
+or `null`) and `verdict_reasons`; and `banner` (the line over the sheet, or `null`).
+
+The factory's review job passes each variant's acceptance verdict (forge/acceptance.py)
+with its first two reasons: a line under the header, green for `acceptable`, red for
+`rejected`; "pending review" stays. When no variant is acceptable a red banner over the
+sheet says `NO VARIANT PASSED: MOST OFTEN THE <STAGE> (<n> OF <m>)`.
+
+## Pick outcomes
+
+The humanoid's decision (`pick_final.json`, and `pick_final_reserve.json` after reserve
+variants, [order.md](order.md)) has an `outcome`: `picked` (the best acceptable variant,
+copied to `final/`, pending review), `manual` (a person's choice in the file) or
+`no_variant_passed` (no acceptable variant: `chosen` is `null`, `final/` is removed,
+`responsible_stage` and `responsible_counts` say which stage was held responsible for the
+rejected variants; a piece with `reserve` releases its reserve variants).
 
 ## Provenance of the local steps
 
