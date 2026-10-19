@@ -59,10 +59,11 @@ format in [docs/order.md](docs/order.md) and the design in
   `run_export`, `run_review`), their logs and provenance, and `RUNNERS` (the tools of the
   `local_gpu` job kind: `rig`, `export`, `review`).
   `RUNNERS` also has `parts` (articulated), `creature_export` and `sheet` (the layout sheet
-  of both new recipes).
+  of both new recipes), and `item`, `hold` and `item_sheet` (held_item).
 - `forge/tool_specs.py`: the order check of part lists, body plans and motions, by the
   tools' own modules; `forge/sheet_layout.py`: the layout of the articulated and creature
-  review sheet (Godot only renders it).
+  review sheet (Godot only renders it); `forge/item_sheet_layout.py`: the layout of the
+  held-item review sheet.
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
   `humanoid_export.py` (the humanoid export, run by `blender_python`) and
@@ -71,17 +72,23 @@ format in [docs/order.md](docs/order.md) and the design in
   `articulated_export.py` (the parts); `creature_bones.py` (body plans, templates and the
   role map) and `creature_motion.py` (motion kinds, gaits, role-space clips), both without
   `bpy`, and `creature_export.py`; `forge_blender.py` (helpers of the two new exporters).
+  `held_item_geometry.py` (the item frame, class templates, socket proposal and checks, no
+  `bpy`), `held_item_export.py` (the item tool) and `held_item_figure.py` (a reference figure
+  made ready for the humanoid exporter).
   The humanoid's scripts are left unchanged by the new recipes (their hashes are in the
   humanoid jobs' specifications).
 - `tools/review_godot/`: the Godot project of the review sheets (off screen): `main.gd`
-  (humanoid) and `sheet.gd` / `sheet.tscn` (articulated and creature).
+  (humanoid), `sheet.gd` / `sheet.tscn` (articulated and creature) and `item_sheet.gd` /
+  `item_sheet.tscn` (held_item).
 - `tools/rig/skintokens_entry.py`: SkinTokens with a fixed seed, run by its own Python.
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
   orders (`order_generic.json`, `order_humanoid.json`, `order_articulated.json`,
-  `order_creature.json`), `tests/fixtures/humanoid/` the synthetic humanoid (generator,
-  library, item), `tests/fixtures/articulated/` and `tests/fixtures/creature/` the
-  generators of the new tools' Blender fixtures and a role-space library;
+  `order_creature.json`, `order_held_item.json`), `tests/fixtures/humanoid/` the synthetic
+  humanoid (generator, library, item), `tests/fixtures/articulated/` and
+  `tests/fixtures/creature/` the generators of the new tools' Blender fixtures and a
+  role-space library, `tests/fixtures/held_item/` the synthetic carbine's generator and the
+  held items' library;
   `tests/creature_skeletons.py` the synthetic creature skeletons. `tests/test_spec_pins.py`
   pins the specification hashes of the sample humanoid and core orders: a change that
   moves them would redo a running night's jobs.
@@ -184,7 +191,8 @@ as a process. No GPU inference and no visible window; about a minute.
 
 `tests/test_new_tools_smoke.py` does the same for the parts exporter, the creature
 exporter and the layout sheet (fixtures under `local/fixtures/new_tools/`, outputs in
-`local/smoke/new_tools/`).
+`local/smoke/new_tools/`), and `tests/test_held_item_smoke.py` for the item tool, the hold and
+the item sheet (`local/fixtures/held_item/`, `local/smoke/held_item/`).
 `tests/test_local_tools_smoke.py` runs the humanoid exporter and the review sheet when
 `forge.local.json` points to `blender_python` and `godot` (skipped otherwise): the fixture
 GLBs are made once under `local/fixtures/`, outputs go to `local/smoke/`, normal maps are

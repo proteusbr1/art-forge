@@ -4,8 +4,8 @@ A local, game-neutral art factory for ComfyUI. A game hands it an **order**, the
 every art piece it wants. The factory queues everything on a local ComfyUI server and
 local tools, then runs unattended overnight: 2D concepts, illustrations, seamless
 materials, textured 3D objects, rigged and animated humanoid characters (`humanoid`),
-objects of rigid parts on pivots (`articulated`) and skinned creatures with skeletons of
-their own (`creature`).
+objects of rigid parts on pivots (`articulated`), skinned creatures with skeletons of
+their own (`creature`) and objects a figure holds, with their sockets (`held_item`).
 
 **Status: a factory of reproducible candidates for review.** Every output is a candidate
 pending human review, reproducible from its recorded provenance, until a real night
@@ -21,7 +21,9 @@ The `articulated` and `creature` recipes (2026-10-19) are built the same way and
 against the fake server with stand-ins; their tools (the parts exporter, the creature
 exporter with its role map and procedural clips, the layout sheet) are smoke-tested on
 synthetic Blender fixtures only: none of them has run on a generated mesh or a predicted
-creature skeleton yet. See the
+creature skeleton yet. The `held_item` recipe (2026-10-19) is built and tested the same way:
+its item tool, its hold (the humanoid exporter on a reference figure) and its review sheet
+are smoke-tested on a synthetic carbine and the synthetic humanoid only. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).
@@ -38,8 +40,11 @@ creature skeleton yet. See the
   generated, then cut into the order's parts on pivots: one node per part, joints in a
   model file) and `creature` (the humanoid's stages to the rig, then the predicted bones
   mapped onto the order's body plan or skeleton template and the order's motions made in
-  those roles: procedural motion kinds or role-space library clips). A limbless figure is
-  the `figure` recipe's unrigged mesh.
+  those roles: procedural motion kinds or role-space library clips) and `held_item` (a
+  strict side view meshed, put in item space at its real size with sockets from a class
+  template, then held by a reference figure on the review sheet; the picks of a family form
+  a folder a humanoid order takes as its held items). A limbless figure is the `figure`
+  recipe's unrigged mesh.
 - **The order says everything else**, piece by piece: recipe, prompt, number of variants,
   budgets (triangles, texture size), input files, the model of each stage and its named
   settings (steps, seeds, guidance, sampler...). Format: [docs/order.md](docs/order.md).
@@ -64,8 +69,9 @@ local ComfyUI with the custom nodes and models the workflows use (see the table 
    be present).
 2. Write an order (start from [tests/fixtures/order_generic.json](tests/fixtures/order_generic.json),
    or [tests/fixtures/order_humanoid.json](tests/fixtures/order_humanoid.json) for characters,
-   [order_articulated.json](tests/fixtures/order_articulated.json) and
-   [order_creature.json](tests/fixtures/order_creature.json)).
+   [order_articulated.json](tests/fixtures/order_articulated.json),
+   [order_creature.json](tests/fixtures/order_creature.json) and
+   [order_held_item.json](tests/fixtures/order_held_item.json)).
 3. Check it and see what it costs, then start it. The output folder must be outside this
    repository:
 
@@ -102,8 +108,9 @@ only `GET /object_info`). More in [AGENTS.md](AGENTS.md); tests:
 
 Relative paths are relative to the file (the launcher runs a copy of it from its snapshot
 folder and passes `--config-base` with this repository, so they resolve as with `-Check`). The Blender, rig and Godot keys are for the
-humanoid's and creature's rig, export and review stages and the articulated recipe's parts
-and review stages; the other recipes need only ComfyUI. `python -m forge.local_gpu` says
+humanoid's and creature's rig, export and review stages, the articulated recipe's parts
+and review stages and the held-item recipe's item, hold and review stages; the other recipes
+need only ComfyUI. `python -m forge.local_gpu` says
 which local tools of this machine are ready.
 
 ## Models

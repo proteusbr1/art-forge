@@ -4,7 +4,8 @@ One JSON file per order, written by the game's operator (a person or an LLM agen
 from the game's art list) and kept in the game's own repository. Keys are in English. It
 keeps the job-list format of the factory core (`version`, `style`, `families`, `assets`,
 `tasks`) and adds per-piece keys (`recipe`, `variants`, `stages`, `skip`, `params`,
-`inputs`, `review`, `accept`, `reserve`). Families are in priority order; each piece (an entry of a family's
+`inputs`, `review`, `accept`, `reserve`, and the recipe-specific `parts`, `body`, `motions`,
+`item`). Families are in priority order; each piece (an entry of a family's
 `assets`) expands into jobs through its recipe.
 
 Check an order before a night's run:
@@ -37,8 +38,9 @@ Complete samples that pass the check:
 [tests/fixtures/order_generic.json](../tests/fixtures/order_generic.json) (a material, an
 object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures/order_humanoid.json)
 (two humanoids; see [the humanoid recipe](#the-humanoid-recipe)),
-[tests/fixtures/order_articulated.json](../tests/fixtures/order_articulated.json) and
-[tests/fixtures/order_creature.json](../tests/fixtures/order_creature.json).
+[tests/fixtures/order_articulated.json](../tests/fixtures/order_articulated.json),
+[tests/fixtures/order_creature.json](../tests/fixtures/order_creature.json) and
+[tests/fixtures/order_held_item.json](../tests/fixtures/order_held_item.json).
 
 ## Top level
 
@@ -60,6 +62,8 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 | `pose_humanoid`, `cutout_humanoid` | optional: the text of the humanoid's pose edit and of its `qwen_edit_character` cutout (what the edited picture shows) |
 | `view_articulated`, `view_creature` | the view of every articulated or creature reference (required when the order has one) |
 | `cutout_articulated`, `pose_creature`, `cutout_creature` | optional: the text of those edits (else the view) |
+| `view_held_item` | the view of every held item's reference: a strict side view of the whole item, its front to the right (required when the order has one) |
+| `cutout_held_item` | optional: the text of its `qwen_edit_character` cutout (else `view_held_item`) |
 | other `view_*` (for example `view_creature`, `view_icon`) | when a family or piece asks for that `"view"` |
 | `material_top`, `material_front` | materials seen from above (default) or from the front |
 | other `material_*` (for example `material_sky`) | a material whose `"view"` names it |
@@ -85,9 +89,10 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 | `note` | free comment |
 
 A family may also set any per-piece key (`recipe`, `variants`, `stages`, `skip`,
-`params`, `inputs`, `review`) as a default for its pieces. The objects (`stages`,
-`params`, `inputs`, `review`) merge key by key with the piece's own (the piece wins); the
-other keys apply when the piece does not set them.
+`params`, `inputs`, `review`, `accept`, `reserve`, `parts`, `body`, `motions`, `item`) as a
+default for its pieces. The objects (`stages`, `params`, `inputs`, `review`, `accept`, `item`)
+merge key by key with the piece's own (the piece wins); the other keys apply when the piece
+does not set them.
 
 ## Piece
 
@@ -121,10 +126,11 @@ New keys:
 | `params` | piece settings (table below) |
 | `inputs` | files the game supplies `{name: path}`; paths are absolute or relative to the order file |
 | `review` | review-sheet camera, for recipes with a review stage (table below) |
-| `accept` | hard limits a variant must meet to be picked (humanoid, articulated, creature; [below](#acceptance-and-reserve-variants)) |
-| `reserve` | extra variants run only when no variant passed (humanoid, articulated, creature; a whole number of at least 0, default 0) |
+| `accept` | hard limits a variant must meet to be picked (humanoid, articulated, creature, held_item; [below](#acceptance-and-reserve-variants)) |
+| `reserve` | extra variants run only when no variant passed (humanoid, articulated, creature, held_item; a whole number of at least 0, default 0) |
 | `parts` | the parts of an articulated piece ([below](#the-articulated-recipe)) |
 | `body`, `motions` | the body plan or template and the movements of a creature ([below](#the-creature-recipe)) |
+| `item` | the hold class and socket template of a held item ([below](#the-held-item-recipe)) |
 
 `review`, `accept` and `reserve` do not apply to the core recipes. The stage catalogue is `forge/stages.py`.
 
@@ -146,7 +152,8 @@ piece are problems of the order. A `combo` setting (a sampler or scheduler name)
 checked against the server's list by the environment check.
 
 Types: `int` (whole number in its range, sometimes a multiple of a step), `number`,
-`seed` (whole number from 0 to 2^64 - 1), `bool`, `combo` (a name).
+`seed` (whole number from 0 to 2^64 - 1), `bool`, `combo` (a name), `choice` (one of a fixed
+list of names).
 
 The core recipes have one option per stage (the models they always used): stage
 `concept` (option `klein`) in `concept`, `illustration`, `object_3d`, `prop`, `vehicle`
@@ -185,12 +192,12 @@ Without settings a piece's jobs are the same as before (no hash changes).
 
 | Name | Type | Meaning | Read by |
 |---|---|---|---|
-| `tris` | whole number above 0 | triangle (face) budget of a mesh | object_3d, prop, vehicle, figure; humanoid mesh and export (default 25000) |
+| `tris` | whole number above 0 | triangle (face) budget of a mesh | object_3d, prop, vehicle, figure; humanoid mesh and export (default 25000); the mesh of the articulated, creature and held-item recipes |
 | `texture` | whole number above 0 | texture size in pixels | object_3d, prop, vehicle, figure; humanoid paint (512 to 4096, a multiple of 512) or TRELLIS.2 bake (256 to 8192, a multiple of 256), and the export's normal map (default 2048) |
-| `height` | number above 0 | figure height in metres | humanoid export |
+| `height` | number above 0 | figure height in metres | humanoid export; articulated parts, creature export and held item (scales instead of `length`) |
 | `head`, `hands`, `feet`, `widen` | number above 0 | proportions of a figure | humanoid export |
-| `image_format` | `lossless` or `compact` | images of the exported GLB: `lossless` (default) writes every map as PNG; `compact` writes the base colour as JPEG at quality 92 (PNG when it carries opacity) and the technical maps (normal, metallic-roughness, occlusion, emissive) as PNG. A normal or metallic-roughness map or an opacity mask is never JPEG | humanoid export, articulated parts, creature export |
-| `length` | number above 0 | length front to back in metres (scales instead of `height`) | articulated parts, creature export |
+| `image_format` | `lossless` or `compact` | images of the exported GLB: `lossless` (default) writes every map as PNG; `compact` writes the base colour as JPEG at quality 92 (PNG when it carries opacity) and the technical maps (normal, metallic-roughness, occlusion, emissive) as PNG. A normal or metallic-roughness map or an opacity mask is never JPEG | humanoid export, articulated parts, creature export, held item |
+| `length` | number above 0 | length front to back in metres (scales instead of `height`) | articulated parts, creature export, held item (one of `length` and `height` is required) |
 | `front` | `+z`, `-z`, `+x`, `-x` | the glTF axis the generated front points along (default `+z`); the export faces +Z | articulated parts, creature export |
 
 `inputs`:
@@ -201,9 +208,11 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `reference` | humanoid with reference `input_image` | the picture of the figure that replaces the generated reference (every variant starts from it); with pose skipped and cutout `birefnet` it must have a transparent background |
 | `clips` | humanoid export | the motion library (JSON, [conventions.md](conventions.md)); without it the GLB has the rest pose only |
 | `items` | humanoid export | a folder of held items (`<name>.json` sockets next to `<name>.glb`); it enters the hash by the files inside it |
+| `figure` | held item's hold | a rigged humanoid GLB that holds the item on the review sheet ([below](#the-held-item-recipe)) |
+| `clips` | held item's hold | the motion library whose clips holding the item's class the figure plays |
 | `bone_map` | humanoid export | a bone map JSON that replaces the proposed one (roles to the rig's bone names), for every variant; or an object `{"v<seed>": file}` (the key may also be the bare seed) with one map per variant, since the rig predicts a skeleton per variant: a variant it does not name gets the proposal, a key that is no variant of the piece is a problem of the order |
 
-`review` (humanoid only): `pitch` (number, degrees above the horizon, default 60),
+`review` (the recipes with a review stage; the held item adds its own settings): `pitch` (number, degrees above the horizon, default 60),
 `directions` (whole number, default 8), `figure_height` (whole number, pixels of the
 small figure, default 96), `front` (true or false: one large front view too, default
 true).
@@ -230,6 +239,7 @@ Seeds are fixed: derived from `family/piece` (the same order gives the same seed
 | `humanoid` | per variant: reference -> pose -> cutout -> mesh -> paint -> rig -> export; then review and final ([below](#the-humanoid-recipe)) |
 | `articulated` | per variant: reference -> cutout -> mesh -> paint -> parts; then review and final ([below](#the-articulated-recipe)) |
 | `creature` | per variant: reference -> pose -> cutout -> mesh -> paint -> rig -> export; then review and final ([below](#the-creature-recipe)) |
+| `held_item` | per variant: reference -> cutout -> mesh -> paint -> item -> hold; then review and final, which also fills `<family>/items/` ([below](#the-held-item-recipe)) |
 
 Job ids: `family/piece/step`, with steps `concept_s<seed>`, `pick`, `view_90`,
 `view_180`, `view_270` (figure), `view_side`, `view_back`, `view_other_side`, `view_top`
@@ -548,6 +558,95 @@ template, and two blobs of the `figure` recipe).
 Estimates: the parts, the creature export and the layout sheet count as `local_gpu`
 (60 s each), the rig as the humanoid's.
 
+## The held-item recipe
+
+An object a figure holds ([design](superpowers/specs/2026-10-18-art-forge-design.md), section
+7): a weapon, a tool, a lamp. Per variant `v<seed>` (default 4): `reference` -> `cutout` ->
+`mesh` -> `paint` -> `item` -> `hold`; then `review` and `final` (with `accept` and `reserve`).
+
+| Stage | Default | Other options | Skippable | Hands on |
+|---|---|---|---|---|
+| `reference` | `qwen21_base` at 1536x1024, text: `brief`, tier, family style, `global`, `view_held_item` | `qwen21_turbo`, `klein`, `input_image` | no | `rgb`, `mask` |
+| `cutout` | `birefnet` | `qwen_edit_character` (text `cutout_held_item`, else `view_held_item`) | no | `rgba` |
+| `mesh` | `trellis2` | `hunyuan21` | no | `game_mesh`, `raw_mesh` |
+| `paint` | `hunyuan_paint` | `trellis2_texture` | yes | `painted_mesh` |
+| `item` | `item_frame` (Blender: the painted mesh and Hunyuan3D Paint's `metal_roughness`) | | no | `glb`, `sockets`, `model`, `mesh_report`, `frame`, `socket_map` |
+| `hold` | `figure_hold` (Blender: `inputs.figure` made ready, then the humanoid exporter with the item and the class's clips of `inputs.clips`) | | yes | `glb`, `model`, `mesh_report`, `motion_report`, `bone_map`, `clips`, `figure` |
+| `review` | `item_sheet` (Godot) | | no | `sheet`, `layout` |
+
+`style.view_held_item` is required: it must ask for a strict side view of the whole item with
+its front to the right (the item stage's default frame; [conventions.md](conventions.md)).
+
+`params`: `length` or `height` (one of them is required: the real size in metres, the extent
+along the item's front, or its height), `tris`, `texture`, `image_format`. `inputs` (the hold
+stage): `figure` (a rigged humanoid GLB: a rig tool's output, or a figure the humanoid exporter
+wrote; it must have a skin) and `clips` (a motion library, [conventions.md](conventions.md)).
+
+`item` (piece, or family as a default; a family's object merges key by key into its pieces)
+is required:
+
+| Key | Meaning |
+|---|---|
+| `class` | the hold class written in the socket file: a lower-case word of letters and digits (no `_`), the class the motion library's `holds` names (`rifle` for `rifle` and `rifle_aim`) |
+| `template` | the class template of its sockets: `pistol`, `rifle`, `carbine`, `heavy`, `launcher`, `device`, `thrown` or `melee` (default: the class, when it is one of them) |
+| `sockets` | optional `{name: socket or null}`: sockets added to or replacing the template's; `null` drops one (the grip cannot be dropped) |
+| `clips` | optional: the clips of `inputs.clips` the hold stage shows (each must hold the class); default the library's first `idle` and first `aim` clip holding the class, else its first clip holding it |
+| `note` | free comment |
+
+A socket: `at` `[u, v, w]` (normalised item coordinates, each 0 to 1: `u` back to front, `v`
+right to left, `w` bottom to top), `snap` (`section`: the centre of the item's cross-section at
+station `u` among the surface points whose height `w` lies in `band`; `surface`: the closest
+surface point to `at`; `none`: `at` itself; default `section`), `band` (`[low, high]` of `w`,
+default `[0, 1]`), `required` (a variant without it is flagged; default false). The templates
+(`tools/blender/held_item_geometry.py`; `*` required):
+
+| Template | Squared | Sockets |
+|---|---|---|
+| `pistol` | no | `grip`* (u 0.22, band 0 to 0.55), `guard` (u 0.3), `muzzle`* (u 1), `top` (surface) |
+| `rifle`, `carbine` | yes | `butt`* (u 0, band 0.25 to 0.85), `grip`* (u 0.3, band 0 to 0.45), `guard`* (u 0.62, band 0.2 to 0.65), `muzzle`* (u 1), `top` (surface) |
+| `heavy` | yes | `butt` (u 0), `grip`* (u 0.34, band 0 to 0.45), `guard`* (u 0.58, band 0 to 0.6), `muzzle`* (u 1), `top` (surface) |
+| `launcher` | yes | `shoulder`* (surface, u 0.42 on top), `butt` (u 0), `grip`* (u 0.45, band 0 to 0.4), `guard` (u 0.62), `muzzle`* (u 1), `top` (surface) |
+| `device` | no | `grip`* (u 0.35), `muzzle` (u 1), `top` (surface) |
+| `thrown` | no | `grip`* (u 0.5, the centre), `top` (surface) |
+| `melee` | yes | `grip`* (u 0.15), `guard` (u 0.32), `tip`* (u 1) |
+
+Settings: `item_frame` `front` and `top` (one of `+x`, `-x`, `+y`, `-y`, `+z`, `-z`: the glTF
+axes the generated front and top point along; default `+x` and `+y`), `snap` (bool: square a
+long item turned by 8 to 30 degrees; default the template's) and `tolerance_cm` (number 0-20,
+default 1: how far from the surface a socket may lie before it is off the mesh, outside its
+cross-section); `figure_hold` `height` (number 0.3-4, the figure's height in metres, default
+1.8), `hand_socket_cm` and `penetration_cm` (number 0-100, the motion report's thresholds);
+`item_sheet` `side_width` (int 128-2048, default 640) and `hold_height` (int 64-1024, default
+twice `figure_height`). `review` as the humanoid's (`front`: the side view).
+
+`accept`: `mesh_flags` only. The mesh flags and the stage held responsible: `socket <name> is
+missing: ...` and `socket <name> is off the mesh: ...` (`unknown`: the generated shape, the
+template or a manual file), `frame: the longest axis is ...` (`unknown`), and the material
+flags as the other recipes'. The automatic pick among acceptable variants takes the smallest
+fit excess (the mesh report's `fit`; [conventions.md](conventions.md)). A failed hold does not
+reject its item: the sheet shows it.
+
+`final` also copies the picked variant's `<piece>.glb` and `<piece>.json` to
+`<out>/<family>/items/` (and removes them when no variant passed): that folder is a humanoid
+order's `inputs.items`. A held-item piece cannot be named `items`.
+
+A person may correct one variant in `v<seed>_item/frame.json` (`"manual": true`, `front`,
+`top`, and optionally `rotate_deg` `[about x, about y, about z]` in place of the squaring) or
+`v<seed>_item/sockets.json` (`"manual": true`, `sockets` `{name: [x, y, z]}` metres in item
+space; a grip other than `[0, 0, 0]` becomes the origin): the next run redoes that variant's
+item and hold, the sheet and the decision. A figure's bone map is corrected in
+`v<seed>_hold/bone_map.json` as the humanoid's.
+
+The order check refuses: a missing `item`, an unknown class without a template, an invalid
+socket, neither or both of `length` and `height`, the hold stage without `inputs.figure` or
+`inputs.clips`, a figure without a skin, a library without a clip holding the class (or an
+`item.clips` name it lacks or that holds another class), a piece named `items`, `item`
+outside `held_item`, and a style without `view_held_item`. Complete sample:
+[tests/fixtures/order_held_item.json](../tests/fixtures/order_held_item.json) (a carbine and a
+pistol, a lantern held by its handle, a tool case without the hold stage).
+
+Estimates: the item, the hold and the item sheet count as `local_gpu` (60 s each).
+
 ## Raw jobs (`tasks`)
 
 | Key | Meaning |
@@ -673,7 +772,9 @@ In `<out>/<family>/<piece>/`, each file as `<step>_<role>.<ext>`:
   the folder `<step>/`; plus `review/`, `pick_final.json` and `final/`, and with
   `reserve` also `review_reserve/` and `pick_final_reserve.json` (see the humanoid recipe);
 - articulated and creature: as the humanoid, with the folders `v<seed>_parts/` and
-  `v<seed>_export/` ([conventions.md](conventions.md)).
+  `v<seed>_export/` ([conventions.md](conventions.md));
+- held item: as the humanoid, with the folders `v<seed>_item/` and `v<seed>_hold/`, and the
+  family's folder of picked items `<out>/<family>/items/`.
 
 At the root of `<out>`: `manifest.json` (each job with its state, specification hash,
 files and hashes, times, tries and provenance), `state.json` (count per state: `done`,

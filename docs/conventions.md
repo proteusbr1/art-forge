@@ -4,7 +4,7 @@ The formats the `humanoid` tools read and write: the motion library and the held
 socket file a game supplies, and what the exporter (`tools/blender/humanoid_export.py`)
 and the review sheet (`tools/review_godot/`) produce. The runners are in
 `forge/local_gpu.py`; the synthetic examples are in `tests/fixtures/humanoid/`. The
-formats of the `articulated` and `creature` tools follow in
+formats of the `articulated`, `creature` and `held_item` tools follow in
 [their own sections](#articulated-parts).
 
 ## Axes and units
@@ -16,7 +16,9 @@ formats of the `articulated` and `creature` tools follow in
   body heights; side + is the figure's left, the ground is up = 0, the pelvis stands over
   side = forward = 0.
 - **Item space** (held items): metres, +x is the item's front (a muzzle, a blade's tip),
-  +z its top, +y = z x x; the grip socket is the origin.
+  +z its top, +y = z x x (the item's left); the grip socket is the origin. An item GLB holds
+  item space as Blender imports it: item x is glTF +x, item z is glTF +y and item y is
+  glTF -z (the front along glTF +x, the top up).
 
 ## Motion library (`inputs.clips`)
 
@@ -74,7 +76,10 @@ palm.
 
 ## Held-item socket file (`inputs.items`)
 
-A folder with one `<name>.json` per item, next to its `<name>.glb` (item space):
+A folder with one `<name>.json` per item, next to its `<name>.glb` (item space). The
+`held_item` recipe makes such pairs ([below](#held-item)) and gathers each family's picks in
+`<out>/<family>/items/`; a file without both `class` and `sockets` is skipped, and other keys
+are ignored.
 
 | Key | Meaning |
 |---|---|
@@ -257,6 +262,94 @@ the script the step runs), plus `tool_files` (SHA-256 of the scripts it uses), `
 file, SHA-256; a held-item folder lists each socket file), `command`, `exec_seconds` and
 `outputs` (file and SHA-256 per role). Its stdout and stderr are next to it
 (`<step>.stdout.log`, `<step>.stderr.log`).
+
+## Held item
+
+`tools/blender/held_item_export.py` (run by `run_item`, the held-item recipe's `item` stage;
+the geometry in `tools/blender/held_item_geometry.py`, no `bpy`). It reads the painted mesh
+(glTF axes) and writes the item in item space ([above](#axes-and-units)).
+
+The frame: the generated front points along the glTF axis `--front` (default `+x`, the right
+of the recipe's side-view concept) and its top along `--top` (default `+y`). A long, straight
+item (the template's `square`, or `--snap 1`) is turned so that its longest principal axis
+lies on +x, then rolled so that its second axis lies on +z, each only when the turn is 8 to
+30 degrees and the item is elongated (spread ratios 1.3 and 1.2); an item whose longest axis
+is further than 30 degrees from +x with a ratio of at least 1.5 gets the flag `frame: ...`.
+Then it is scaled to `--length` (its extent along +x) or `--height` (along +z), and moved so
+that its grip is the origin.
+
+The sockets: the class template merged with the order's `item.sockets`
+([order.md](order.md#the-held-item-recipe)), placed on surface samples (20 000 points spread
+by area with a fixed seed, plus the vertices): `section` takes the points within 3 % of the
+length of station `u` (6 %, when fewer than 6 points are there) whose height is inside
+`band`, and puts the socket at that station, in the middle of their extent across and up;
+`surface` takes the closest point; `none` the template position. Flags: `socket <name> is
+missing: no geometry at its station` (a required socket), `socket <name> is off the mesh:
+<d> cm from the surface and outside its cross-section` (farther than `--tolerance-cm` from
+every surface point and outside the extent, widened by the tolerance, of the points of its
+own station).
+
+Outputs in `<out>/`:
+
+- `<name>.glb`: the item mesh `<name>`, in item space (front glTF +x, top glTF +y, the grip at
+  the origin), with the painted material (the paint stage's metallic-roughness map linked, as
+  the articulated recipe's), no animation.
+- `<name>.json`: the socket file ([above](#held-item-socket-file-inputsitems)), with
+  `format` `forge-held-item`, `version` 1, `status` `pending review`, `name`, `class`,
+  `sockets` (those found), `box` and `length_m`.
+- `model.json` (`format` `forge-held-item-model`): `name`, `hold_class`, `template`, `axes`,
+  `size_m` (item space), `box_m`, `length_m`, `socket_file`, `socket_records` (per socket:
+  `used` (the position written), `source` (`proposed` or `manual`), `template_at`, `snap`,
+  `required`, `found`, `shift_m` (how far the snap moved it), `points`), `required`, `frame`
+  (`source` `order` or `manual`, `front_given`, `top_given`, `square` (`turned_deg`,
+  `length_deg`, `roll_deg`, `ratio`, `squared`, `flag`), `scale`), `sockets_source`, `fit`,
+  `mesh`, `seconds_export`. It has no top-level `class` and `sockets`, so the humanoid
+  exporter never reads it as a socket file.
+- `frame.json` (`forge-item-frame`): `front`, `top`, `snap`, `turned_deg`, `square`, `scale`,
+  `size_m`, `manual`. With `"manual": true` it is read and kept as written: `front`, `top`,
+  `snap`, and `rotate_deg` `[about x, about y, about z]` (degrees, applied in that order in item
+  axes) instead of the squaring.
+- `sockets.json` (`forge-item-sockets`): `manual`, `source`, `template`, `sockets` (the
+  proposal, item space). With `"manual": true` it is read and kept as written: its `sockets`
+  are the item's, in the item space of the frame in use; a grip other than `[0, 0, 0]` moves
+  the origin there (the item and every socket shift with it).
+- `mesh_report.json` (`forge-mesh-report`, `version` 2, `kind` `held_item`): as the
+  articulated one for the material, plus `triangles`, `triangle_budget`,
+  `seam_vertices_merged`, the socket and frame flags in `flags`, and `fit`:
+  `socket_shift` (the largest `shift_m` of a snapped socket, as a share of the length),
+  `turned_deg` (the squaring turn), `loose_share` (the share of the surface, by area, outside
+  the largest connected piece), `excess` (the sum of each value over its `reference`: 0.15,
+  15, 0.05) and `reference`. The final decision ranks acceptable variants by `excess`; it never
+  rejects one.
+- `item_spec.json` (the order's item object as given), `item.provenance.json`, the logs.
+
+No UV layer or no base-colour texture stops it (exit code 4).
+
+**The hold** (`run_hold`, the `hold` stage): `tools/blender/held_item_figure.py` writes
+`figure_rig.glb` from the order's figure (one armature and its skinned meshes; the bones
+`item` and `item_l`, the `item_ref` mesh, other meshes and every animation removed;
+`figure.json` lists them), then the humanoid exporter runs on it (`--tris` 100000000, so the
+mesh is not reduced and no normal map is baked; `--tex` 256) with `items/` (this item's GLB
+and socket file) and `clips.json` (the order's library with only the shown clips). Its outputs
+are the exporter's ([above](#exporter-outputs)) with the GLB named `figure.glb`, plus
+`clips.json`, `figure.json` and `hold.provenance.json`.
+
+**The item sheet** (`run_item_sheet`, the `item_sheet` option): `forge/item_sheet_layout.py`
+lays it out and `tools/review_godot/item_sheet.gd` (scene `item_sheet.tscn`) renders it. Per
+variant: the header (label, `pending review` or `FAILED: <reason>` with a red cross, class,
+template, length), the verdict line; the item alone in every direction of the review camera
+at the scale of a 1.8 m figure `figure_height` pixels tall; the side view (yaw 0, pitch 0:
+front to the right, top up, `side_width` pixels wide) with a dot and a label on every socket
+and a line of their positions; with the hold stage, the figure holding the item in each of
+its clips (at the clip's `pose_frame`, else frame 0) from yaws 0, 90, 180 and 270, each
+`hold_height` pixels tall for the figure; then one line per mesh flag, per flag of the hold's
+motion report (`hold: <clip> <measure> <value> over <threshold>`, or `hold: FAILED: ...`) and
+the fit line. The figure's cells show a second instance of the item GLB put under the
+figure's `item_ref` node. The layout file `<name>.png.json` (`forge-item-sheet-layout`):
+`size`, `camera`, `banner`, `variants` (label, failed, reason, glb, figure, verdict, flags,
+cells, `sockets` (each mark's pixel position)), `cells` (as the layout sheet's, plus
+`subject`: `item` or `figure`, and `kind`: `small`, `side` or `hold`), `marks` (`at`, `r`,
+`color`, `label`), `texts`, `failures` and `load_failures`.
 
 ## Articulated parts
 

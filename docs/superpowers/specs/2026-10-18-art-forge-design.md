@@ -112,6 +112,7 @@ The recipe is chosen by how the thing moves, not by what it is:
 | `humanoid` | skinned, human skeleton | soldier, humanoid creature, android | **this phase** |
 | `articulated` | rigid parts on pivots | tank, turret, door, ramp, rotor, plated walker | built (2026-10-19) |
 | `creature` | skinned, own skeleton | quadruped, insectoid, serpent, hovering torso | built (2026-10-19) |
+| `held_item` | rigid, held by a figure (item space, sockets) | carbine, pistol, lantern, tool case | built (2026-10-19) |
 
 A new recipe is added only when a way of moving appears that the table does not cover.
 A new model is added as an option of a stage and becomes available to every recipe that
@@ -290,6 +291,117 @@ Decisions, each with its reason:
     delivers it, and the written GLB is checked. A later option, as for the articulated
     recipe.
 
+### The `held_item` recipe (2026-10-19)
+
+An object a figure holds: a carbine, a pistol, a lantern, a tool case. The humanoid exporter
+already puts held items in a figure's hands, but it needs, per item, `<name>.glb` in item
+space and `<name>.json` with its class and sockets (the socket file of `docs/conventions.md`).
+This recipe makes the object and that pair, so a family's folder of picked items can be a
+humanoid order's `inputs.items` as it is.
+
+| Stage | Default | Options | Skippable |
+|---|---|---|---|
+| reference | `qwen21_base`, 1536x1024 (style `view_held_item`: a strict side view, the front to the right) | `qwen21_turbo`, `klein`, `input_image` | no |
+| cutout | `birefnet` | `qwen_edit_character` (text `cutout_held_item`, else the view) | no |
+| mesh | `trellis2` | `hunyuan21` | no |
+| paint | `hunyuan_paint` | `trellis2_texture` | yes |
+| item | `item_frame` (Blender, `tools/blender/held_item_export.py`; the geometry in `held_item_geometry.py`, no `bpy`) | | no |
+| hold | `figure_hold` (the order's reference figure made ready by `held_item_figure.py`, then the humanoid exporter with this item and the class's clips) | | yes |
+| review | `item_sheet` (`forge/item_sheet_layout.py` lays it out, `tools/review_godot/item_sheet.gd` renders it) | | no |
+
+Then `final` (acceptance limit `mesh_flags`; reserve variants), which also copies the picked
+item's `<name>.glb` and `<name>.json` to `<out>/<family>/items/`. Output per variant
+(`v<seed>_item/`): the item GLB in item space, the socket file, `model.json`,
+`mesh_report.json`, `frame.json` and `sockets.json`; and, with the hold stage,
+`v<seed>_hold/` (the reference figure holding the item, its reports).
+
+The order gives per piece (or family) `item`: `class` (the hold class written in the socket
+file, the word the motion library's `holds` names), `template` (a class template; default the
+class), `sockets` (sockets added to or replacing the template's, or `null` to drop one) and
+`clips` (the library clips the hold stage shows); `params.length` or `params.height` (the
+real size, required); and for the hold stage `inputs.figure` (a rigged humanoid GLB) and
+`inputs.clips` (the motion library).
+
+Decisions, each with its reason:
+
+1. **The rigid object chain of the other variant recipes** (reference, cutout, mesh, paint, as
+   the articulated recipe's, with every variant end to end and the decision at the end), not
+   `object_3d`'s concept seeds with an early pick. Reason: the factory's rule is that the
+   human pick happens on the finished product; an item's quality shows only once it is
+   meshed, framed and in a hand.
+2. **The concept is a strict side view with the front to the right** (the order's
+   `view_held_item` says so; the order check requires it), so the default frame is fixed by
+   the recipe: the generated front points along glTF +x and its top along glTF +y. Reason:
+   a side view shows an item's whole profile (grip, magazine, barrel), and a fixed view
+   gives the mesh a known orientation without a search. How the mesh generators orient a
+   side view has not been measured on the GPU; the stage settings `front` and `top` (any
+   glTF axis) change the default for a whole piece, and a person corrects one variant in its
+   `frame.json` (`"manual": true`, with `front`, `top` and optionally `rotate_deg`), which
+   redoes only that variant's item and hold, as the articulated recipe's frame file.
+3. **Squared to its principal axes only when long and straight and clearly turned.** A class
+   template marks whether its items are long and straight (rifle, carbine, heavy weapon,
+   launcher, melee: yes; pistol, device, thrown object: no). Such an item is turned so its
+   longest principal axis lies on +x, then rolled so its second axis lies on +z, only when the
+   turn is between 8 and 30 degrees and the item is elongated. Reason: the principal axes of
+   a gun with a dropped stock, a grip and a magazine are not its bore's: about 5 degrees off
+   on the tests' synthetic carbine, so a mesh that came out straight must not be tilted by
+   them; a pistol's grip pulls them much further. An elongated item whose longest axis is more
+   than 30 degrees from +x is flagged (`frame: ...`), not turned: the concept was probably not
+   a side view.
+4. **Real size from the order** (`params.length`: the extent along the item's front axis, or
+   `params.height`), required, because a generated mesh has no unit. The socket file's
+   `length_m` is the largest extent and its `box` the item's box in item space.
+5. **Sockets from class templates, snapped to the mesh.** A template gives each socket a
+   position in normalised item coordinates (`u` back to front, `v` right to left, `w` bottom to
+   top) and a snap: `section` (the centre of the cross-section at station `u` among the surface
+   points whose height lies in the socket's `band`: a pistol grip under the receiver, a
+   foregrip under the barrel), `surface` (the closest surface point: a shoulder rest, a top
+   rail) or `none`. Shipped templates: `pistol`, `rifle` and `carbine` (the same), `heavy`,
+   `launcher`, `device`, `thrown`, `melee`; the order adds or replaces sockets in `item.sockets`.
+   Reason: the hand positions of an item class are stable proportions of the item, while the
+   exact place of a grip varies per variant; the section finds it whatever the mesh density.
+   The grip is the origin (the convention of the humanoid exporter). A person corrects one
+   variant's sockets in its `sockets.json` (`"manual": true`, positions in item space; a grip
+   other than the origin moves the origin there), which redoes only that variant.
+6. **Structural flags gate, fit measures only rank.** Mesh flags (as the articulated recipe's
+   material flags), a required socket that is missing (no geometry at its station), a socket
+   off the mesh (farther than `tolerance_cm` from the surface and outside the extent of its own
+   station's cross-section) and the frame flag reject a variant by default (`mesh_flags` 0).
+   Among the acceptable variants the final pick takes the smallest fit excess: the largest
+   move of a snapped socket from its template position (share of the length), the squaring
+   turn and the share of the surface outside the largest connected piece, each divided by a
+   reference value (0.15, 15 degrees, 0.05) and summed. Reason: the factory gates only on
+   defects it can name; the fit measures say how well a variant matches its class's layout,
+   which is a ranking, and their reference values have not been measured on generated meshes.
+7. **The hold reuses the humanoid exporter** on the order's reference figure, with a folder of
+   this one item and a library of the class's clips (`item.clips`, else the library's first
+   `idle` and first `aim` clip holding the class), at the figure's full mesh (no reduction, so
+   no normal-map bake). The figure may be a rig tool's output or a figure the humanoid
+   exporter already wrote: `held_item_figure.py` removes the item bones, the `item_ref` mesh
+   and the animations first. Reason: the request was one placement code, not two; the sheet
+   shows exactly what a humanoid night will do with the item. The humanoid exporter is used
+   unchanged (its hash is in the humanoid jobs' specifications).
+8. **The hold is a review aid, not a property of the item.** It is a stage of its own after
+   the item, outside the variant's decision: a failed hold (for example a figure whose bone
+   map is invalid) shows on the sheet and does not reject the item; its motion report's flags
+   are lines on the sheet. The review waits for the holds and its specification covers their
+   files; the final decision does not wait for them. Reason: the same figure fails the same
+   way for every variant, which says nothing about the items.
+9. **One sheet of its own.** Per variant: the item alone from every direction of the review
+   camera at the scale of a 1.8 m figure `figure_height` pixels tall (as in the game), a large
+   side view (front to the right) with every socket marked and labelled and a line of their
+   positions, the figure holding the item in each hold clip from four directions, the flag
+   lines and the fit line. Laid out by `forge/item_sheet_layout.py` (tested without Godot) and
+   rendered by `item_sheet.gd`, which puts a second instance of the item GLB under the
+   figure's `item_ref` node. Reason: the articulated and creature sheet's files are in their
+   jobs' specifications, so they are left as they are.
+10. **The family folder of picked items** (`<out>/<family>/items/`, the picked variant's
+    `<name>.glb` and `<name>.json`, written by `final` and removed when no variant passed).
+    Reason: a humanoid order's `inputs.items` is a folder of such pairs; the whole family's
+    picks are one folder. A piece cannot be named `items`. The variant folders and `final/`
+    hold other JSON files too; none of them has both `class` and `sockets`, so the humanoid
+    exporter would skip them in any case.
+
 ### Limbless figures
 
 A shapeless figure that floats or crawls (a blob) needs no recipe of its own: the `figure`
@@ -348,6 +460,14 @@ repository.
   exporter, the creature exporter and the layout sheet on synthetic Blender fixtures. The
   specification hashes of the sample humanoid and core orders are pinned
   (`tests/test_spec_pins.py`). Nothing of these recipes has run on generated meshes.
+- The held-item recipe (2026-10-19): unit tests of the frame, the squaring, the real size,
+  the socket templates and their snaps, the socket checks and a manual sockets file on
+  synthetic meshes (a carbine, a pistol, a thrown object); recipe expansion and order checks;
+  the sheet's layout; a night with the fake server and stand-ins (the pick by fit, the family
+  folder, a failed hold that does not reject its item, manual files redoing one variant);
+  `-Check` and `-Estimate` on its sample order; and smoke tests of the item tool, the hold
+  (on the synthetic humanoid and on a figure the exporter wrote) and the item sheet on
+  synthetic Blender fixtures. Nothing of it has run on a generated mesh.
 
 ## 11. Who writes and runs orders
 
@@ -367,7 +487,10 @@ recipe before spending a night on a full art list.
    Lite) and `bvh` for the humanoid and the creature, and `library` for the humanoid. The
    creature already reads the list with `procedural` and `library`.
 5. Held items with sockets for creatures beyond the item bones of `body.holds`.
-6. Publishing the research behind the stage defaults (which model won each stage, steps,
+6. `held_item` (built 2026-10-19): its first real night, which will say how the mesh
+   generators orient a side view, whether the templates' stations fit generated items and
+   what reference values the fit measures should have.
+7. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
 
 ## 13. Next phase: the `motions` list in the order
