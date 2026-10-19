@@ -1,0 +1,46 @@
+{
+ "version": 1,
+ "note": "Sample held-item order: a carbine and a pistol with the shipped class templates, a lantern held by its handle and a tool case without the hold stage. inputs.figure is the synthetic rigged humanoid of tests/fixtures/humanoid, made under local/fixtures/humanoid/ by the smoke tests (or: <blender_python> tests/fixtures/humanoid/make_fixtures.py --glbs local/fixtures/humanoid); the library is tests/fixtures/held_item/library.json.",
+ "style": {
+  "global": "Clean studio product render of a single object, physically based materials, crisp detail, high resolution.",
+  "view_held_item": "A strict side view of the whole object, seen exactly from its right side at eye level, its front pointing to the right edge of the picture and its top up, the whole object in frame with a generous margin, plain neutral grey background, even soft light.",
+  "tier_basic": "Practical everyday materials: painted steel, rubber grips, worn edges."
+ },
+ "families": [
+  {
+   "id": "firearms",
+   "recipe": "held_item",
+   "variants": 3,
+   "reserve": 1,
+   "style": "A sturdy tool made for field work, plain matte colours.",
+   "params": {"tris": 12000, "texture": 1024},
+   "inputs": {"figure": "../../local/fixtures/humanoid/humanoid.glb", "clips": "held_item/library.json"},
+   "review": {"pitch": 30, "directions": 8, "figure_height": 96, "front": true},
+   "assets": [
+    {"id": "carbine", "tier": "basic", "brief": "A compact carbine with a short barrel, a folding stock, a pistol grip, a curved magazine and a ribbed handguard.",
+     "item": {"class": "carbine"}, "params": {"length": 0.85}},
+    {"id": "pistol", "tier": "basic", "brief": "A plain service pistol with a squared slide and a textured grip.",
+     "item": {"class": "pistol"}, "params": {"length": 0.2},
+     "stages": {"item": {"settings": {"tolerance_cm": 1.5}}}}
+   ]
+  },
+  {
+   "id": "gear",
+   "recipe": "held_item",
+   "variants": 2,
+   "params": {"tris": 8000, "texture": 1024},
+   "assets": [
+    {"id": "lantern", "tier": "basic", "brief": "A camping lantern with a glass globe, a metal cage and a loop handle on top.",
+     "item": {"class": "lantern", "template": "device",
+              "sockets": {"grip": {"at": [0.5, 0.5, 0.95], "snap": "section", "band": [0.85, 1.0], "required": true},
+                          "muzzle": null}},
+     "params": {"height": 0.3},
+     "inputs": {"figure": "../../local/fixtures/humanoid/humanoid.glb", "clips": "held_item/library.json"}},
+    {"id": "tool_case", "tier": "basic", "brief": "A hard tool case with a carrying handle on its top edge and two latches.",
+     "item": {"class": "case", "template": "thrown",
+              "sockets": {"grip": {"at": [0.5, 0.5, 0.95], "snap": "section", "band": [0.85, 1.0], "required": true}}},
+     "params": {"length": 0.45}, "skip": ["hold"]}
+   ]
+  }
+ ]
+}

@@ -96,6 +96,8 @@ class ResponsibleStageTest(unittest.TestCase):
         ("the mesh has 2 materials, 1 is expected", "unknown"),
         ("part turret is empty: its region holds no geometry", "unknown"),
         ("part turret has 3 open edges after its cut was closed", "parts"),
+        ("socket guard is off the mesh: 8.2 cm from the surface and outside its cross-section", "unknown"),
+        ("frame: the longest axis is 85 degrees from the front axis (not squared): ...", "unknown"),
         ("something new", "unknown"),
     )
 
