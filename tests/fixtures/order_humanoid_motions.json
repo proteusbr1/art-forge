@@ -1,0 +1,35 @@
+{
+ "version": 1,
+ "note": "Generic sample order of the humanoid motions list: a crew family whose motions are a default for its pieces (clips of the factory's starter library, one clip of the order's own library, a text motion made by HY-Motion Lite and a captured walk); one piece adds a motion of its own.",
+ "style": {
+  "global": "Original character design, clean readable shapes, realistic proportions, high detail.",
+  "view_humanoid": "Full body figure standing in an A-pose, arms angled down and out from the body, open empty hands held apart from the hips, the whole figure in frame from head to feet, plain neutral grey background, even soft light."
+ },
+ "families": [
+  {"id": "crew", "recipe": "humanoid", "variants": 4,
+   "style": "A member of a small station crew in practical work clothing of muted colours.",
+   "params": {"tris": 25000, "texture": 2048, "height": 1.8},
+   "inputs": {"clips": "humanoid/library.json", "items": "humanoid/items"},
+   "review": {"pitch": 60, "directions": 8, "figure_height": 96, "front": true},
+   "motions": [
+    {"name": "idle_none", "source": "library", "library": {"file": "@starter"}},
+    {"name": "walk_none", "source": "library", "library": {"file": "@starter"}},
+    {"name": "idle_box", "source": "library", "library": {"clip": "idle"}, "holds": "box"},
+    {"name": "wave", "source": "text", "prompt": "A person stands and waves the right hand above the head.",
+     "frames": 48, "fps": 24, "loop": false, "kind": "gesture", "settings": {"steps": 50}},
+    {"name": "walk_captured", "source": "bvh", "file": "motion/walk.bvh", "frames": 24, "fps": 24, "loop": true,
+     "kind": "walk", "settings": {"range": [0, 89]}}
+   ],
+   "assets": [
+    {"id": "technician", "brief": "A technician in grey work overalls with rolled sleeves and sturdy boots."},
+    {"id": "guard", "brief": "A guard in a padded dark blue vest over a long-sleeved shirt, cargo trousers and boots.",
+     "motions": [
+      {"name": "idle_none", "source": "library", "library": {"file": "@starter"}},
+      {"name": "walk_rifle", "source": "library", "library": {"file": "@starter"}, "holds": "rifle"},
+      {"name": "wave", "source": "text", "prompt": "A person stands and waves the right hand above the head.",
+       "frames": 48, "fps": 24, "loop": false, "kind": "gesture", "settings": {"steps": 50}}
+     ]}
+   ]}
+ ],
+ "tasks": []
+}

@@ -254,6 +254,14 @@ class MotionJobsTest(Base):
         self.assertTrue(any("has no clip nope" in p for p in check_order(self.load(wrong), self.config)))
         self.assertIn("hymotion_python", stages.tools_needed("humanoid", self.load(order)["families"][0]["assets"][0]))
 
+    def test_the_sample_order(self):
+        from forge.order import check_order, load_order
+        order = load_order(os.path.join(HERE, "fixtures", "order_humanoid_motions.json"))
+        self.assertEqual(check_order(order, self.config), [])
+        jobs = [j["id"] for j in expand(order)]
+        self.assertEqual(len(jobs), 64)
+        self.assertEqual(sorted(j for j in jobs if "/_motions/" in j), ["crew/_motions/walk_captured", "crew/_motions/wave"])
+
     def test_the_environment_check_imports_hymotion(self):
         from forge.readiness import check_environment
         env = check_environment(self.load(self.two_pieces()), self.config, {})
