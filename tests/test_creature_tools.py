@@ -375,6 +375,12 @@ class Motions(unittest.TestCase):
             self.assertLess(knee[1], hip[1] + 0.05)  # the knee forward of the hip (forward is -Y)
             self.assertGreater(ankle[1], knee[1])     # the ankle behind the knee
 
+    def test_committed_library_matches_its_generator(self):
+        import subprocess
+        gen = os.path.join(HERE, "fixtures", "creature", "make_clips.py")
+        self.assertEqual(subprocess.run([sys.executable, gen, "--check"]).returncode, 0,
+                         "tests/fixtures/creature/clips.json is out of date: run make_clips.py")
+
     def test_rotation_helpers(self):
         for axis in ([1, 0, 0], [0, 1, 0], [0.3, -0.5, 0.8]):
             m = cm.rot(axis, 37.0)

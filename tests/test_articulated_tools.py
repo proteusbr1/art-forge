@@ -133,6 +133,14 @@ class Regions(unittest.TestCase):
         fixed = ap.joint_record({"id": "m", "parent": "hull"}, ap.joint_of({"id": "m"}), np.zeros(3), np.zeros(3))
         self.assertIsNone(fixed["axis"])
 
+    def test_front_turns_face_gltf_plus_z(self):
+        # glTF axis -> Blender vector; the turn about Blender z must bring it to -Y (glTF +Z).
+        blender = {"+z": (0, -1), "-z": (0, 1), "+x": (1, 0), "-x": (-1, 0)}
+        for front, (x, y) in blender.items():
+            t = math.radians(ap.FRONT_YAW[front])
+            turned = (x * math.cos(t) - y * math.sin(t), x * math.sin(t) + y * math.cos(t))
+            self.assertTrue(np.allclose(turned, (0, -1), atol=1e-9), front)
+
     def test_sweeps_and_squaring(self):
         self.assertEqual(ap.sweep_values([-8, 20], 5), [-8.0, -1.0, 6.0, 13.0, 20.0])
         self.assertEqual(ap.sweep_values([0, 1], 1), [1.0])
