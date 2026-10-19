@@ -9,11 +9,15 @@ box and an 8-frame walk.
                                             triangles), humanoid_high.glb (the same figure,
                                             unrigged, finer and with surface relief) and
                                             box.glb
-  <blender python> make_fixtures.py --figure FILE [--yaw DEG] [--skew]
+  <blender python> make_fixtures.py --figure FILE [--yaw DEG] [--skew] [--feet-yaw DEG]
+                                    [--twist DEG]
                                             only the rigged figure, turned by DEG about the
                                             vertical (90: it faces +x) and, with --skew, its
                                             bones' tails off their children (as a rig tool
-                                            whose joints carry their own orientations)
+                                            whose joints carry their own orientations);
+                                            --feet-yaw turns each foot about its ankle and
+                                            --twist the arms (the shoulders' line) about the
+                                            spine, before --yaw (degrees, -y towards +x)
 
 library.json and items/box.json next to this file are its --data output (committed); the
 GLBs are made on the first test run, under local/.
@@ -137,6 +141,33 @@ def body_to_world(p):
     return (p[0], -p[1], p[2])
 
 
+# How build_figure changes the figure's stance (degrees about the vertical, world -y towards +x):
+# each foot about its ankle, and the arms with their fingers about the spine.
+STANCE = {"feet_yaw": 0.0, "twist": 0.0}
+FEET = ("bone_16", "bone_17", "bone_20", "bone_21")
+
+
+def _turn_body(p, deg, about=(0.0, 0.0)):
+    """A body point turned about the vertical through `about` (body x, y) by deg in the
+    world (body y is world -y, so the body turns the other way)."""
+    c, s = math.cos(math.radians(-deg)), math.sin(math.radians(-deg))
+    x, y = p[0] - about[0], p[1] - about[1]
+    return (about[0] + c * x - s * y, about[1] + s * x + c * y, p[2])
+
+
+def _stance(bones):
+    out = []
+    for name, parent, h, t, r in bones:
+        k = int(name.split("_")[1])
+        if STANCE["feet_yaw"] and name in FEET:
+            ankle = REST[("l" if k < 18 else "r") + "_ankle"]
+            h, t = (_turn_body(x, STANCE["feet_yaw"], ankle[:2]) for x in (h, t))
+        if STANCE["twist"] and (6 <= k <= 13 or k >= 22):
+            h, t = (_turn_body(x, STANCE["twist"]) for x in (h, t))
+        out.append((name, parent, h, t, r))
+    return out
+
+
 # name, parent, head joint or point, tail joint or point, radius of its part (0: no part)
 def skeleton():
     J = REST
@@ -183,7 +214,7 @@ def skeleton():
                 n += 1
                 bones.append((name, parent, pts[k], pts[k + 1], 0.0))
                 parent = name
-    return bones
+    return _stance(bones)
 
 
 def _parts(fine):
@@ -291,10 +322,12 @@ def build_glbs(folder):
     _rest_of_glbs(folder, bones, body)
 
 
-def build_figure(path, yaw=0.0, skew=False):
+def build_figure(path, yaw=0.0, skew=False, feet_yaw=0.0, twist=0.0):
     """The rigged figure alone, turned by yaw degrees about the vertical; skew: every bone's
-    tail turned 60 degrees off its child (about a sideways axis, alternating), the length kept."""
+    tail turned 60 degrees off its child (about a sideways axis, alternating), the length kept;
+    feet_yaw and twist: STANCE."""
     import bpy
+    STANCE.update(feet_yaw=feet_yaw, twist=twist)
     from mathutils import Matrix, Vector
     path = os.path.abspath(path)
     folder = os.path.dirname(path)
@@ -320,7 +353,7 @@ def build_figure(path, yaw=0.0, skew=False):
         bpy.context.view_layer.objects.active = arm
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     _export(path, [arm, body])
-    print("FIGURE", path, "yaw", yaw, "skew", skew, flush=True)
+    print("FIGURE", path, "yaw", yaw, "skew", skew, "feet_yaw", feet_yaw, "twist", twist, flush=True)
 
 
 def _rigged(folder):
@@ -394,13 +427,15 @@ def main(argv):
     ap.add_argument("--figure", default="")
     ap.add_argument("--yaw", type=float, default=0.0)
     ap.add_argument("--skew", action="store_true")
+    ap.add_argument("--feet-yaw", type=float, default=0.0)
+    ap.add_argument("--twist", type=float, default=0.0)
     a = ap.parse_args(argv)
     if a.data:
         write_data(a.data)
     if a.glbs:
         build_glbs(a.glbs)
     if a.figure:
-        build_figure(a.figure, a.yaw, a.skew)
+        build_figure(a.figure, a.yaw, a.skew, a.feet_yaw, a.twist)
     return 0
 
 

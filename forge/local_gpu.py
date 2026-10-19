@@ -36,10 +36,9 @@ REVIEW_PROJECT = os.path.join(TOOLS, "review_godot")
 REVIEW_FILES = ("project.godot", "main.tscn", "main.gd")
 SKINTOKENS_ENTRY = os.path.join(TOOLS, "rig", "skintokens_entry.py")
 # A humanoid that wears an approved body (inputs.body): the conform, then the exporter run in
-# the body's frame (forge/body.py compares the result's skeleton with the body's).
+# the body's frame (--body-frame; forge/body.py compares the result's skeleton with the body's).
 CONFORM_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_conform.py")
-BODY_EXPORT_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_body_export.py")
-BODY_FILES = [BODY_EXPORT_SCRIPT, CONFORM_SCRIPT, os.path.join(TOOLS, "blender", "humanoid_fit.py"),
+BODY_FILES = [CONFORM_SCRIPT, os.path.join(TOOLS, "blender", "humanoid_fit.py"),
               os.path.join(TOOLS, "blender", "forge_blender.py"), os.path.join(ROOT, "forge", "body.py")]
 
 PARTS_SCRIPT = os.path.join(TOOLS, "blender", "articulated_export.py")
@@ -434,8 +433,8 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
     material_source: the painted mesh the rig was made from (maps the rig's material lacks
     are carried from it); image_format: "lossless" (default: every map PNG) or "compact"
     (base colour JPEG at quality 92, the technical maps PNG).
-    frame: a body frame file (humanoid_conform.py's frame.json): the exporter runs through
-    humanoid_body_export.py, in the body's frame; after(files, record): called before the
+    frame: a body frame file (humanoid_conform.py's frame.json): the exporter runs in the
+    body's frame (--body-frame); after(files, record): called before the
     provenance is written (it may add files and edit the outputs).
     Returns {glb, model, regions_mask, bone_map, mesh_report[, motion_report]}."""
     _require(config, "export")
@@ -443,10 +442,9 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
     out = os.path.abspath(out)
     os.makedirs(out, exist_ok=True)
     device = (device or config.get("bake_device") or "GPU").upper()
+    cmd = [config["blender_python"], EXPORT_SCRIPT]
     if frame:
-        cmd = [config["blender_python"], BODY_EXPORT_SCRIPT, "--frame", os.path.abspath(frame)]
-    else:
-        cmd = [config["blender_python"], EXPORT_SCRIPT]
+        cmd += ["--body-frame", os.path.abspath(frame)]
     cmd += ["--rig", os.path.abspath(rig), "--out", out, "--name", name, "--device", device]
     tex = params.pop("normal_map", None) or params.get("texture") or 2048
     cmd += ["--tex", str(int(tex))]
@@ -504,7 +502,7 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
         raise ToolError("export did not write %s, see %s" % (", ".join(missing), os.path.join(out, "export.stdout.log")))
     version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
     tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
-    scripts = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT] + ([BODY_EXPORT_SCRIPT] if frame else [])
+    scripts = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT]
     rec = _record(EXPORT_SCRIPT, scripts, tools, settings, inputs)
     rec["exec_seconds"] = seconds
     rec["command"] = cmd
@@ -530,7 +528,7 @@ def run_body_export(rig, out, config, body, body_model=None, params=None, clips=
        <out>/conform/bone_map.json, else the proposal; an invalid map stops it, exit 3) and
        writes <out>/conform_report.json; conform_thresholds: its flag thresholds by name
        (CONFORM_THRESHOLDS);
-    2. run_export on the conformed rig, through humanoid_body_export.py: the body's frame,
+    2. run_export on the conformed rig in the body's frame (--body-frame): the body's floor,
        height and proportions (params height, head, hands, feet and widen are the body's),
        the body's roles as the bone map, the conformed raw mesh as the bake source;
     3. the exported skeleton compared with the body's (forge/body.py): model.json gets "body"

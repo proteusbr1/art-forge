@@ -4,7 +4,8 @@ files themselves (no bpy).
 
 An approved body is a GLB the humanoid exporter wrote (a variant's export or a piece's final
 pick) with its model.json next to it. Every variant of a piece that wears it is conformed to
-it and exported on its skeleton (tools/blender/humanoid_conform.py, humanoid_body_export.py).
+it and exported on its skeleton (tools/blender/humanoid_conform.py, then humanoid_export.py with
+--body-frame).
 """
 
 import json
@@ -180,8 +181,10 @@ def compare_animations(a, b):
 
 
 # An approved body must face glTF +z: its shoulders' and hips' lines across within this many
-# degrees of +x (the exporter turns a figure by the axis its feet point to, so a figure that
-# stood turned between two axes stays turned, and every variant would be conformed to it).
+# degrees of +x (the exporter turned a figure by the axis its feet point to until 2026-10-19,
+# so a figure that stood turned between two axes stayed turned, and every variant would be
+# conformed to it; it now squares the figure by its hips and shoulders, but an export made
+# before, or a GLB written by hand, may still stand turned).
 TURN_LIMIT_DEG = 15.0
 
 

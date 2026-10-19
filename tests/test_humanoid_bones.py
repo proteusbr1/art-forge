@@ -2,6 +2,7 @@
 part without bpy) and the bone map's validation."""
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -239,6 +240,136 @@ class BoneRoles(unittest.TestCase):
         self.assertEqual(ch["head"], ["bone_4", "bone_5"])
         self.assertEqual(ch["arms"]["left"], ["bone_6", "bone_7", "bone_8", "bone_9"])
         self.assertEqual(ch["legs"]["right"], ["bone_18", "bone_19", "bone_20", "bone_21"])
+
+
+def turned(tree, deg, bones=None, about=None):
+    """The tree with the points of `bones` (every bone when None) turned by deg about the
+    vertical through `about` (x, y; the origin when None). Positive turns -y towards +x."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    ox, oy = about or (0.0, 0.0)
+
+    def t(p):
+        x, y = p[0] - ox, p[1] - oy
+        return (ox + c * x - s * y, oy + s * x + c * y, p[2])
+    return {n: ({"parent": b["parent"], "head": t(b["head"]), "tail": t(b["tail"])}
+                if bones is None or n in bones else dict(b)) for n, b in tree.items()}
+
+
+def feet_turned(tree, deg, roles):
+    """Each foot and its toes turned by deg about the vertical through its ankle."""
+    for s in hb.SIDES:
+        ankle = tree[roles[s + "_foot"]]["head"]
+        tree = turned(tree, deg, {roles[s + "_foot"], roles[s + "_toes"]}, (ankle[0], ankle[1]))
+    return tree
+
+
+# The bones above the top of the spine in humanoid(fingers=5): the chest's last bone, neck, head,
+# arms and fingers (bone_22 on).
+UPPER = {"bone_%d" % k for k in list(range(3, 14)) + list(range(22, 52))}
+
+
+class BodyFacing(unittest.TestCase):
+    """The front of a standing figure from its hips' and shoulders' lines, the feet a tie-breaker
+    (humanoid_bones.body_facing): a generated figure may stand turned between two axes."""
+
+    def facing(self, tree, roles=None):
+        roles = roles or hb.propose_bone_map(tree)["roles"]
+        return hb.body_facing(tree, roles)
+
+    def test_a_figure_facing_front(self):
+        f = self.facing(humanoid(fingers=5))
+        self.assertAlmostEqual(f["turn_deg"], 0.0, places=6)
+        self.assertEqual(f["source"], "hips and shoulders")
+        self.assertEqual(f["problems"], [])
+        self.assertAlmostEqual(f["front"][1], -1.0, places=9)
+
+    def test_a_figure_turned_between_two_axes(self):
+        # The bone map's front snaps to an axis; the body's does not (the first real night's
+        # figures stood turned 22 to 40 degrees after the export).
+        for deg in (30.0, -40.0, 130.0, -160.0, 12.5):
+            tree = turned(humanoid(fingers=5), deg)
+            doc = hb.propose_bone_map(tree)
+            self.assertTrue(doc["valid"], (deg, doc["problems"]))
+            f = hb.body_facing(tree, doc["roles"])
+            self.assertAlmostEqual(f["turn_deg"], deg, places=6, msg=deg)
+            self.assertEqual(f["problems"], [], deg)
+            for cue in ("hips", "shoulders", "feet"):
+                self.assertAlmostEqual(f["cues"][cue], deg, places=6, msg=(deg, cue))
+
+    def test_feet_askew_while_hips_and_shoulders_face_front(self):
+        base = humanoid(fingers=5)
+        roles = hb.propose_bone_map(base)["roles"]
+        for deg in (35.0, -35.0, 55.0):
+            f = self.facing(feet_turned(base, deg, roles), roles)
+            self.assertAlmostEqual(f["turn_deg"], 0.0, places=6, msg=deg)
+            self.assertAlmostEqual(f["cues"]["feet"], deg, places=6, msg=deg)
+            self.assertAlmostEqual(f["feet_apart_deg"], abs(deg), places=6)
+            self.assertEqual(f["problems"], [], deg)
+        # Feet pointing further away than the limit: the way the figure faces is not known.
+        f = self.facing(feet_turned(base, 70.0, roles), roles)
+        self.assertAlmostEqual(f["turn_deg"], 0.0, places=6)
+        self.assertEqual(len(f["problems"]), 1)
+        self.assertTrue(f["problems"][0].startswith("facing: the feet point 70 degrees"), f["problems"])
+
+    def test_hips_and_shoulders_askew_while_the_feet_face_front(self):
+        base = humanoid(fingers=5)
+        roles = hb.propose_bone_map(base)["roles"]
+        for deg in (35.0, -30.0):
+            tree = feet_turned(turned(base, deg), -deg, roles)
+            doc = hb.propose_bone_map(tree)
+            self.assertTrue(doc["valid"], doc["problems"])
+            self.assertEqual(doc["front"], [0.0, -1.0, 0.0])  # what the exporter turned by before
+            f = hb.body_facing(tree, doc["roles"])
+            self.assertAlmostEqual(f["turn_deg"], deg, places=6, msg=deg)
+            self.assertAlmostEqual(f["cues"]["feet"], 0.0, places=6, msg=deg)
+            self.assertEqual(f["problems"], [], deg)
+
+    def test_the_two_lines_are_weighted_by_their_length(self):
+        base = humanoid(fingers=5)
+        roles = hb.propose_bone_map(base)["roles"]
+        f = self.facing(turned(base, 10.0, UPPER), roles)
+        self.assertAlmostEqual(f["lines_apart_deg"], 10.0, places=6)
+        # Shoulders 0.20 across, hips 0.12: the front leans to the shoulders' line.
+        self.assertGreater(f["turn_deg"], 5.0)
+        self.assertLess(f["turn_deg"], 10.0)
+        self.assertEqual(f["problems"], [])
+
+    def test_a_twisted_figure_is_a_problem_and_the_feet_break_the_tie(self):
+        base = humanoid(fingers=5)
+        roles = hb.propose_bone_map(base)["roles"]
+        f = self.facing(turned(base, 40.0, UPPER), roles)  # shoulders 40 degrees off the hips
+        self.assertAlmostEqual(f["turn_deg"], 0.0, places=6)
+        self.assertEqual(f["source"], "hips (nearer the feet)")
+        self.assertEqual(len(f["problems"]), 1)
+        self.assertIn("40 degrees apart", f["problems"][0])
+        # The feet follow the shoulders: the shoulders' line is used.
+        f = self.facing(feet_turned(turned(base, 40.0, UPPER), 40.0, roles), roles)
+        self.assertAlmostEqual(f["turn_deg"], 40.0, places=6)
+        self.assertEqual(f["source"], "shoulders (nearer the feet)")
+        self.assertEqual(len(f["problems"]), 1)
+
+    def test_no_line_across_the_body(self):
+        tree = humanoid(fingers=5)
+        roles = hb.propose_bone_map(tree)["roles"]
+        for r in ("left_upper_leg", "right_upper_leg", "left_upper_arm", "right_upper_arm"):
+            h = tree[roles[r]]["head"]
+            tree[roles[r]] = dict(tree[roles[r]], head=(0.0, 0.0, h[2]))
+        f = hb.body_facing(tree, roles)
+        self.assertEqual(f["source"], "feet")
+        self.assertAlmostEqual(f["turn_deg"], 0.0, places=6)
+        self.assertEqual(len(f["problems"]), 1)
+
+    def test_the_real_topology_fixtures(self):
+        with open(os.path.join(ROOT, "tests", "fixtures", "humanoid", "bone_trees.json"), encoding="utf-8") as f:
+            trees = json.load(f)
+        for name in ("helmet_five_fingers", "helmet_two_fingers"):
+            for deg in (0.0, 28.0, -37.0, 95.0):
+                for tree in (turned(trees[name], deg), turned(mirror(trees[name], 0), deg)):
+                    doc = hb.propose_bone_map(tree)
+                    self.assertTrue(doc["valid"], (name, deg, doc["problems"]))
+                    f = hb.body_facing(tree, doc["roles"])
+                    self.assertAlmostEqual(f["turn_deg"], deg, places=6, msg=(name, deg))
+                    self.assertEqual(f["problems"], [], (name, deg))
 
 
 if __name__ == "__main__":

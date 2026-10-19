@@ -33,10 +33,14 @@ ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_
 # the earlier humanoid pin had been taken from files with mixed line endings. It moved again on
 # purpose on 2026-10-19 with the bone map's fix (the neck chosen among the spine top's children
 # by several cues, not by the highest end point): the bone map module is in the export's
-# specification, so a resumed night redoes its exports, sheets and decisions.
+# specification, so a resumed night redoes its exports, sheets and decisions. It moved again on
+# purpose on 2026-10-19 with the facing fix (the figure squared by its hips' and shoulders' lines,
+# not by the axis its feet point to; the body frame an exporter option): the exporter and the
+# bone map module are in the export's specification, so a resumed night redoes its exports,
+# sheets and decisions.
 PINS = {
     "order_generic.json": "a148805423689b29e1f8fa3cff06720115ec0753be4f28d322bc879f25c78e44",
-    "order_humanoid.json": "5d256ad6251ab2cf13ba279aab2d1bbd64d00f21cbd5a484ccb0b1196a20cce4",
+    "order_humanoid.json": "d09341550fb44be243d9b79e64b5fd060c02496c6ae84bf4bc28d59805305362",
 }
 
 

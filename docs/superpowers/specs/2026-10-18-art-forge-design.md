@@ -672,14 +672,14 @@ Decisions, each with its reason:
 3. **The body wins on height and proportions, and the order check says so**: a piece with a
    body may not set `params.height`, `head`, `hands`, `feet` or `widen` (a problem of the
    order, not a silent override). The exported figure takes the body's values.
-4. **The exporter is unchanged and runs in the body's frame.** It normally stands, turns and
-   scales a rig by its own mesh (floor, height); a helmet or a thick sole would move the
-   skeleton and change the motions' scale. `tools/blender/humanoid_body_export.py` reads the
-   exporter and runs it with three statements replaced (the stand becomes the identity; the
-   floor and height become the body's), each checked to be found exactly once. Reason: the
-   exporter's file is in every humanoid export's specification; editing it would redo every
-   export of a running night whose order uses no body. When the exporter is next changed on
-   purpose, the body frame should become an option of its own.
+4. **The exporter runs in the body's frame.** It normally stands, turns and scales a rig by
+   its own mesh (floor, height); a helmet or a thick sole would move the skeleton and change
+   the motions' scale. With `--body-frame` (the conform's `frame.json`) the stand, turn, scale
+   and widen are the identity and the floor and height are the body's. First built as a
+   wrapper (`humanoid_body_export.py`) that ran the unchanged exporter with three statements
+   replaced, because the exporter's file is in every humanoid export's specification and
+   editing it would redo a running night's exports; when the exporter was next changed on
+   purpose (the facing, section 15) the frame became this option and the wrapper was removed.
 5. **Acceptance.** The conform report (`conform_report.json`, a file of the export) measures
    the joints before and after, each segment's stretch, the edges' stretch and tears, the
    body's joints outside the conformed outfit, the soles against the body's floor and how far
@@ -705,8 +705,9 @@ Decisions, each with its reason:
    the exports, sheets and decisions only. The order check refuses a body in the piece's own
    output (a piece cannot wear its own pick, which changes with every run) and a body that
    stands turned more than 15 degrees from facing +z: the night's exports showed figures
-   turned 22 to 40 degrees (the exporter squares a figure only to the axis its feet point
-   to), both automatic picks of the unarmoured pieces among them.
+   turned 22 to 40 degrees (the exporter then squared a figure only to the axis its feet
+   point to, fixed in section 15), both automatic picks of the unarmoured pieces among them.
+   The check stays for exports made before the fix and for bodies not written by the exporter.
 8. **One job, not a new stage.** The conform and the export run in one job (`body_export`,
    stage `export`), so the stage list, the review and the decision stay as they are; the
    conform's settings are export settings (`conform_*`), refused without a body.
@@ -723,3 +724,50 @@ unarmoured export, both without flags, the body's skeleton within 5e-7 m, the 45
 same on both variants (difference 0) and within 2e-5 of the body's own. Never ran: the
 factory driving `body_export` in a real night, the GPU bake of a conformed variant, the
 review sheet in Godot with the conform line, and a game playing a conformed GLB.
+
+## 15. The way an exported humanoid faces (fixed 2026-10-19)
+
+The exporter turned a rig about the vertical by the bone map's front, which is where the toes
+point snapped to the nearest horizontal axis. A generated figure can stand turned between two
+axes inside its mesh, and the first real night's exports stood turned up to 40 degrees: in a
+game such a figure walks and aims visibly askew. The exporter now squares the figure by its body
+(`humanoid_bones.body_facing`, without `bpy`; the cues and the report in
+[conventions.md](../../conventions.md#the-way-an-exported-figure-faces)).
+
+Decisions, each with its reason:
+
+1. **The front is perpendicular to the body's left-right axis**, which is the sum of the line
+   across the hips (the upper legs' joints) and the line across the shoulders (the upper arms'
+   joints), each counting by its length. Its sign comes from the map's left and right, which the
+   toes chose when the map was proposed. Reason: the hips and shoulders are the joints a rig tool
+   places most surely, and they are the body; the toes of a generated figure point where its feet
+   were modelled, which on the night was within 10.3 degrees of the body but need not be.
+2. **The feet only break a tie.** When the two lines are more than 25 degrees apart the figure is
+   twisted: the line nearer the feet is used and the variant gets a mesh flag. Feet more than 60
+   degrees from the front used are a flag too. Reason: a variant facing an unknown way must be
+   rejected rather than shipped turned; on the night the lines were at most 7.1 degrees apart, so
+   the limits leave room without letting a twisted figure through.
+3. **No cue from the mesh stage or the face.** The rigs as the rig stage delivered them did not
+   all face one axis (19 of 21 faced glTF +Z, 2 faced +X), so a fixed facing of the generated
+   mesh is not a cue; the bone map has no bone that points out of the face, and reading a face
+   from the mesh was not built.
+4. **Checked after the turn.** The cues are measured again on the turned rig; a front more than
+   0.5 degrees from glTF +Z is a mesh flag. The retarget's body directions are the glTF front
+   (as before, the turned bone map front was exactly that), so the motions do not depend on how
+   the generated figure stood: on one night rig exported with the night's 45 clips, the motion
+   report's 55 flags and worst values were the same as the night's own export.
+5. **The specification moves on purpose.** The exporter and the bone map module are in every
+   humanoid export's specification: a resumed night redoes its exports, sheets and decisions. The
+   body frame became an exporter option in the same change (section 14, decision 4).
+
+Verified on 2026-10-19, without the GPU: the cues on synthetic skeletons (turned between axes,
+feet turned 35 and 55 degrees while the hips and shoulders face front and the reverse, a 10 and
+a 40 degree twist, no line across the body) and on the bulky-armour fixtures turned four ways; the
+exporter in Blender on the CPU on synthetic figures facing front, +x and -x, turned 30 degrees,
+with the feet askew, with the body askew and twisted (each GLB's hips' and shoulders' lines read
+from the file within 1 degree of +x but the twisted one, which is flagged); the approved body's
+smoke test with bodies exported by the fixed exporter; and copies of the night's 21 rigs on the
+CPU without a bake: every front within 0.0 degrees of glTF +Z after the turn and no facing flag,
+the worst of each figure's hips' and shoulders' lines 4.5 degrees from across (40.4 before; the
+remainder is the angle between the two lines). Never ran: the fixed exporter in a factory night
+with the GPU bake, the review sheet of a squared figure, and a game playing one.

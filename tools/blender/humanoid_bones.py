@@ -526,3 +526,101 @@ def chains(tree, roles):
         out["legs"][s] = [roles[s + "_upper_leg"], roles[s + "_lower_leg"], roles[s + "_foot"],
                           roles.get(s + "_toes")]
     return out
+
+
+# ---- the way a standing figure faces ------------------------------------------------------
+
+# The hips' and the shoulders' lines may turn this many degrees apart before the figure counts
+# as twisted (its front unknown). On the first real night's 21 rigs they were at most 7.1 apart.
+FACING_LINES_LIMIT_DEG = 25.0
+# The feet may point this many degrees away from the front the body's lines give. On the first
+# real night's rigs they were at most 10.3 away; feet more than 90 away would contradict the sides.
+FACING_FEET_LIMIT_DEG = 60.0
+# After the exporter turned a figure, the front its body gives is within this of glTF +z.
+FACING_TOLERANCE_DEG = 0.5
+# A line across the body shorter (in plan) than this share of the figure's height is not used.
+FACING_MIN_LINE_SHARE = 0.02
+
+
+def facing_deg(v):
+    """Degrees about the vertical from facing -y (Blender; the glTF front +z) to the horizontal
+    direction v, positive towards +x (the same in glTF), in (-180, 180]."""
+    return math.degrees(math.atan2(v[0], -v[1]))
+
+
+def _apart_deg(a, b):
+    d = abs(a - b) % 360.0
+    return min(d, 360.0 - d)
+
+
+def body_facing(tree, roles):
+    """The front of a standing figure (horizontal, unit, Blender axes) from its body, with every
+    cue measured. The body's left-right axis comes from the line across its hips (the left and
+    right upper legs' joints) and the line across its shoulders (the upper arms' joints), each
+    weighted by its length in plan; the front is perpendicular to it, on the side the roles' left
+    and right give (which the toes chose when the map was proposed: left is up x front). The feet
+    (foot joint to the toes' end, both summed) only break a tie: when the two lines are more than
+    FACING_LINES_LIMIT_DEG apart, the one nearer the feet is used. Not snapped to an axis: a
+    generated figure may stand turned between two axes.
+
+    Returns {"front": (x, y, 0), "turn_deg": facing_deg(front), "source": which cues gave it,
+    "cues": {"hips", "shoulders", "feet": facing_deg of each cue's front or None},
+    "lines_apart_deg", "feet_apart_deg", "problems": [...]}. Problems (each starts with
+    "facing: ") mean the way the figure faces is not known: the lines are too far apart, the
+    feet point too far from the front, or no line can be measured (the feet are then used)."""
+    tr = _Tree(_as_tree(tree))
+    span = tr.span or 1.0
+
+    def across(a, b):
+        if not (roles.get(a) and roles.get(b)):
+            return None
+        d = _sub(tr.head(roles[a]), tr.head(roles[b]))
+        d = (d[0], d[1], 0.0)
+        return d if _len(d) >= FACING_MIN_LINE_SHARE * span else None
+
+    def front_of(d):  # left x up: the front of a body whose left is d
+        n = _len(d)
+        return (d[1] / n, -d[0] / n, 0.0)
+    hips = across("left_upper_leg", "right_upper_leg")
+    shoulders = across("left_upper_arm", "right_upper_arm")
+    feet = (0.0, 0.0, 0.0)
+    for s in SIDES:
+        foot, toes = roles.get(s + "_foot"), roles.get(s + "_toes")
+        if foot:
+            end = tr.tail(toes) if toes else tr.tail(foot)
+            d = _sub(end, tr.head(foot))
+            feet = (feet[0] + d[0], feet[1] + d[1], 0.0)
+    feet = (feet[0] / _len(feet), feet[1] / _len(feet), 0.0) if _len(feet) > 1e-9 else None
+    cues = {"hips": facing_deg(front_of(hips)) if hips else None,
+            "shoulders": facing_deg(front_of(shoulders)) if shoulders else None,
+            "feet": facing_deg(feet) if feet else None}
+    problems = []
+    lines_apart = None
+    if hips and shoulders:
+        lines_apart = _apart_deg(cues["hips"], cues["shoulders"])
+        if lines_apart <= FACING_LINES_LIMIT_DEG:
+            both = (hips[0] + shoulders[0], hips[1] + shoulders[1], 0.0)
+            front, source = front_of(both), "hips and shoulders"
+        else:
+            problems.append("facing: the hips' and the shoulders' lines are %.0f degrees apart (more than %.0f): "
+                            "the figure stands twisted and the way it faces is not known"
+                            % (lines_apart, FACING_LINES_LIMIT_DEG))
+            pick = "hips"
+            if feet and _apart_deg(cues["shoulders"], cues["feet"]) < _apart_deg(cues["hips"], cues["feet"]):
+                pick = "shoulders"
+            front, source = front_of(hips if pick == "hips" else shoulders), pick + " (nearer the feet)"
+    elif hips or shoulders:
+        front, source = front_of(hips or shoulders), "hips" if hips else "shoulders"
+    elif feet:
+        problems.append("facing: neither the hips' nor the shoulders' line can be measured; the feet give the front")
+        front, source = feet, "feet"
+    else:
+        return {"front": None, "turn_deg": None, "source": None, "cues": cues, "lines_apart_deg": None,
+                "feet_apart_deg": None, "problems": ["facing: no cue gives the front"]}
+    turn = facing_deg(front)
+    feet_apart = _apart_deg(turn, cues["feet"]) if feet and source != "feet" else None
+    if feet_apart is not None and feet_apart > FACING_FEET_LIMIT_DEG:
+        problems.append("facing: the feet point %.0f degrees away from the front the body's lines give (more than "
+                        "%.0f)" % (feet_apart, FACING_FEET_LIMIT_DEG))
+    return {"front": front, "turn_deg": turn, "source": source, "cues": cues, "lines_apart_deg": lines_apart,
+            "feet_apart_deg": feet_apart, "problems": problems}

@@ -88,6 +88,7 @@ MESH_FLAG_STAGES = (
     (r"^socket \S+ is (missing|off the mesh)", "unknown",
      "the generated shape or the class template (or a manual sockets file) may be at fault"),
     (r"^frame: ", "unknown", "the concept may not be a side view, or the mesh generator turned the item"),
+    (r"^facing: ", "unknown", "the generated figure may stand twisted (mesh) or its predicted joints may (rig)"),
 )
 # The stage held responsible for a conform flag (conform_report.json "flags"), by its text:
 # the conform follows the rig's joints and weights; the soles are the outfit's own shape.

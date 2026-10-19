@@ -1,7 +1,7 @@
 """A rigged humanoid variant conformed to an approved body: its mesh moved by its own skin so
 that its joints land on the body's, then bound to the body's skeleton (humanoid_fit.py holds
-the geometry). The result is a rig the humanoid exporter takes as it is (through
-humanoid_body_export.py, which keeps the body's frame).
+the geometry). The result is a rig the humanoid exporter takes as it is (with --body-frame
+and this tool's frame.json, which keeps the body's frame).
 
 Runs with a Python that imports bpy (Blender as a module):
 

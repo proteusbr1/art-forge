@@ -10,17 +10,24 @@ Runs with a Python that imports bpy (Blender as a module):
       [--bake-source HIGH.glb] [--bone-map MAP.json] [--device GPU|CPU] [--only idle,walk]
       [--max-foot-slide 2] [--max-hand-socket 2] [--max-reach 1] [--max-stretch 0.5]
       [--max-penetration 2] [--metal-roughness MAP.png] [--material-source PAINTED.glb]
-      [--image-format lossless|compact]
+      [--image-format lossless|compact] [--body-frame FRAME.json]
 
 Steps (formats in docs/conventions.md):
 1. The bone map: a map given with --bone-map wins, then <out>/bone_map.json when it is
    marked "manual": true, then the proposal from the skeleton's tree
    (humanoid_bones.py). It is validated; an invalid map stops the export with its report in
    <out>/bone_map.json (exit code 3). The exporter never guesses.
-2. The model stands on z = 0 over the hips, turned about the vertical so that its front
-   (from the bone map) is the glTF front (+z), scaled to --height metres, widened across
-   (--widen); the mapped bones take their SkeletonProfileHumanoid names, the others keep
-   theirs.
+2. The model stands on z = 0 over the hips, turned about the vertical so that its front is
+   the glTF front (+z), scaled to --height metres, widened across (--widen); the mapped
+   bones take their SkeletonProfileHumanoid names, the others keep theirs. The front is the
+   body's (humanoid_bones.body_facing: perpendicular to the lines across the hips and the
+   shoulders, the feet only breaking a tie), not snapped to an axis: a generated figure may
+   stand turned between two axes. Cues that disagree (a twisted figure, feet pointing away)
+   are mesh flags, and so is a figure that still faces more than FACING_TOLERANCE_DEG away
+   from +z after the turn. With --body-frame (a figure conformed to an approved body,
+   humanoid_conform.py's frame.json) the rig already stands in the body's frame: it is not
+   stood, turned, scaled or widened, and the figure's floor and height are the body's (the
+   clips are scaled by them, not by the outfit's mesh).
 3. The mesh is the painted game mesh of the rig. It is reduced only when it has more than
    --tris triangles (the report says so). The normal map (--tex pixels, tangent space,
    Cycles on --device) is baked from --bake-source (the raw high mesh, in the rig mesh's
@@ -96,7 +103,15 @@ ap.add_argument("--material-source", default="",
                 help="the painted mesh the rig was made from: maps the rig's material lacks are carried from it")
 ap.add_argument("--image-format", default="lossless", choices=("lossless", "compact"),
                 help="lossless: every map PNG; compact: base colour JPEG (quality 92), technical maps PNG")
+ap.add_argument("--body-frame", default="",
+                help="the frame of an approved body the rig was conformed to (humanoid_conform.py's frame.json): "
+                     "the rig is not stood, turned or scaled, and the floor and height are the body's")
 a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
+BODY_FRAME = None
+if a.body_frame:
+    with open(a.body_frame, encoding="utf-8-sig") as _f:
+        _frame = json.load(_f)
+    BODY_FRAME = {"height": float(_frame["height"]), "floor": float(_frame["floor"])}
 OUT = os.path.abspath(a.out)
 os.makedirs(OUT, exist_ok=True)
 T0 = time.time()
@@ -345,13 +360,22 @@ _H0 = max(c.z for c in coords) - _floor
 _hips = arm.matrix_world @ arm.data.bones[ROLES["hips"]].head_local
 _k = a.height / _H0
 # Turned about the vertical so that the figure's front is Blender's -y (glTF +z, the front of
-# every exported model), whatever way the generated mesh faced.
-_yaw = -math.atan2(FRONT.x, -FRONT.y)
+# every exported model), whatever way the generated mesh faced: the front its hips and
+# shoulders give (the feet's axis alone left figures standing turned 22 to 40 degrees).
+_facing = hb.body_facing(arm, ROLES)
+_front = Vector(_facing["front"]) if _facing["front"] else FRONT
+_yaw = 0.0 if BODY_FRAME else -math.atan2(_front.x, -_front.y)
 _turn = Matrix.Rotation(_yaw, 4, "Z")
-TRANSFORM = (Matrix.Diagonal((a.widen, a.widen, 1.0, 1.0)) @ Matrix.Diagonal((_k, _k, _k, 1.0)) @ _turn
-             @ Matrix.Translation(Vector((-_hips.x, -_hips.y, -_floor))))
-FRONT = (_turn.to_3x3() @ FRONT).normalized()
-LEFT = (_turn.to_3x3() @ LEFT).normalized()
+if BODY_FRAME:  # the rig stands in the body's frame already
+    TRANSFORM = Matrix.Identity(4)
+    print("BODY FRAME height %.6f floor %.6f" % (BODY_FRAME["height"], BODY_FRAME["floor"]), flush=True)
+else:
+    TRANSFORM = (Matrix.Diagonal((a.widen, a.widen, 1.0, 1.0)) @ Matrix.Diagonal((_k, _k, _k, 1.0)) @ _turn
+                 @ Matrix.Translation(Vector((-_hips.x, -_hips.y, -_floor))))
+# The body directions of the retarget: the glTF front. A body's frame faces it too (the body was
+# exported so), and every variant that wears the body gets the same.
+FRONT = Vector((0.0, -1.0, 0.0))
+LEFT = UP.cross(FRONT)
 arm.matrix_world = TRANSFORM @ arm.matrix_world
 bpy.ops.object.select_all(action="DESELECT")
 arm.select_set(True)
@@ -359,6 +383,27 @@ body.select_set(True)
 bpy.context.view_layer.objects.active = arm
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 bpy.context.view_layer.update()
+_after = hb.body_facing(arm, ROLES)
+
+
+def _facing_cues(f):
+    return {"turn_deg": None if f["turn_deg"] is None else round(f["turn_deg"], 3),
+            "cues": {k: None if v is None else round(v, 3) for k, v in f["cues"].items()}}
+
+
+FACING = {"squared": not BODY_FRAME, "frame": "body" if BODY_FRAME else "rig", "source": _facing["source"],
+          "turned_deg": round(math.degrees(_yaw), 3),
+          "lines_apart_deg": None if _facing["lines_apart_deg"] is None else round(_facing["lines_apart_deg"], 3),
+          "feet_apart_deg": None if _facing["feet_apart_deg"] is None else round(_facing["feet_apart_deg"], 3),
+          "before": _facing_cues(_facing), "after": _facing_cues(_after),
+          "limits": {"lines_apart_deg": hb.FACING_LINES_LIMIT_DEG, "feet_apart_deg": hb.FACING_FEET_LIMIT_DEG,
+                     "after_deg": hb.FACING_TOLERANCE_DEG},
+          "problems": list(_facing["problems"])}
+if not BODY_FRAME and _after["turn_deg"] is not None and abs(_after["turn_deg"]) > hb.FACING_TOLERANCE_DEG:
+    FACING["problems"].append("facing: the exported figure faces %.1f degrees away from glTF +z (more than %.1f)"
+                              % (_after["turn_deg"], hb.FACING_TOLERANCE_DEG))
+print("FACING", FACING["source"], "turned %.2f" % FACING["turned_deg"], "after", FACING["after"]["turn_deg"],
+      len(FACING["problems"]), "problems", flush=True)
 
 NEW = hb.renames(ROLES)
 taken = set(NEW.values())
@@ -694,6 +739,8 @@ mesh_report.update({
     "bake_source_rejected": os.path.basename(a.bake_source) if a.bake_source and not BAKE_FROM else None,
     "bake_source_offset_m": None if bake_offset is None else round(bake_offset, 4),
 })
+mesh_report["facing"] = FACING
+mesh_report["problems"] += FACING["problems"]
 mesh_report["valid"] = not mesh_report["problems"]
 mesh_report["flags"] = list(mesh_report["problems"])
 write_json("mesh_report.json", mesh_report)
@@ -713,9 +760,9 @@ def tail(name):
 
 
 coords = [body.matrix_world @ v.co for v in body.data.vertices]
-zmin = min(c.z for c in coords)
+zmin = BODY_FRAME["floor"] if BODY_FRAME else min(c.z for c in coords)
 zmax = max(c.z for c in coords)
-H = zmax - zmin
+H = BODY_FRAME["height"] if BODY_FRAME else zmax - zmin
 cx, cy = head(CH["hips"]).x, head(CH["hips"]).y
 LEGS = [CH["legs"]["left"], CH["legs"]["right"]]
 ARMS = [CH["arms"]["left"], CH["arms"]["right"]]
@@ -1155,6 +1202,7 @@ def key(action_name, frames, fps, loop):
 info = {"format": "forge-humanoid", "version": 1, "status": "pending review", "name": a.name,
         "height": H, "widen": a.widen, "head": a.head, "hands": a.hands, "feet": a.feet,
         "ankle_height": ANKLE * H, "front": [round(v, 6) + 0.0 for v in (FRONT.x, FRONT.z, -FRONT.y)], "animations": [],
+        "facing": FACING,
         "bones": {r: hb.godot_name(r) for r in ROLES}, "unmapped_bones": [nm(b) for b in doc["unmapped"]],
         "bone_map": {"source": doc["source"], "file": "bone_map.json"},
         "item_bones": {"right": "item", "left": "item_l", "reference": "item_ref"},

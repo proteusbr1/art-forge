@@ -98,6 +98,7 @@ class ResponsibleStageTest(unittest.TestCase):
         ("part turret has 3 open edges after its cut was closed", "parts"),
         ("socket guard is off the mesh: 8.2 cm from the surface and outside its cross-section", "unknown"),
         ("frame: the longest axis is 85 degrees from the front axis (not squared): ...", "unknown"),
+        ("facing: the hips' and the shoulders' lines are 40 degrees apart (more than 25): ...", "unknown"),
         ("something new", "unknown"),
     )
 

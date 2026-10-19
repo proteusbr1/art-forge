@@ -75,22 +75,22 @@ format in [docs/order.md](docs/order.md) and the design in
   model's entry, run by that Python). `data/motions/` holds the starter motion library
   (`@starter`) and its provenance note; `data/` is stored byte for byte.
 - `forge/workflows/`: production ComfyUI workflows in API format.
-- `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
-  `humanoid_export.py` (the humanoid export, run by `blender_python`) and
+- `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree and the way the
+  figure faces, `body_facing`, no `bpy`) and
+  `humanoid_export.py` (the humanoid export, run by `blender_python`; `--body-frame` runs it in
+  an approved body's frame) and
   `glb_materials.py` (what a written GLB's material holds, read from the file; no `bpy`).
   `articulated_parts.py` (part lists and region geometry, no `bpy`) and
   `articulated_export.py` (the parts); `creature_bones.py` (body plans, templates and the
   role map) and `creature_motion.py` (motion kinds, gaits, role-space clips), both without
   `bpy`, and `creature_export.py`; `forge_blender.py` (helpers of the two new exporters).
   `humanoid_fit.py` (the conform of a variant to an approved body, no `bpy`),
-  `humanoid_conform.py` (the conform in Blender) and `humanoid_body_export.py` (the humanoid
-  exporter, unchanged, run in the body's frame: it replaces three of its statements and stops
-  when one is not found exactly once).
+  `humanoid_conform.py` (the conform in Blender).
   `held_item_geometry.py` (the item frame, class templates, socket proposal and checks, no
   `bpy`), `held_item_export.py` (the item tool) and `held_item_figure.py` (a reference figure
   made ready for the humanoid exporter).
   The humanoid's scripts are in the humanoid jobs' specifications: changing one redoes those
-  jobs (the exporter changed on purpose on 2026-10-19, see the design's section 13). The
+  jobs (the exporter changed on purpose on 2026-10-19, see the design's sections 13 and 15). The
   hashes are taken from the files as checked out (CRLF here, as `git archive` gives a night's
   snapshot): keep those scripts' line endings as a fresh checkout has them.
 - `tools/review_godot/`: the Godot project of the review sheets (off screen): `main.gd`
@@ -234,7 +234,9 @@ and are skipped when a factory run holds it. With `FORGE_SMOKE_RIG` (a rigged GL
 its sheet in `local/smoke/real/`. Never commit those files. Never run SkinTokens or UniRig
 from a test (they need the GPU). `tests/test_export_pose_smoke.py` runs only Blender, on the
 CPU and without a bake (outputs in `local/smoke/pose/`): the synthetic figure facing -y, +x and
--x and with its bones' tails off their children must export an idle with straight legs.
+-x and with its bones' tails off their children must export an idle with straight legs, and the
+figure turned 30 degrees, with its feet or its body askew, must face glTF +z in the written GLB
+(a twisted one must carry a `facing:` mesh flag).
 `tests/test_humanoid_body_smoke.py` also runs only Blender on the CPU: it exports two synthetic
 approved bodies (`local/fixtures/humanoid_body/`, the sample order's) and conforms two variants
 of other proportions to one (`local/smoke/humanoid_body/`).

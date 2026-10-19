@@ -12,8 +12,8 @@ formats of the `articulated`, `creature` and `held_item` tools follow in
 - **Exported model:** metres, glTF axes (Y up). The figure faces glTF +Z, stands on the
   ground (y = 0) with its hips over the origin, and is `--height` metres tall at rest
   (`model.json` `height`, the height of the rest mesh after any reduction). A rig that faced
-  another way (the front the bone map finds from the feet) is turned about the vertical
-  first, so `model.json` `front` is always `[0, 0, 1]`.
+  another way is turned about the vertical first, so `model.json` `front` is always
+  `[0, 0, 1]`; see [the facing](#the-way-an-exported-figure-faces).
 - **Bone directions:** the retarget and the IK turn each mapped bone by the line from its
   joint to the joint of the next mapped bone of its chain, not by the bone's own axis: rig
   tools give joints orientations whose axes need not point to their children (such a rig was
@@ -219,7 +219,40 @@ boxes (`model.json` `classes`).
 `source`, `pose_frame`), `mesh` (`triangles`, `reduced`, `normal_map`, `normal_baked`, `report`,
 `image_format`),
 `regions` (`mask`, mean luminance of `skin` and `hair` in the painted texture, pixel
-counts, `glow_hues`), `seconds_export`.
+counts, `glow_hues`), `facing` (below), `seconds_export`.
+
+### The way an exported figure faces
+
+The exporter turns the rig about the vertical so that the front its body gives
+(`humanoid_bones.body_facing`, no `bpy`) is glTF +Z. Not the bone map's `front`: that one is
+snapped to the nearest horizontal axis (it only tells left from right), and the first real
+night's figures, which stood turned between two axes in their generated meshes, were exported
+turned 22 to 40 degrees by it (fixed 2026-10-19). The cues, from the rest joints of the mapped
+bones:
+
+- the line across the hips (left upper leg's joint minus the right's) and the line across the
+  shoulders (the upper arms' joints), seen from above: the body's left; the front is
+  perpendicular to it (left x up), on the side the map's left and right give (the toes chose
+  them when the map was proposed). Both lines are summed, so each counts by its length; a line
+  shorter than 2 % of the figure's height is not used;
+- the feet (each foot's joint to its toes' end, both summed) only break a tie: when the two lines
+  are more than 25 degrees apart, the one nearer the feet gives the front;
+- the generated mesh's own facing is not used: the night's rigs did not all face one axis (19 of
+  21 faced glTF +Z and 2 faced +X as the rig stage delivered them), and no cue of the face is read
+  (no bone of the map points out of the face).
+
+`model.json` and `mesh_report.json` `facing`: `squared` (false with `--body-frame`), `frame`
+(`rig` or `body`), `source` (`hips and shoulders`, `hips`, `shoulders`, `hips (nearer the
+feet)`, `shoulders (nearer the feet)` or `feet`), `turned_deg` (the turn applied),
+`lines_apart_deg`, `feet_apart_deg` (the feet against the front used), `before` and `after`
+(`turn_deg`, the front's degrees from facing glTF +Z, positive towards glTF +X, and `cues`:
+`hips`, `shoulders`, `feet`, each cue's own front the same way), `limits` and `problems`. Mesh
+flags (`facing: ...`; the variant is rejected, the stage held responsible `unknown`): the hips'
+and shoulders' lines more than 25 degrees apart (a twisted figure: the way it faces is not
+known), the feet more than 60 degrees from the front used, no line measurable (the feet then
+give the front), and a squared figure whose front is still more than 0.5 degrees from glTF +Z
+after the turn. On the night's 21 rigs the lines were at most 7.1 degrees apart and the feet at
+most 10.3 degrees from the front used, and no rig was flagged.
 
 `<out>/regions_mask.png`: the painted texture's size; red = skin (warm, moderately
 saturated colour on the head), green = hair (darker warm colour on the top of the head),
@@ -344,13 +377,13 @@ two Blender steps in `v<seed>_export/`:
    material), `conform/conformed_raw.glb` (the moved bake source, removed after the export),
    `conform/frame.json`, `conform/body_map.json` (the body's roles) and
    `conform_report.json`.
-2. `tools/blender/humanoid_body_export.py`: the humanoid exporter, unchanged, read and run
-   with three statements replaced (each must be found exactly once, else exit code 2): the
-   stand, turn, scale and widen of the rig becomes the identity (the rig already stands in
-   the body's frame), and the figure's floor and height become the body's (the clips are
-   scaled by them, not by the outfit's mesh: a helmet or a sole would change them). The
-   body's `widen`, `head`, `hands`, `feet` and `height` are passed on the command line, the
-   body's roles as the bone map, the conformed raw mesh as the bake source.
+2. `tools/blender/humanoid_export.py --body-frame conform/frame.json`: the rig is not stood,
+   turned, scaled or widened (it already stands in the body's frame), and the figure's floor
+   and height are the body's (the clips are scaled by them, not by the outfit's mesh: a helmet
+   or a sole would change them). The body's `widen`, `head`, `hands`, `feet` and `height` are
+   passed on the command line, the body's roles as the bone map, the conformed raw mesh as the
+   bake source. Its `facing` is measured but not applied (`squared` false). Until 2026-10-19 a
+   wrapper ran the exporter with three of its statements replaced; the option took its place.
 
 `conform/frame.json` (`forge-body-frame`): `height` (the body's `model.json` height), `floor`
 (the body's left ankle height minus its `ankle_height`), `widen`, `head`, `hands`, `feet`,
