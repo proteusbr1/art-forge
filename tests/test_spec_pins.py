@@ -30,10 +30,13 @@ ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_
 # night redoes its exports, sheets and decisions. The hashes of the local tools' scripts are
 # taken from the files as checked out, so the pins hold for a checkout with CRLF line endings
 # (Windows, core.autocrlf true, which is also what `git archive` gives a night's snapshot);
-# the earlier humanoid pin had been taken from files with mixed line endings.
+# the earlier humanoid pin had been taken from files with mixed line endings. It moved again on
+# purpose on 2026-10-19 with the bone map's fix (the neck chosen among the spine top's children
+# by several cues, not by the highest end point): the bone map module is in the export's
+# specification, so a resumed night redoes its exports, sheets and decisions.
 PINS = {
     "order_generic.json": "a148805423689b29e1f8fa3cff06720115ec0753be4f28d322bc879f25c78e44",
-    "order_humanoid.json": "7a2d980b551e1e4b1a3005c706ea4b153f1e67d8e1ed87cc2b815c05ca98e561",
+    "order_humanoid.json": "5d256ad6251ab2cf13ba279aab2d1bbd64d00f21cbd5a484ccb0b1196a20cce4",
 }
 
 

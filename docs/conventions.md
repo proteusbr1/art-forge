@@ -248,6 +248,14 @@ hand and foot on the same side; the upper and lower arm and leg of the two sides
 15 % of each other's length. An invalid map stops the export (exit code 3); a manual file
 stays as written and the validation goes to `bone_map_report.json`.
 
+How the proposal tells the neck from the arms at the top of the spine (where three or more
+children branch): the arms are the two children that reach farthest across the body, one to
+each side (across is up x the front the feet give); the neck is, of the others, the one
+between the arms that ends in no fan of leaves (fingers) and goes up rather than out and
+down. Not the child whose end point is highest: rigs of bulky armour have clavicles whose
+tails point up above a short neck under a big helmet (fixed 2026-10-19; the synthetic trees of
+`tests/fixtures/humanoid/bone_trees.json` reproduce them).
+
 `<out>/mesh_report.json` (`forge-mesh-report`, `version` 2, `status` `pending review`):
 `uv_layers`, `material_count`, `base_color_texture`, `texture_size`, `vertices`, `unweighted_vertices`,
 `weight_sum_error`, `max_influences`, `influence_limit`, `triangles_in`, `triangles`,

@@ -8,10 +8,14 @@ from the tree and the rest geometry:
   and two legs (reaching down); bones above it (an extra root) keep their names;
 - spine: from the hips' upward child, following the child with the most descendants, up
   to the first bone with three or more children (the top: neck and two arms branch there);
-- neck and head: the top's child that reaches highest, then its own highest child;
-- arms: the top's other two children with the most descendants; the hand is the first bone
-  of the arm that branches (the fingers), else the fourth bone (shoulder, upper arm, lower
-  arm, hand); the fingers keep their names;
+- arms: of the top's children, the two that reach farthest to either side (across the
+  body, by the front the feet give); the hand is the first bone of the arm that branches
+  (the fingers), else the fourth bone (shoulder, upper arm, lower arm, hand); the fingers
+  keep their names;
+- neck and head: of the top's other children, the one that goes up rather than out and
+  down, lies between the arms and ends in no fan of leaves (not the one whose end point is
+  highest: a clavicle's tail can point higher than a short neck under a big helmet), then
+  its own highest child;
 - legs: the two children of the hips (other than the spine) that reach lowest: upper leg,
   lower leg, foot and toes (optional);
 - left and right: the front is where the toes point (snapped to the nearest horizontal
@@ -210,6 +214,59 @@ def _arm_parts(tr, start):
     return [pre[0]] + pre[-3:]
 
 
+def _subtree(tr, n):
+    """n and every bone below it."""
+    out, stack = [], [n]
+    while stack:
+        x = stack.pop()
+        out.append(x)
+        stack.extend(tr.children[x])
+    return out
+
+
+def _has_fan(tr, n):
+    """A bone below n (or n) whose two or more children start chains that end without
+    branching again: a hand with its fingers."""
+    for x in _subtree(tr, n):
+        kids = tr.children[x]
+        if len(kids) >= 2 and all(max(len(tr.children[y]) for y in _subtree(tr, k)) <= 1 for k in kids):
+            return True
+    return False
+
+
+def _neck_and_arms(tr, top, kids, hips_head, across):
+    """(neck, [two arm starts]) among the children of the spine's top. The arms are the two
+    children that reach farthest across the body, one to each side (every head and tail of
+    their bones, along `across`). The neck is, of the others, the child that goes up rather
+    than out and down, lies between the arms and ends in no fan of leaves. Several cues, so
+    that no single one decides: a clavicle whose tail points up reaches higher than a short
+    neck under a big helmet. With fewer than three children: the highest is the neck."""
+    if len(kids) < 3:
+        neck = max(kids, key=tr.highest)
+        return neck, [c for c in kids if c != neck]
+
+    def lateral(c):
+        vals = [_dot(_sub(p, hips_head), across) for b in _subtree(tr, c) for p in (tr.head(b), tr.tail(b))]
+        return min(vals), max(vals)
+    reach = {c: lateral(c) for c in kids}
+    left = max(kids, key=lambda c: (reach[c][1], tr.descendants(c)))
+    right = min((c for c in kids if c != left), key=lambda c: (reach[c][0], -tr.descendants(c)))
+    rest = [c for c in kids if c not in (left, right)]
+    lo, hi = reach[right][0], reach[left][1]
+    z0 = tr.head(top)[2]
+    span = tr.span or 1.0
+
+    def neck_score(c):
+        a, b = reach[c]
+        mid = (a + b) / 2.0
+        between = 0.0 if lo < mid < hi else 1.0
+        rise = tr.highest(c) - z0
+        drop = z0 - tr.lowest(c)
+        return (-between, -int(_has_fan(tr, c)), (rise - max(drop, 0.0) - abs(mid)) / span)
+    neck = max(rest, key=neck_score)
+    return neck, [left, right]
+
+
 def _find(tree):
     """(roles found, problems): the proposal before validation."""
     tr = _Tree(tree)
@@ -244,17 +301,21 @@ def _find(tree):
         roles.update(zip(names, spine))
     else:
         roles.update({"spine": spine[0], "chest": spine[-2], "upper_chest": spine[-1]})
+    hips_head = tr.head(hips)
+    leg_parts = []
+    for c in legs:
+        ch = tr.chain(c)
+        if len(ch) >= 3:
+            leg_parts.append(ch[:4] if len(ch) >= 4 else ch[:3] + [None])
+    feet_front = _front_of_feet(tr, [(p[2], p[3]) for p in leg_parts]) if len(leg_parts) == 2 else None
+    across = _cross((0.0, 0.0, 1.0), feet_front) if feet_front else (1.0, 0.0, 0.0)
     kids = tr.children[top]
-    neck = max(kids, key=tr.highest)
+    neck, arm_starts = _neck_and_arms(tr, top, kids, hips_head, across)
     head_chain = tr.chain(neck, key=tr.highest)
     if len(head_chain) >= 2:
         roles["neck"], roles["head"] = head_chain[0], head_chain[1]
     else:
         roles["head"] = head_chain[0]
-    others = [c for c in kids if c != neck]
-    hips_head = tr.head(hips)
-    arm_starts = sorted(others, key=lambda c: (tr.descendants(c), abs(tr.head(c)[0] - hips_head[0])
-                                                + abs(tr.head(c)[1] - hips_head[1])), reverse=True)[:2]
     arms = []
     for c in arm_starts:
         parts = _arm_parts(tr, c)
@@ -264,13 +325,9 @@ def _find(tree):
             arms.append(parts)
     if len(arm_starts) < 2:
         problems.append("found %d arm(s) at the top of the spine (%s); 2 are needed" % (len(arm_starts), top))
-    leg_parts = []
     for c in legs:
-        ch = tr.chain(c)
-        if len(ch) < 3:
+        if len(tr.chain(c)) < 3:
             problems.append("the leg starting at %s has fewer than 3 bones" % c)
-        else:
-            leg_parts.append(ch[:4] if len(ch) >= 4 else ch[:3] + [None])
     front = _front_of_feet(tr, [(p[2], p[3]) for p in leg_parts])
     if front is None:
         problems.append("the feet point nowhere: the front cannot be found")

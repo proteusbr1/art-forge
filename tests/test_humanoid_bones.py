@@ -215,6 +215,24 @@ class BoneRoles(unittest.TestCase):
             self.assertFalse(doc["valid"])
             self.assertIsNone(doc["roles"])
 
+    def test_a_short_neck_under_clavicles_that_point_up(self):
+        # The topology of rigs of bulky armour (tests/fixtures/humanoid/bone_trees.json): the
+        # clavicles' tails end higher than the head, so the highest child of the spine's top is
+        # an arm; the neck is the child between the arms that goes up and has no fingers.
+        with open(os.path.join(ROOT, "tests", "fixtures", "humanoid", "bone_trees.json"), encoding="utf-8") as f:
+            trees = json.load(f)
+        for name, right in (("helmet_five_fingers", "bone_25"), ("helmet_two_fingers", "bone_16")):
+            for tree in (trees[name], mirror(trees[name], 0)):
+                self.assertGreater(max(tree[b]["tail"][2] for b in ("bone_6", right)), tree["bone_5"]["tail"][2])
+                doc = hb.propose_bone_map(tree)
+                self.assertTrue(doc["valid"], (name, doc["problems"]))
+                roles = doc["roles"]
+                self.assertEqual((roles["neck"], roles["head"]), ("bone_4", "bone_5"), name)
+                arms = {roles["left_shoulder"], roles["right_shoulder"]}
+                self.assertEqual(arms, {"bone_6", right}, name)
+                self.assertEqual(roles["left_hand"] if roles["left_shoulder"] == "bone_6" else roles["right_hand"],
+                                 "bone_9", name)
+
     def test_chains(self):
         tree = humanoid(fingers=5)
         ch = hb.chains(tree, hb.propose_bone_map(tree)["roles"])
