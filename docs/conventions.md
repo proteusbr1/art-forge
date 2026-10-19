@@ -1,9 +1,11 @@
-# Conventions of the humanoid tools
+# Conventions of the local tools
 
 The formats the `humanoid` tools read and write: the motion library and the held-item
 socket file a game supplies, and what the exporter (`tools/blender/humanoid_export.py`)
 and the review sheet (`tools/review_godot/`) produce. The runners are in
-`forge/local_gpu.py`; the synthetic examples are in `tests/fixtures/humanoid/`.
+`forge/local_gpu.py`; the synthetic examples are in `tests/fixtures/humanoid/`. The
+formats of the `articulated` and `creature` tools follow in
+[their own sections](#articulated-parts).
 
 ## Axes and units
 
@@ -255,3 +257,134 @@ the script the step runs), plus `tool_files` (SHA-256 of the scripts it uses), `
 file, SHA-256; a held-item folder lists each socket file), `command`, `exec_seconds` and
 `outputs` (file and SHA-256 per role). Its stdout and stderr are next to it
 (`<step>.stdout.log`, `<step>.stderr.log`).
+
+## Articulated parts
+
+`tools/blender/articulated_export.py` (run by `run_parts`, the `parts` stage; the geometry
+in `tools/blender/articulated_parts.py`, no `bpy`). Axes: glTF, metres, y up, the object
+faces +Z, left is +X, standing on y = 0 with its footprint centred on the origin.
+Normalised object coordinates (the order's regions): `[side, forward, up]`, side -0.5 to
+0.5 (+ left), forward -0.5 to 0.5 (+ front), up 0 to 1, each divided by the object's extent
+along it.
+
+`<out>/<name>.glb`: one node per part, named by its id, nested as the parts' parents, each
+node's origin at its pivot (the root's at the origin), no rotation at rest and no
+animation. Each part's mesh has the painted material and, on its cut faces, the plain
+material `interior`.
+
+`<out>/model.json` (`format` `forge-articulated`, `version` 1, `status` `pending review`):
+`name`, `front` ([0, 0, 1]), `axes`, `size_m` ([width, height, length]), `center_m`, `root`,
+`parts` (per part: `parent`, `node`, `triangles`, `cut_triangles`, `open_edges`, `share` of
+the painted surface, `bounds_m` at rest, `origin_m` in model space, and `regions`: each box
+resolved, in model metres before the glTF turn, with the `narrowest` edges in normalised
+coordinates), `joints` (per moving or fixed part: `part`, `parent`, `kind`, `axis` (glTF,
+in the parent's frame; `null` for fixed), `range`, `unit` (`degrees`, or `metres` for
+slide), `rest` 0, `pivot_m`, `offset_m` (from the parent's origin)), `interior_material`,
+`frame`, `mesh`, `seconds_export`.
+
+A game moves a part by setting its node's transform to the rest transform times a turn
+of `value` degrees about `axis` (turn, hinge, spin) or a move of `value` metres along it
+(slide).
+
+`<out>/frame.json` (`forge-frame`): `front` (the glTF axis the generated front pointed
+along), `snap` (squaring allowed), `turned_deg`, `snap_deg`, `scale`, `size_m`, `manual`.
+With `"manual": true` it is read and kept as written (`front`, and `snap_deg` when given).
+
+`<out>/mesh_report.json` (`forge-mesh-report`, `version` 2, `kind` `articulated`): as the
+humanoid's for the material (`materials`, read from the written GLB) plus `parts` (as in
+model.json), `triangles_in`, `triangles`, `triangle_budget`, `seam_vertices_merged`. Flags:
+`part <id> is empty: its region holds no geometry`, `part <id> is tiny: ...`, `part <id> has
+<n> open edges after its cut was closed`, the material slot flags. No UV layer or no
+base-colour texture stops the tool (exit code 4).
+
+## Creature
+
+`tools/blender/creature_export.py` (run by `run_creature_export`, the creature's `export`
+stage), with `creature_bones.py` (the role map) and `creature_motion.py` (the clips), both
+without `bpy`. Model axes inside the tools: metres, z up, front -Y, left +X; the exported
+GLB faces glTF +Z, standing on y = 0 with the root over the origin.
+
+**Body coordinates** (templates, role-space clips): `[side, forward, up]`, side + is the
+creature's left; lengths in body heights.
+
+`<out>/bone_map.json` (`format` `forge-creature-map`): `source` (`proposed`, `manual`,
+`order`), `manual`, `valid`, `problems`, `roles` (`{role: [bones base to tip]}` when valid),
+`found`, `root` (the root path: the skeleton's root down to the first branching bone),
+`joints` (per role with joints: `[{bone, joint, bend}]`), `unmapped`, `split` (a chain taken
+from the end of its parent), `notes`, `front`, `left`. The precedence and the manual rule
+are the humanoid's; an invalid map stops the export (exit code 3).
+
+Roles: a single chain is its id; a paired chain `<id>_l<i>` and `<id>_r<i>`, index 0 the
+highest (then the frontmost).
+
+Motion kinds (`settings` of a `procedural` motion; angles in degrees, distances in body
+heights; `chains` and `legs` take chain ids or roles):
+
+| Kind | Loops | Settings (default) |
+|---|---|---|
+| `breathe` | yes | `chains` (the trunk), `amplitude` 3, `sway` 2, `cycles` 1 |
+| `hover` | yes | `chains` (the trunk), `bob` 0.03, `tilt` 2, `lean` 0, `sway` 4, `cycles` 1 |
+| `undulate` | yes | `chains` (the chains toward back), `waves` 1, `amplitude` 18, `base` 0.3, `axis` `lateral` or `pitch`, `upper` 4, `arms` 6, `travel` 0, `cycles` 1 |
+| `gait` | yes | `legs` (the chains toward down), `stride` (half the leg length), `lift` (0.18 of it), `duty` (0.6; 0.65 with more than two legs), `phases`, `bob` 0.015, `sway` 3, `arms` 10, `cycles` 1 |
+| `strike` | no | `chains` (the side chains, else the trunk), `windup` 25, `reach` 55, `peak` 0.45, `lunge` 0.06, `trunk` 10 |
+| `aim` | yes | `chains` (the holding chains, else the side chains), `pitch` 75, `trunk` 0, `breathe` 1 |
+| `flinch` | no | `chains` (the trunk), `amplitude` 14, `peak` 0.25, `push` 0.03, `arms` 10 |
+| `collapse` | no | `fall` (`back`, `front`, `left`, `right`), `tilt` 80, `lie` 0.06, `limp` 25, `end` 0.75 |
+
+The trunk: chains from the root toward up or front and their single children; side
+chains: toward side; legs: toward down. A side chain (an arm) is swung as a whole about its
+first bone. A gait solves hip and knee exactly; bones below them keep their rest
+orientation in the world; its stance frames are the clip's contacts and its `travel` the
+distance the body covers per pass (as the motion library's). Only a `collapse` may bring the
+body lower than the rest pose's lowest bone.
+
+`<out>/clips.json` (`format` `forge-creature-clips`, `version` 1): `axes`, `roles`, and
+`anims` `{name: {kind, fps, loop, stance ({role: frames}), travel ([side, forward] body
+heights per pass), source, frames}}`, each frame `{"root": [side, forward, up] (body
+heights), "root_turn": [w, x, y, z], "roles": {role: [[u, [w, x, y, z]], ...]}}`: per role
+the chain's accumulated turn at the end of each of its bones, at `u` (0 to 1 along the
+chain by length), in body axes, relative to the rest pose. The same document is the
+`library` source of the motions list: a skeleton with the same roles plays it whatever its
+bone counts (each bone takes the turn interpolated at its own position).
+
+`<out>/<name>.glb`: mesh `body`, skinned (at most 4 influences, weights normalised), the
+armature with the rig's bone names, the item bones `item` (at the tip of the role
+`holds.right`, not deforming) with `item_ref` (the identity of item space, as the
+humanoid's) and `item_l` (`holds.left`), and one animation per motion, named as the motion,
+keyed at its frame times plus a closing key (the first frame again for a loop).
+
+`<out>/model.json` (`format` `forge-creature`, `version` 1, `status` `pending review`):
+`name`, `height`, `front`, `axes`, `size_m`, `center_m`, `plan` (the body plan used, a
+template expanded), `roles`, `root`, `joints`, `unmapped_bones`, `bone_map`, `item_bones`,
+`ends` (each role's tip bone), `animations` (per motion: `name`, `kind`, `source`,
+`frames`, `fps`, `loop`, `seconds`, `holds`, `stance`, `travel`, `params` (the effective
+settings, with the automatic ones: a gait's stride, lift, duty, phases, crouch; a
+collapse's drop)), `clips`, `mesh`, `seconds_export`.
+
+`<out>/mesh_report.json` (`kind` `creature`): as the humanoid's without the normal map and
+the bake source (`normal_map` is `null`).
+
+`<out>/motion_report.json` (`forge-motion-report`, `kind` `creature`), every clip played
+on the exported GLB loaded again:
+
+| Measure | Meaning | Default threshold |
+|---|---|---|
+| `foot_slide_cm` | largest distance a contact role's tip bone head moves within a run of contact frames, with the clip's travel added (null without contacts) | 2 cm (`--max-foot-slide`) |
+| `reach_shortfall_cm` | largest distance a gait's foot target lies beyond the leg's reach | 1 cm (`--max-reach`) |
+| `stretch_p95` | 95th percentile over edges of `abs(length / rest length - 1)`, worst frame | 0.5 (`--max-stretch`) |
+| `below_ground_cm` | depth of the deepest vertex below the ground, worst frame | 3 cm (`--max-below-ground`) |
+
+## Layout sheet
+
+`run_sheet` (the `layout_sheet` option of both recipes): `forge/sheet_layout.py` lays the
+sheet out from each variant's `model.json` and reports; `tools/review_godot/sheet.gd`
+(scene `sheet.tscn`) renders the cells it is given. Per variant: the header (label,
+`pending review` or `FAILED: <reason>` with a red cross), the verdict line, the subject in
+every direction of the review camera (a creature in its first `breathe` or `hover` clip,
+at frame 0; an articulated object at rest) and one large front view, then one strip per
+joint sweeping its range (fixed joints have none) or per clip, then the flag lines. The
+layout file `<name>.png.json` (`forge-sheet-layout`): `size`, `camera`, `banner`,
+`variants` (label, failed, reason, glb, kind, pose, verdict, flags, cells), `cells` (each:
+`variant`, `kind` small, front or strip, `rect`, `yaw`, `pitch`, `ppm`, `target`, `anim`,
+`time`, `pose` (joint values: node, kind, axis, value)), `texts`, `failures` and
+`load_failures` (a GLB Godot could not load).

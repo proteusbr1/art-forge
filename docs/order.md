@@ -36,7 +36,9 @@ Exit code: 0 (valid and verified), 1 (order problems or not ready), 3 (not verif
 Complete samples that pass the check:
 [tests/fixtures/order_generic.json](../tests/fixtures/order_generic.json) (a material, an
 object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures/order_humanoid.json)
-(two humanoids; see [the humanoid recipe](#the-humanoid-recipe)).
+(two humanoids; see [the humanoid recipe](#the-humanoid-recipe)),
+[tests/fixtures/order_articulated.json](../tests/fixtures/order_articulated.json) and
+[tests/fixtures/order_creature.json](../tests/fixtures/order_creature.json).
 
 ## Top level
 
@@ -56,6 +58,8 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 | `view_figure`, `view_object`, `view_prop`, `view_vehicle`, `view_illustration` | the default view of each recipe (required when the order has a piece of that recipe) |
 | `view_humanoid` | the view of every humanoid reference, and the text of its pose and cutout edits unless the next two are given (required when the order has a humanoid). It describes only what should be seen: full body in an A-pose, open empty hands held away from the body, plain grey background, even light |
 | `pose_humanoid`, `cutout_humanoid` | optional: the text of the humanoid's pose edit and of its `qwen_edit_character` cutout (what the edited picture shows) |
+| `view_articulated`, `view_creature` | the view of every articulated or creature reference (required when the order has one) |
+| `cutout_articulated`, `pose_creature`, `cutout_creature` | optional: the text of those edits (else the view) |
 | other `view_*` (for example `view_creature`, `view_icon`) | when a family or piece asks for that `"view"` |
 | `material_top`, `material_front` | materials seen from above (default) or from the front |
 | other `material_*` (for example `material_sky`) | a material whose `"view"` names it |
@@ -117,8 +121,10 @@ New keys:
 | `params` | piece settings (table below) |
 | `inputs` | files the game supplies `{name: path}`; paths are absolute or relative to the order file |
 | `review` | review-sheet camera, for recipes with a review stage (table below) |
-| `accept` | hard limits a variant must meet to be picked (humanoid; [below](#acceptance-and-reserve-variants)) |
-| `reserve` | extra variants run only when no variant passed (humanoid; a whole number of at least 0, default 0) |
+| `accept` | hard limits a variant must meet to be picked (humanoid, articulated, creature; [below](#acceptance-and-reserve-variants)) |
+| `reserve` | extra variants run only when no variant passed (humanoid, articulated, creature; a whole number of at least 0, default 0) |
+| `parts` | the parts of an articulated piece ([below](#the-articulated-recipe)) |
+| `body`, `motions` | the body plan or template and the movements of a creature ([below](#the-creature-recipe)) |
 
 `review`, `accept` and `reserve` do not apply to the core recipes. The stage catalogue is `forge/stages.py`.
 
@@ -183,7 +189,9 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `texture` | whole number above 0 | texture size in pixels | object_3d, prop, vehicle, figure; humanoid paint (512 to 4096, a multiple of 512) or TRELLIS.2 bake (256 to 8192, a multiple of 256), and the export's normal map (default 2048) |
 | `height` | number above 0 | figure height in metres | humanoid export |
 | `head`, `hands`, `feet`, `widen` | number above 0 | proportions of a figure | humanoid export |
-| `image_format` | `lossless` or `compact` | images of the exported GLB: `lossless` (default) writes every map as PNG; `compact` writes the base colour as JPEG at quality 92 (PNG when it carries opacity) and the technical maps (normal, metallic-roughness, occlusion, emissive) as PNG. A normal or metallic-roughness map or an opacity mask is never JPEG | humanoid export |
+| `image_format` | `lossless` or `compact` | images of the exported GLB: `lossless` (default) writes every map as PNG; `compact` writes the base colour as JPEG at quality 92 (PNG when it carries opacity) and the technical maps (normal, metallic-roughness, occlusion, emissive) as PNG. A normal or metallic-roughness map or an opacity mask is never JPEG | humanoid export, articulated parts, creature export |
+| `length` | number above 0 | length front to back in metres (scales instead of `height`) | articulated parts, creature export |
+| `front` | `+z`, `-z`, `+x`, `-x` | the glTF axis the generated front points along (default `+z`); the export faces +Z | articulated parts, creature export |
 
 `inputs`:
 
@@ -220,6 +228,8 @@ Seeds are fixed: derived from `family/piece` (the same order gives the same seed
 | `vehicle` | 3/4 concept (N seeds) -> pick -> views `side`, `back`, `other_side`, `top` -> sheet -> emissive mask -> mesh with a 4096 texture |
 | `figure` | Klein concept -> pick -> 3 Qwen Image Edit views (90, 180, 270 degrees) -> sheet -> emissive mask if `emissive` -> unrigged Hunyuan3D mesh |
 | `humanoid` | per variant: reference -> pose -> cutout -> mesh -> paint -> rig -> export; then review and final ([below](#the-humanoid-recipe)) |
+| `articulated` | per variant: reference -> cutout -> mesh -> paint -> parts; then review and final ([below](#the-articulated-recipe)) |
+| `creature` | per variant: reference -> pose -> cutout -> mesh -> paint -> rig -> export; then review and final ([below](#the-creature-recipe)) |
 
 Job ids: `family/piece/step`, with steps `concept_s<seed>`, `pick`, `view_90`,
 `view_180`, `view_270` (figure), `view_side`, `view_back`, `view_other_side`, `view_top`
@@ -412,6 +422,132 @@ group's line and in a last line `if needed: <n> held reserve jobs, ~<h> GPU hour
       crew                  60 jobs, ~0.85 GPU h in all
     total 60 jobs, ~0.9 GPU hours left (estimate)
 
+## The articulated recipe
+
+Rigid parts on pivots ([design](superpowers/specs/2026-10-18-art-forge-design.md), section
+7). Per variant `v<seed>` (default 4 variants): `reference` -> `cutout` -> `mesh` -> `paint`
+-> `parts`; then `review` and `final` as the humanoid's (with `accept` and `reserve`).
+
+| Stage | Default | Other options | Skippable | Hands on |
+|---|---|---|---|---|
+| `reference` | `qwen21_base` at 1536x1024, text: `brief`, tier, family style, `global`, `view_articulated` | `qwen21_turbo`, `klein`, `input_image` | no | `rgb`, `mask` |
+| `cutout` | `birefnet` | `qwen_edit_character` (text `cutout_articulated`, else `view_articulated`) | no | `rgba` |
+| `mesh` | `trellis2` | `hunyuan21` | no | `game_mesh`, `raw_mesh` |
+| `paint` | `hunyuan_paint` | `trellis2_texture` | yes | `painted_mesh` |
+| `parts` | `region_split` (Blender: the painted mesh and Hunyuan3D Paint's `metal_roughness`) | | no | `glb`, `model`, `mesh_report`, `frame` |
+| `review` | `layout_sheet` (Godot) | | no | `sheet`, `layout` |
+
+`params`: `tris`, `texture` (as the humanoid's mesh and paint), `height` or `length`
+(metres; the object is scaled by one of them: its height, or its length front to back),
+`front` (`+z`, `-z`, `+x` or `-x`: the glTF axis the generated object's front points
+along; default `+z`), `image_format`. `inputs`: `reference` (with `input_image`).
+
+`parts` (piece or family) is required: a list of parts, the root first.
+
+| Key | Meaning |
+|---|---|
+| `id` | the part's name, lower case (its node in the GLB) |
+| `parent` | the part it hangs from, listed before it; none for the root, which keeps everything the other parts do not take |
+| `find` | `{"box": [[side, forward, up], [side, forward, up]]}` or `{"boxes": [box, ...]}` (a union): corners in normalised object coordinates (side -0.5 right to 0.5 left, forward -0.5 back to 0.5 front, up 0 ground to 1 top, each divided by the object's extent); a coordinate is a number, `null` (no bound) or `[low, high]` (the narrowest cross-section of the parent between those values) |
+| `joint` | `kind`: `turn`, `hinge`, `spin` (continuous; its range, default [-180, 180], only sets the sheet's sweep), `slide` (metres) or `fixed` (no axis, no range; a part without a joint is fixed); `axis`: `side`, `forward`, `up`, with `-` for the other way (right-hand rule), or `[side, forward, up]`; `pivot`: `cut` (default: the centre of the largest cut, where the part meets its parent), `center`, `bottom`, `top`, `front`, `back`, `left`, `right` (of the part's box) or `[side, forward, up]`; `range`: `[low, high]` containing 0 (the rest pose) |
+
+A part takes its parent's geometry inside its region, so joints nest (a barrel elevating
+on a turret turning on a hull). A thin box takes a surface (a door, a ramp, a hatch, a
+nacelle) as a closed plate.
+
+Settings: `region_split` `min_share` (number 0-0.5: a part with less of the surface is
+flagged tiny; default 0.002) and `snap` (bool: square a footprint turned by up to 30
+degrees; default true); `layout_sheet` `front_height` (int 64-2048) and `strip_frames`
+(int 1-32).
+
+`accept`: `mesh_flags` only. The mesh flags of the parts and the stage held responsible:
+`part <id> is empty` and `part <id> is tiny` (`unknown`: the region or the generated layout),
+`part <id> has <n> open edges after its cut was closed` (`parts`), and the material flags
+as the humanoid's.
+
+A person may correct one variant's frame in `v<seed>_parts/frame.json` with
+`"manual": true` and `front` (and `snap_deg`): the next run redoes that variant's parts,
+the sheet and the decision.
+
+## The creature recipe
+
+Skinned, with its own skeleton (design, section 7). Per variant `v<seed>` (default 4):
+`reference` -> `pose` -> `cutout` -> `mesh` -> `paint` -> `rig` -> `export`; then `review`
+and `final`.
+
+| Stage | Default | Other options | Skippable | Hands on |
+|---|---|---|---|---|
+| `reference` | `qwen21_base` at 1024x1536, text with `view_creature` | `qwen21_turbo`, `klein`, `input_image` | no | `rgb`, `mask` |
+| `pose` | `qwen_edit_2511` (text `pose_creature`, else `view_creature`) | | yes | `rgb`, `mask` |
+| `cutout` | `birefnet` | `qwen_edit_character` (text `cutout_creature`) | no | `rgba` |
+| `mesh` | `trellis2` | `hunyuan21` | no | `game_mesh`, `raw_mesh` |
+| `paint` | `hunyuan_paint` | `trellis2_texture` | yes | `painted_mesh` |
+| `rig` | `skintokens` (seed 9001, 10 beams) | `unirig` | no | `rig` |
+| `export` | `creature_export` (Blender) | | no | `glb`, `model`, `bone_map`, `mesh_report`, `motion_report`, `clips` |
+| `review` | `layout_sheet` (Godot) | | no | `sheet`, `layout` |
+
+`params`: `tris`, `texture`, `height` or `length`, `front`, `image_format`. `inputs`:
+`reference`, `clips` (a `forge-creature-clips` library, the default of the motions'
+`library` source) and `bone_map` (a file, or one per variant, as the humanoid's).
+
+`body` (piece or family) is required: a plan or a template.
+
+A plan, `{"chains": [...], "holds": {"right": role, "left": role}}`; a chain:
+
+| Key | Meaning |
+|---|---|
+| `id` | lower-case letters and digits |
+| `from` | `root` (default) or a chain listed before it |
+| `toward` | `up`, `down`, `front`, `back` or `side` (a side chain needs pairs) |
+| `pairs` | 1 to 4: the chain on each side; roles `<id>_l<i>`, `<id>_r<i>`, index 0 the highest. A chain hanging from a paired chain is paired the same way |
+| `optional` | true: the map may go without it |
+| `joints` | 1 to 12: the joints (segments) of the chain |
+| `bends` | per joint: `front`, `back`, `up`, `down`, `out`, `in` or `none`: the way the joint's segment tip moves when it flexes |
+| `lengths` | per joint: relative lengths (default equal) |
+| `direction` | `[side, forward, up]`: the exact direction (a template gives it) |
+
+A template, `{"template": {"bones": [{"name", "parent", "head", "tail", "role", "bend",
+"optional"}]}}` (head and tail in body heights, `[side, forward, up]`; role `root`, a chain
+id or `<chain>_l<i>` / `<chain>_r<i>`; a role's bones follow each other), expands into a
+plan: one chain per id, its direction, joints, bends and lengths from its bones.
+
+`motions` (piece, or family as a default; the list of the design's section 13):
+
+| Key | Meaning |
+|---|---|
+| `name` | the clip name the game looks up (lower case, letters, digits, `_`) |
+| `source` | `procedural` or `library`; `text` and `bvh` are reserved for a later phase and refused |
+| `kind` | `procedural`: `breathe`, `hover`, `undulate`, `gait`, `strike`, `aim`, `flinch`, `collapse` |
+| `settings` | `procedural`: the kind's parameters ([conventions.md](conventions.md)) |
+| `library` | `library`: `{"file": path, "clip": name}`, defaults the piece's `inputs.clips` and the entry's name; a file is relative to the order |
+| `frames`, `fps`, `loop` | required frames (2 to 600) for `procedural`; a library clip is resampled to `frames` when given |
+| `holds` | the held-item class during the clip (informative), or `null` |
+| `contacts` | `{role: [frames] or "all"}`: where each foot is planted (a library clip's; a procedural clip makes its own) |
+| `prompt`, `file`, `note` | `prompt` for `text`, `file` for `bvh` (later); a comment |
+
+Settings: `creature_export` `foot_slide_cm`, `reach_shortfall_cm`, `below_ground_cm`
+(number 0-100) and `stretch_p95` (number 0-10): the motion report's thresholds;
+`layout_sheet` as above.
+
+`accept`: `mesh_flags`, `missing_clips`, `foot_slide_cm`, `reach_shortfall_cm`,
+`stretch_p95`, `below_ground_cm`. An export stopped by an invalid bone map is held on the
+`rig`. A person corrects a variant's map in `v<seed>_export/bone_map.json` (`"manual":
+true`, `roles` as `{role: [bones base to tip]}`), as the humanoid's.
+
+The order check refuses: a missing `parts` or `body`, an invalid part list, plan, template
+or motion, a motion source not available yet, a library clip the library lacks, both
+`height` and `length`, `parts` outside `articulated`, `body` and `motions` outside
+`creature`, and a style without `view_articulated` or `view_creature` when the order has
+such a piece. Complete samples:
+[tests/fixtures/order_articulated.json](../tests/fixtures/order_articulated.json) (a
+tracked vehicle, a disc with opening plates, a transport with nacelles, rotors, a ramp
+and a door) and [tests/fixtures/order_creature.json](../tests/fixtures/order_creature.json)
+(a serpent with a torso, a four-legged beast with one library clip, a walker given as a
+template, and two blobs of the `figure` recipe).
+
+Estimates: the parts, the creature export and the layout sheet count as `local_gpu`
+(60 s each), the rig as the humanoid's.
+
 ## Raw jobs (`tasks`)
 
 | Key | Meaning |
@@ -535,7 +671,9 @@ In `<out>/<family>/<piece>/`, each file as `<step>_<role>.<ext>`:
   `seam_rgb.png`, the result `<piece>.png` and the preview `<piece>_tile2x2.png`;
 - humanoid: the step of a variant's job is `v<seed>_<stage>`; local GPU jobs write into
   the folder `<step>/`; plus `review/`, `pick_final.json` and `final/`, and with
-  `reserve` also `review_reserve/` and `pick_final_reserve.json` (see the humanoid recipe).
+  `reserve` also `review_reserve/` and `pick_final_reserve.json` (see the humanoid recipe);
+- articulated and creature: as the humanoid, with the folders `v<seed>_parts/` and
+  `v<seed>_export/` ([conventions.md](conventions.md)).
 
 At the root of `<out>`: `manifest.json` (each job with its state, specification hash,
 files and hashes, times, tries and provenance), `state.json` (count per state: `done`,

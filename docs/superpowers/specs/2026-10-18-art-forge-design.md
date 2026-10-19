@@ -19,10 +19,9 @@ coordination) are detailed in the implementation plan.
 
 ## 2. Out of scope for this phase
 
-- The `articulated` and `creature` recipes (section 7), built when the first order needs
-  them.
-- Generating new motion (text-to-motion). In this phase animation comes from a motion
-  library supplied by the order; HY-Motion Lite is the planned motion option of the next
+- Generating new motion (text-to-motion). In this phase a humanoid's animation comes from
+  a motion library supplied by the order, and a creature's from procedural motion kinds and
+  role-space libraries (section 7); HY-Motion Lite is the planned motion option of the next
   phase.
 - Finger rigs, hand grafting and fine contact with held items: they cost a lot and the
   first use case sees characters from above and from afar.
@@ -111,8 +110,8 @@ The recipe is chosen by how the thing moves, not by what it is:
 | `material` | seamless repeating 2D | floor, wall, sky | core |
 | `object_3d`, `prop`, `vehicle` | rigid, no moving parts | crate, rock, weapon, vehicle seen whole | core |
 | `humanoid` | skinned, human skeleton | soldier, humanoid creature, android | **this phase** |
-| `articulated` | rigid parts on pivots | train, tank, turret, door, plated robot | when ordered |
-| `creature` | skinned, own skeleton | quadruped, insectoid, tentacles | when ordered |
+| `articulated` | rigid parts on pivots | tank, turret, door, ramp, rotor, plated walker | built (2026-10-19) |
+| `creature` | skinned, own skeleton | quadruped, insectoid, serpent, hovering torso | built (2026-10-19) |
 
 A new recipe is added only when a way of moving appears that the table does not cover.
 A new model is added as an option of a stage and becomes available to every recipe that
@@ -142,6 +141,161 @@ The motion library is a JSON of canonical joints per frame (named joints in body
 coordinates, what each pose holds, how the feet stand). The game produces its own with
 the timing it needs; the factory only retargets. Held items are GLBs with the socket
 convention documented in the factory.
+
+### The `articulated` recipe (2026-10-19)
+
+Rigid parts on pivots: a tank with a turning turret and an elevating barrel, a hovering
+gun platform, a disc whose plates open, a plated walker, an aircraft with tilting rotor
+nacelles, a rear ramp and a sliding door. The game moves the parts itself: no skeleton and
+no skinning. Every variant goes through every stage, as the humanoid's.
+
+| Stage | Default | Options | Skippable |
+|---|---|---|---|
+| reference | `qwen21_base`, 1536x1024: the whole object in its rest position (style `view_articulated`) | `qwen21_turbo`, `klein`, `input_image` | no |
+| cutout | `birefnet` | `qwen_edit_character` (text `cutout_articulated`, else the view) | no |
+| mesh | `trellis2` | `hunyuan21` | no |
+| paint | `hunyuan_paint` | `trellis2_texture` | yes |
+| parts | `region_split` (Blender, `tools/blender/articulated_export.py`) | | no |
+| review | `layout_sheet` (the factory lays the sheet out, Godot renders it) | | no |
+
+Then `final`, the same decision as the humanoid's (acceptance limits: `mesh_flags`;
+reserve variants). Output per variant: one GLB with one node per part, nested as the
+parts' parents, each node's origin at its pivot, no animation; `model.json` (parts,
+joints with kind, axis, range and pivot in glTF axes), `mesh_report.json` and
+`frame.json`.
+
+The order gives the parts per piece (key `parts`): id, parent, how the part is found
+(`find`: a box, or a union of boxes, in normalised object coordinates) and its joint (kind
+turn, hinge, spin, slide or fixed; axis; pivot; range). Joints nest through the parents.
+
+Decisions, each with its reason:
+
+1. **The whole object first, the parts derived from it** (option (a) of the request:
+   separate the mesh into parts by regions the order gives), not views of each part meshed
+   apart and assembled (option (b)). Reason: one generated object is one design by
+   construction, while separately meshed parts come at their own scale, position and style
+   and need an alignment that cannot be checked without the GPU; (a) is exact geometry
+   that the tests check on synthetic meshes. (b) stays a later option for parts hidden
+   inside the object (a mesh generator makes only the outer surface).
+2. **Regions in normalised object coordinates** ([side, forward, up], each axis divided
+   by the object's own extent), with an edge given as [low, high] resolved to the
+   **narrowest cross-section** of the parent's triangles between those values. Reason:
+   each variant has its own proportions; the waist between a turret and its hull, a
+   nacelle and its wing, moves from variant to variant, and the section of the triangles
+   finds it whatever the mesh density. A union of boxes takes a sub-assembly spread over
+   several places.
+3. **Exact cuts closed on both sides.** The parent is cut along the box's planes; the
+   part takes the faces inside; both open edges are filled and given a plain `interior`
+   material. Reason: a part that turns or opens must not show holes; a thin box gives a
+   closed plate (a door, a ramp, a hatch) and the opening it leaves is closed too.
+4. **Pivot `cut`** is the area-weighted centre of the largest cut on one plane (where
+   the part meets its parent's body), not the centre of every cut. Reason: a box may also
+   cut a thin piece crossing it (a barrel through a turret's box), which would pull the
+   pivot off its ring. Named faces (`bottom`, `back`, ...) and points cover the rest.
+5. **The frame.** The exported object faces glTF +Z. The order gives `params.front`, the
+   glTF axis the generated front points along (default `+z`, toward the reference's
+   camera); a footprint that came out turned by up to 30 degrees is squared; and a person
+   may correct one variant's frame in its `frame.json` with `"manual": true` (it redoes
+   only that variant's parts, as a manual bone map does). Reason: how a mesh generator
+   orients an object seen at three-quarters has not been measured on the GPU; the review
+   sheet shows each variant's front and the correction costs no new generation.
+6. **No normal-map bake in this phase.** Reason: the mesh stage already reduces the mesh
+   to `params.tris`; the cuts add few triangles; the painted texture carries the detail.
+   A bake per part is a later option.
+7. **The review sheet is laid out by the factory** (`forge/sheet_layout.py`) and Godot
+   only renders its cells (`tools/review_godot/sheet.gd`): the object in every direction of
+   the review camera and from the front, then one strip per joint sweeping its range.
+   Reason: the layout is then tested without Godot, and the same renderer serves both new
+   recipes. The humanoid's sheet (`main.gd`) is left as it is, so its jobs keep their
+   specification.
+
+### The `creature` recipe (2026-10-19)
+
+Skinned, with its own skeleton: a serpent-bodied creature with a humanoid torso, a
+four-armed biped, a two-legged beast with a big jaw, a legless torso over a propulsion
+unit, a walker with reverse ankles.
+
+| Stage | Default | Options | Skippable |
+|---|---|---|---|
+| reference | `qwen21_base`, 1024x1536 (style `view_creature`) | `qwen21_turbo`, `klein`, `input_image` | no |
+| pose | `qwen_edit_2511` (text `pose_creature`, else the view) | | yes |
+| cutout | `birefnet` | `qwen_edit_character` (text `cutout_creature`) | no |
+| mesh | `trellis2` | `hunyuan21` | no |
+| paint | `hunyuan_paint` | `trellis2_texture` | yes |
+| rig | `skintokens` (seed 9001, 10 beams) | `unirig` | no |
+| export | `creature_export` (Blender, `tools/blender/creature_export.py`) | | no |
+| review | `layout_sheet` | | no |
+
+Then `final` (acceptance limits `mesh_flags`, `missing_clips`, `foot_slide_cm`,
+`reach_shortfall_cm`, `stretch_p95`, `below_ground_cm`; reserve variants). Output per
+variant: the skinned GLB with one animation per motion, `model.json`, `bone_map.json`,
+`mesh_report.json`, `motion_report.json` and `clips.json` (every clip in role space).
+
+Decisions, each with its reason:
+
+1. **The humanoid's stages up to the rig, the same options.** Reason: the reference,
+   cutout, mesh, paint and rig steps do not depend on the body; SkinTokens and UniRig
+   predict category-agnostic skeletons.
+2. **A body plan, or a skeleton template as data.** The order's `body` is either a plan
+   (chains: id, the chain they hang from, the way they point, pairs, and optionally their
+   number of joints, the way each joint bends and their relative lengths) or a template
+   (every bone with its parent, rest head and tail in body coordinates, role and bend),
+   which expands into a plan with each chain's exact direction. Reason: a plan is short to
+   write for most bodies; a species whose limbs a plan cannot say (three-segment legs with
+   a reverse ankle) gives its template, and both go through the same mapping and motions.
+3. **The predicted bones are mapped onto the plan without human work**, by the tree and
+   the geometry: from the root down its single children to the first branch (the hub);
+   candidate runs of single children hanging from the parent chain (a short branching
+   connector also offers its children); each scored by its direction against the chain's
+   and its length; the best pairs taken first; left and right by the side of the body;
+   a chain that others hang from carries on through its branches (a spine past the arms);
+   a missing chain at the end of its parent takes the bones past the parent's last branch
+   (a neck grown into the spine). Every map is validated; an invalid map stops the export
+   and a person corrects `bone_map.json` (`"manual": true`), or the order gives
+   `inputs.bone_map`, as the humanoid's. Reason: the rig tools predict a different
+   skeleton per variant, so per-variant hand work cannot be the normal path.
+4. **Joints and bends.** Each mapped bone takes the joint of its chain its middle falls in
+   (by length, against the chain's relative joint lengths) and that joint's bend. Reason:
+   a predicted chain rarely has the plan's bone count; the bend decides which way a knee or
+   a reverse ankle flexes in a gait and how limbs curl in a fall.
+5. **Movements come from the `motions` list of section 13**, per piece with a family
+   default, each entry with its name, `source`, frames, fps, loop, holds, contacts and
+   settings. Sources made now: `procedural` (a motion kind with its settings: `breathe`,
+   `hover`, `undulate`, `gait`, `strike`, `aim`, `flinch`, `collapse`) and `library` (a
+   clip of a role-space library, `forge-creature-clips`, resampled to the entry's frames).
+   `text` and `bvh` keep their names and keys (`prompt`, `file`) and are refused by the
+   order check until they exist. Reason: one list for every source, so the next phase adds
+   sources without renaming anything.
+6. **Clips in role space, the canonical form.** Every exported creature also writes
+   `clips.json`: per frame the root's move (body heights) and per role the chain's
+   accumulated turn at each position along it (0 to 1, body axes). Another skeleton with
+   the same roles plays it whatever its bone counts (the library source does exactly that).
+   Reason: as the humanoid's canonical joints, this is what a motion generator or a game
+   can hand over once for every variant.
+7. **Legged gaits by exact inverse kinematics.** Each foot follows a stance (planted,
+   moving back at the body's speed) and a swing (lifted forward); hip and knee are solved
+   by the law of cosines, the bones below them keep their rest orientation (a long foot
+   stays a reverse ankle); the body lowers so every foot stays in reach. Stance frames and
+   travel follow the humanoid library's convention, so the motion report measures foot
+   slide the same way. Default phases alternate left and right and along each side (a
+   biped walks, four legs trot, six legs go in tripods).
+8. **No clip sinks into the ground**: a pose whose lowest bone would go below the rest
+   pose's is lifted; a fall keeps its lowest bone on a floor going down to `lie`. The
+   motion report adds `below_ground_cm`, an acceptance limit of the creature only, so the
+   humanoid's limits, and the specification of its jobs, do not change.
+9. **Item bones** (`item`, `item_l`, `item_ref` as the humanoid's) at the tips of the roles
+   the plan's `holds` names. Reason: armed creatures hold the game's items.
+10. **No normal-map bake and no carry of other maps from the painted mesh in this phase**:
+    the paint stage's metallic-roughness map replaces the rig's, the rest stays as the rig
+    delivers it, and the written GLB is checked. A later option, as for the articulated
+    recipe.
+
+### Limbless figures
+
+A shapeless figure that floats or crawls (a blob) needs no recipe of its own: the `figure`
+recipe makes a painted, unrigged mesh (`mesh_painted_mesh.glb`, at `params.tris` faces and
+`params.texture`), and the game animates it (a bob, a squash). The sample creature order
+shows two.
 
 ## 8. Running and the GPU
 
@@ -185,6 +339,15 @@ repository.
   export, renaming, retarget of a sample library and sheet, checking the re-imported GLB
   (bones, animations, scale) and the sheet image.
 - Provenance exported from the smoke test.
+- The articulated and creature recipes (2026-10-19): unit tests of the part geometry, the
+  role map on synthetic skeletons (a serpent, a four-legged beast, a four-armed biped, a
+  hovering torso, a template with reverse ankles) and the procedural clips (loops close,
+  planted feet stay in the ground's frame, reach, falls, role-space round trip); recipe
+  expansion and order checks; a night with the fake server and stand-ins; the sheet's
+  layout; `-Check` and `-Estimate` on their sample orders; and smoke tests of the parts
+  exporter, the creature exporter and the layout sheet on synthetic Blender fixtures. The
+  specification hashes of the sample humanoid and core orders are pinned
+  (`tests/test_spec_pins.py`). Nothing of these recipes has run on generated meshes.
 
 ## 11. Who writes and runs orders
 
@@ -197,11 +360,13 @@ recipe before spending a night on a full art list.
 
 1. A first real humanoid order from a game, with its adapter in that game's repository.
 2. Full art lists in the existing recipes.
-3. `articulated`, with the first order that has a vehicle or a plated robot.
-4. The order's `motions` list (section 13): each movement a piece needs, from the game's
-   library, generated from text with HY-Motion Lite, or read from a BVH capture.
-5. `creature`, with the first order that has a non-humanoid creature (including where its
-   animation comes from).
+3. `articulated` and `creature` (built 2026-10-19, section 7): their first real night,
+   which will say whether the default frame (`params.front`) and the regions fit generated
+   meshes and how the rig tools' skeletons map onto body plans.
+4. The order's `motions` list (section 13) for the remaining sources: `text` (HY-Motion
+   Lite) and `bvh` for the humanoid and the creature, and `library` for the humanoid. The
+   creature already reads the list with `procedural` and `library`.
+5. Held items with sockets for creatures beyond the item bones of `body.holds`.
 6. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
 
@@ -231,6 +396,15 @@ retargeting, foot planting, hand placement and the motion report work the same w
 the source. A `text` clip is generated once per piece family (not per variant) and keeps
 its own provenance (model, prompt, seed, effective settings), so the same movement can be
 reviewed and reused across variants. The library of today becomes one source among three.
+
+State on 2026-10-19: the creature recipe reads this list (keys `name`, `source`, `kind`,
+`settings`, `library`, `prompt`, `file`, `frames`, `fps`, `loop`, `holds`, `contacts`,
+`note`) with the sources `procedural` (a motion kind of the creature, its parameters in
+`settings`) and `library` (a role-space clip, `forge-creature-clips`); `text` and `bvh`
+are refused by the order check until they exist. A creature's canonical clip format is
+role space (accumulated turns along each chain), the creature's counterpart of the
+canonical joints; a text-to-motion source for creatures will have to end in it. The
+humanoid does not read the list yet.
 
 Open points for that phase's design: HY-Motion Lite runs through its own ComfyUI node and
 a separate server instance; generated motion needed contact, hip and cycle corrections in

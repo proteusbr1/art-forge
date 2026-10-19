@@ -58,16 +58,33 @@ format in [docs/order.md](docs/order.md) and the design in
 - `forge/local_gpu.py`: runners of the local tools that use the card (`run_rig`,
   `run_export`, `run_review`), their logs and provenance, and `RUNNERS` (the tools of the
   `local_gpu` job kind: `rig`, `export`, `review`).
+  `RUNNERS` also has `parts` (articulated), `creature_export` and `sheet` (the layout sheet
+  of both new recipes).
+- `forge/tool_specs.py`: the order check of part lists, body plans and motions, by the
+  tools' own modules; `forge/sheet_layout.py`: the layout of the articulated and creature
+  review sheet (Godot only renders it).
 - `forge/workflows/`: production ComfyUI workflows in API format.
 - `tools/blender/`: `humanoid_bones.py` (bone map from the skeleton's tree, no `bpy`) and
   `humanoid_export.py` (the humanoid export, run by `blender_python`) and
   `glb_materials.py` (what a written GLB's material holds, read from the file; no `bpy`).
-- `tools/review_godot/`: the Godot project of the review sheets (off screen).
+  `articulated_parts.py` (part lists and region geometry, no `bpy`) and
+  `articulated_export.py` (the parts); `creature_bones.py` (body plans, templates and the
+  role map) and `creature_motion.py` (motion kinds, gaits, role-space clips), both without
+  `bpy`, and `creature_export.py`; `forge_blender.py` (helpers of the two new exporters).
+  The humanoid's scripts are left unchanged by the new recipes (their hashes are in the
+  humanoid jobs' specifications).
+- `tools/review_godot/`: the Godot project of the review sheets (off screen): `main.gd`
+  (humanoid) and `sheet.gd` / `sheet.tscn` (articulated and creature).
 - `tools/rig/skintokens_entry.py`: SkinTokens with a fixed seed, run by its own Python.
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
-  orders (`order_generic.json`, `order_humanoid.json`) and `tests/fixtures/humanoid/` the
-  synthetic humanoid (generator, library, item).
+  orders (`order_generic.json`, `order_humanoid.json`, `order_articulated.json`,
+  `order_creature.json`), `tests/fixtures/humanoid/` the synthetic humanoid (generator,
+  library, item), `tests/fixtures/articulated/` and `tests/fixtures/creature/` the
+  generators of the new tools' Blender fixtures and a role-space library;
+  `tests/creature_skeletons.py` the synthetic creature skeletons. `tests/test_spec_pins.py`
+  pins the specification hashes of the sample humanoid and core orders: a change that
+  moves them would redo a running night's jobs.
 
 ## Running
 
@@ -165,6 +182,9 @@ Run from the repository root. They start a fake ComfyUI (`tests/fake_comfy.py`, 
 `http.server` thread that returns small PNGs and a fake `.glb`) and run the real factory
 as a process. No GPU inference and no visible window; about a minute.
 
+`tests/test_new_tools_smoke.py` does the same for the parts exporter, the creature
+exporter and the layout sheet (fixtures under `local/fixtures/new_tools/`, outputs in
+`local/smoke/new_tools/`).
 `tests/test_local_tools_smoke.py` runs the humanoid exporter and the review sheet when
 `forge.local.json` points to `blender_python` and `godot` (skipped otherwise): the fixture
 GLBs are made once under `local/fixtures/`, outputs go to `local/smoke/`, normal maps are
