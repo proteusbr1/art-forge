@@ -54,6 +54,9 @@ format in [docs/order.md](docs/order.md) and the design in
   its variants (acceptable or rejected, with the stage held responsible) and the outcome
   `no_variant_passed` that releases reserve variants.
 - `forge/provenance.py`: provenance records and export.
+- `forge/body.py`: an approved body (`inputs.body`): its check, and the skeletons and motions
+  of GLB files read and compared without `bpy`; `forge/local_gpu.py` `run_body_export` and the
+  runner `body_export` conform a variant to it and export it.
 - `forge/comfy_server.py`, `forge/factory_util.py`: HTTP client and helpers.
 - `forge/local_gpu.py`: runners of the local tools that use the card (`run_rig`,
   `run_export`, `run_review`), their logs and provenance, and `RUNNERS` (the tools of the
@@ -79,6 +82,10 @@ format in [docs/order.md](docs/order.md) and the design in
   `articulated_export.py` (the parts); `creature_bones.py` (body plans, templates and the
   role map) and `creature_motion.py` (motion kinds, gaits, role-space clips), both without
   `bpy`, and `creature_export.py`; `forge_blender.py` (helpers of the two new exporters).
+  `humanoid_fit.py` (the conform of a variant to an approved body, no `bpy`),
+  `humanoid_conform.py` (the conform in Blender) and `humanoid_body_export.py` (the humanoid
+  exporter, unchanged, run in the body's frame: it replaces three of its statements and stops
+  when one is not found exactly once).
   `held_item_geometry.py` (the item frame, class templates, socket proposal and checks, no
   `bpy`), `held_item_export.py` (the item tool) and `held_item_figure.py` (a reference figure
   made ready for the humanoid exporter).
@@ -100,7 +107,12 @@ format in [docs/order.md](docs/order.md) and the design in
   `tests/fixtures/creature/` the generators of the new tools' Blender fixtures and a
   role-space library, `tests/fixtures/held_item/` the synthetic carbine's generator and the
   held items' library;
-  `tests/creature_skeletons.py` the synthetic creature skeletons. `tests/test_spec_pins.py`
+  `tests/creature_skeletons.py` the synthetic creature skeletons. `tests/humanoid_synth.py`
+  (capsule figures by role, NumPy), `tests/glb_synth.py` (small GLBs and stub bodies without
+  Blender) and `tests/fixtures/humanoid/make_body_fixtures.py` (those figures rigged in Blender)
+  serve the approved body's tests (`order_humanoid_body.json` is its sample order);
+  `tests/fixtures/humanoid/bone_trees.json` holds synthetic skeletons of bulky armour for the
+  bone map. `tests/test_spec_pins.py`
   pins the specification hashes of the sample humanoid and core orders: a change that
   moves them would redo a running night's jobs.
 
@@ -223,6 +235,9 @@ its sheet in `local/smoke/real/`. Never commit those files. Never run SkinTokens
 from a test (they need the GPU). `tests/test_export_pose_smoke.py` runs only Blender, on the
 CPU and without a bake (outputs in `local/smoke/pose/`): the synthetic figure facing -y, +x and
 -x and with its bones' tails off their children must export an idle with straight legs.
+`tests/test_humanoid_body_smoke.py` also runs only Blender on the CPU: it exports two synthetic
+approved bodies (`local/fixtures/humanoid_body/`, the sample order's) and conforms two variants
+of other proportions to one (`local/smoke/humanoid_body/`).
 `tests/test_humanoid_motions.py` and `tests/test_launcher.py` need no tool: HY-Motion is
 replaced by `tests/fixtures/motion/hymotion_standin.py` (`FORGE_HYMOTION_ENTRY`), and the
 launcher test starts a factory detached (WMI) against the fake server with a private lock

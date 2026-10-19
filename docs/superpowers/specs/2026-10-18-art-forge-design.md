@@ -108,7 +108,7 @@ The recipe is chosen by how the thing moves, not by what it is:
 | `illustration` | finished 2D picture | encyclopedia art, portrait, scene | core |
 | `material` | seamless repeating 2D | floor, wall, sky | core |
 | `object_3d`, `prop`, `vehicle` | rigid, no moving parts | crate, rock, weapon, vehicle seen whole | core |
-| `humanoid` | skinned, human skeleton | soldier, humanoid creature, android | **this phase** |
+| `humanoid` | skinned, human skeleton (optionally one approved body for every variant, section 14) | soldier, humanoid creature, android | **this phase** |
 | `articulated` | rigid parts on pivots | tank, turret, door, ramp, rotor, plated walker | built (2026-10-19) |
 | `creature` | skinned, own skeleton | quadruped, insectoid, serpent, hovering torso | built (2026-10-19) |
 | `held_item` | rigid, held by a figure (item space, sockets) | carbine, pistol, lantern, tool case | built (2026-10-19) |
@@ -634,3 +634,92 @@ parent's line), the two-bone IK is solved exactly on the joints, and the figure 
 about the vertical so that its front is glTF +z. Reason: the joints are what the rig tool
 predicts; axes are an artefact of the import. The humanoid exports' specification changes
 (the exporter is in it), on purpose.
+
+## 14. A common body for a humanoid's variants (built 2026-10-19)
+
+Each humanoid variant gets its own predicted skeleton and proportions from the rig stage. A
+game wants all its figures of one kind (outfits and armours, male and female) to share one
+approved body: the same skeleton (bone names, hierarchy, rest) and proportions, so that an
+animation, an item socket or an attachment works on every outfit without per-model work. The
+order now says "wear this approved body": `inputs.body`, a GLB the humanoid exporter wrote
+(its `model.json` next to it). Every variant of a piece that wears it is conformed to it and
+exported on its skeleton; a bulky armour stays bulky around the same joints. The order format
+is in [order.md](../../order.md#a-common-body-inputsbody), the files in
+[conventions.md](../../conventions.md#a-figure-that-wears-an-approved-body).
+
+Decisions, each with its reason:
+
+1. **The variant is conformed by its own skin, then bound with its own weights.** The rig
+   is still predicted and mapped with the bone map; the variant's mesh is moved by its own
+   weights (linear blend skinning from its rest to the body's) so that its joints land on the
+   body's: each limb segment turned onto the body's by the smallest rotation and stretched
+   along its own line (bone lengths match, the thickness across stays), after a uniform
+   prefit (turn and scale by least squares). Then it is bound to the body's skeleton with its
+   own weights renamed (a finger with its hand). Reasons: the predicted weights follow each
+   outfit's own geometry, while a weight transfer from the body near the skin would give a
+   shoulder pad or a hood the weights of whatever body part is nearest; landmark fitting
+   would need landmarks a generated mesh does not have. The skinning path is plain geometry,
+   tested on synthetic figures without Blender (`tools/blender/humanoid_fit.py`), and it ran
+   without flags on the night's armours (below). Weight transfer stays a later option (for
+   tight suits, and for the body's finger bones, which carry no weight now).
+2. **Three parts are not forced onto the body's joints.** The torso (hips to neck) is one
+   piece: the spine joints a rig tool predicts are not landmarks of the surface, and forcing
+   them would redistribute the belly and the chest. The neck and head are one piece set on
+   the body's neck joint, unstretched: the night's heavy armour had a neck half the body's
+   (a short neck under a big helmet), and stretching it twice tore the collar. End bones
+   (hands, toes) are not stretched. Their remaining distances are reported
+   (`joint_error_cm`, `head_offset_cm`).
+3. **The body wins on height and proportions, and the order check says so**: a piece with a
+   body may not set `params.height`, `head`, `hands`, `feet` or `widen` (a problem of the
+   order, not a silent override). The exported figure takes the body's values.
+4. **The exporter is unchanged and runs in the body's frame.** It normally stands, turns and
+   scales a rig by its own mesh (floor, height); a helmet or a thick sole would move the
+   skeleton and change the motions' scale. `tools/blender/humanoid_body_export.py` reads the
+   exporter and runs it with three statements replaced (the stand becomes the identity; the
+   floor and height become the body's), each checked to be found exactly once. Reason: the
+   exporter's file is in every humanoid export's specification; editing it would redo every
+   export of a running night whose order uses no body. When the exporter is next changed on
+   purpose, the body frame should become an option of its own.
+5. **Acceptance.** The conform report (`conform_report.json`, a file of the export) measures
+   the joints before and after, each segment's stretch, the edges' stretch and tears, the
+   body's joints outside the conformed outfit, the soles against the body's floor and how far
+   the body's surface lies outside the outfit. Flags (joints off, a segment stretched beyond
+   1.5, tears, a joint outside, soles 4 cm off) reject a variant by default (`conform_flags`
+   0, decision recipe `humanoid_body`, so a humanoid without a body keeps its limits);
+   `conform_stretch_p95` and `body_outside_cm` gate only when the order sets them. Inside
+   and outside are told by rays that escape (a quarter of 26), not by normals or ray parity:
+   the night's generated meshes have inner shells, open seams and mixed winding, which made
+   every joint of an armour look outside by its normals. The sheet's label shows a line of
+   the measures. The skin poking through is measured as the body's surface outside the
+   conformed outfit; it does not gate by default, since each variant is a whole figure and
+   the body is never drawn with it.
+6. **The exported GLB.** The body's skeleton exactly (names, hierarchy, rest and inverse
+   binds, the item bones and `item_ref`), compared with the body's GLB after the export
+   (`forge/body.py`; a difference is a mesh flag); the motions retargeted as today, which on
+   one skeleton and one frame are the same on every variant; `model.json` `body` names the
+   body by its SHA-256.
+7. **How a body is given.** `inputs.body` per piece, or per family with a per-piece override
+   (`null` drops it): a male and a female body are two values. A path to a run's pick
+   (`<out>/<family>/<piece>/final/<piece>.glb`) is enough; the body's GLB and its
+   `model.json` enter the export's specification, so a new body, or a changed pick, redoes
+   the exports, sheets and decisions only. The order check refuses a body in the piece's own
+   output (a piece cannot wear its own pick, which changes with every run) and a body that
+   stands turned more than 15 degrees from facing +z: the night's exports showed figures
+   turned 22 to 40 degrees (the exporter squares a figure only to the axis its feet point
+   to), both automatic picks of the unarmoured pieces among them.
+8. **One job, not a new stage.** The conform and the export run in one job (`body_export`,
+   stage `export`), so the stage list, the review and the decision stay as they are; the
+   conform's settings are export settings (`conform_*`), refused without a body.
+
+Verified on 2026-10-19, without the GPU: the geometry on synthetic figures (other sizes,
+proportions, bulk and facing; a scaled and turned copy lands exactly; a joint outside, an
+overstretched segment, a tear, low soles and a short neck), the GLB skeleton and motion
+comparison, the expansion and order checks, the sample order (`-Check`, `-Estimate`), a night
+with the fake server and stand-ins, and a Blender smoke test on the CPU (two synthetic
+variants conformed to an exported synthetic body: the body's skeleton within 4e-7 m, the same
+motions on both and on the body). On copies of the running night's data, on the CPU with a
+normal-map bake from the moved raw mesh: a light armour and a heavy armour conformed to an
+unarmoured export, both without flags, the body's skeleton within 5e-7 m, the 45 clips the
+same on both variants (difference 0) and within 2e-5 of the body's own. Never ran: the
+factory driving `body_export` in a real night, the GPU bake of a conformed variant, the
+review sheet in Godot with the conform line, and a game playing a conformed GLB.

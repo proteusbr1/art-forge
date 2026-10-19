@@ -315,6 +315,86 @@ library only. Every clip is played on the exported GLB, loaded again in a fresh 
 (and `missing` for a clip the GLB does not have). The thresholds are starting values: on
 one real rig the stretch was about 0.40 in standing clips and 0.61 kneeling.
 
+### A figure that wears an approved body
+
+With `inputs.body` the export job (`body_export`, `forge/local_gpu.py run_body_export`) runs
+two Blender steps in `v<seed>_export/`:
+
+1. `tools/blender/humanoid_conform.py` (its geometry in `humanoid_fit.py`, without `bpy`) in
+   `conform/`. The body: the GLB without its item bones, `item_ref` and animations, its joints
+   by role from its `model.json` `bones`. The variant: its rig's bone map, chosen as the
+   exporter chooses it (the order's `bone_map`, else `conform/bone_map.json` marked
+   `"manual": true`, else the proposal; an invalid map stops with exit code 3). Then:
+   - a prefit: the variant turned so that its front is the body's, then about the vertical
+     and scaled uniformly by least squares over its joints seen from the hips, its hips on
+     the body's;
+   - one matrix per role: each limb segment (shoulder, upper and lower arm, upper and lower
+     leg, foot to toes) turned onto the body's segment by the smallest rotation and
+     stretched along its line, so both its joints land on the body's; the torso (hips to
+     neck) one piece the same way; the neck and head one piece set on the body's neck joint
+     with the torso's turn, not stretched; a hand, toes or a foot without toes turned with
+     its parent segment and set on its own joint;
+   - every vertex moved by the variant's own weights (linear blend skinning), the bake
+     source's vertices by the weights of the variant's nearest vertex;
+   - the mesh bound to the body's skeleton with the variant's weights renamed to the body's
+     bones: a bone without a role (a finger) counted with its nearest mapped ancestor, a role
+     the body lacks with its nearest role the body has. The body's finger bones carry no
+     weight.
+   It writes `conform/conformed.glb` (the body's skeleton, the conformed mesh, the variant's
+   material), `conform/conformed_raw.glb` (the moved bake source, removed after the export),
+   `conform/frame.json`, `conform/body_map.json` (the body's roles) and
+   `conform_report.json`.
+2. `tools/blender/humanoid_body_export.py`: the humanoid exporter, unchanged, read and run
+   with three statements replaced (each must be found exactly once, else exit code 2): the
+   stand, turn, scale and widen of the rig becomes the identity (the rig already stands in
+   the body's frame), and the figure's floor and height become the body's (the clips are
+   scaled by them, not by the outfit's mesh: a helmet or a sole would change them). The
+   body's `widen`, `head`, `hands`, `feet` and `height` are passed on the command line, the
+   body's roles as the bone map, the conformed raw mesh as the bake source.
+
+`conform/frame.json` (`forge-body-frame`): `height` (the body's `model.json` height), `floor`
+(the body's left ankle height minus its `ankle_height`), `widen`, `head`, `hands`, `feet`,
+`front`, `body` (its file name).
+
+`conform_report.json` (`forge-conform-report`, `version` 1, `status` `pending review`):
+
+| Key | Meaning |
+|---|---|
+| `valid` | false when the variant's bone map was invalid (then only `bone_map` and `flags`) |
+| `body` | the body's file name, height, roles and bone count |
+| `bone_map` | the variant's map's `source` and file |
+| `weights`, `bones_folded` | how the weights were kept; the variant's bones without a role |
+| `roles`, `missing_roles` | the roles both skeletons have; the body's roles the variant lacks (their bones carry no weight) |
+| `prefit` | `turn_deg` (about the vertical, of which `refine_deg` after the front), `scale` |
+| `joints` | per role: `before_cm` (after the prefit only: how the proportions differ), `after_cm`, `scale` (its segment's stretch), `kind` (`torso`, `head`, `segment`, `end`) |
+| `joint_error_cm`, `joint_error_role` | the largest `after_cm` but the neck's and head's (the torso's spine joints) |
+| `head_offset_cm` | how far the body's head joint is from the conformed variant's |
+| `joint_outside_cm`, `joint_outside_max_cm` | per role, how far the body's joint lies outside the conformed outfit (0 inside): a point is outside when at least a quarter of 26 rays from it leave without crossing the surface, which tolerates the inner shells, open seams and mixed winding of generated meshes |
+| `segment_scale` | the smallest and largest segment stretch |
+| `stretch_p95`, `stretch_max`, `torn_share` | the edges' `abs(length / length after the prefit - 1)`; the share stretched over twice or under half |
+| `floor_offset_cm` | per side, how far the outfit's sole (the lowest vertex of the foot and toes) is below (+) or above (-) the body's floor |
+| `body_outside` | the body's surface (up to 20000 of its vertices) outside the conformed outfit: `p95_cm`, `p99_cm`, `max_cm`, `share_over_1cm`, `sampled` |
+| `thresholds`, `flags` | the flags over the thresholds |
+
+| Flag | Default threshold (setting) |
+|---|---|
+| `joints: the conformed <role> joint misses the body's by ...` | 4 cm (`conform_joint_cm`) |
+| `scale: the <role> segment is stretched by ...` | outside 1/1.5 to 1.5 (`conform_scale`) |
+| `tear: ... of the edges are stretched over twice or under half ...` | 0.2 % (`conform_torn_share`) |
+| `outside: the body's <role> joint lies ... outside the outfit` | 1.5 cm (`conform_outside_cm`) |
+| `floor: the <side> sole lies ... below/above the body's floor` | 4 cm (`conform_floor_cm`) |
+
+The thresholds are starting values from one night's armours (below 1.5 for segment
+stretch, joints inside, soles within 2 cm).
+
+`model.json` of such a figure adds `body`: `file`, `sha256` (the body's GLB), `model_sha256`,
+`conform_report` and `skeleton`, the comparison of the written GLB's skeleton with the body's,
+read from both files (`forge/body.py`): `identical`, `joints`, `max_offset_m`, `max_turn_deg`,
+`max_scale`, `max_inverse_bind`, `problems`. Joints' rest translations within 0.1 mm, rotations
+within about 0.01 degree, scales within 1e-4 and the `item_ref` node's place are the same
+skeleton (Blender's round trips leave a few 1e-7). A skeleton that differs is a mesh flag
+`skeleton: ...`. Its `height`, `widen`, `head`, `hands` and `feet` are the body's.
+
 ## Review sheet
 
 `run_review` writes `<name>.png` (transparent background, text on dark bands) and
@@ -337,7 +417,10 @@ The factory's review job passes each variant's acceptance verdict (forge/accepta
 with its first two reasons (the worst first): a line under the header, green for
 `acceptable` (`acceptable: motion not gated` when the order set no motion limit), red for
 `rejected`; "pending review" stays. When no variant is acceptable a red banner over the
-sheet says `NO VARIANT PASSED: MOST OFTEN THE <STAGE> (<n> OF <m>)`.
+sheet says `NO VARIANT PASSED: MOST OFTEN THE <STAGE> (<n> OF <m>)`. A variant that wears an
+approved body has one more reason at the end of that line, its conform measures:
+`conform: joints <cm> cm, stretch p95 <x>, body out <cm> cm, <n> flags` (the Godot project is
+unchanged; it joins the reasons into the line).
 
 ## Pick outcomes
 

@@ -213,6 +213,7 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `figure` | held item's hold | a rigged humanoid GLB that holds the item on the review sheet ([below](#the-held-item-recipe)) |
 | `clips` | held item's hold | the motion library whose clips holding the item's class the figure plays |
 | `bone_map` | humanoid export | a bone map JSON that replaces the proposed one (roles to the rig's bone names), for every variant; or an object `{"v<seed>": file}` (the key may also be the bare seed) with one map per variant, since the rig predicts a skeleton per variant: a variant it does not name gets the proposal, a key that is no variant of the piece is a problem of the order |
+| `body` | humanoid export | an approved body: a GLB the humanoid exporter wrote (a variant's `v<seed>_export/<piece>.glb` or a piece's `final/<piece>.glb`, of this run or another), its `model.json` next to it. Every variant is conformed to it and exported on its skeleton ([below](#a-common-body-inputsbody)). A piece's `null` drops its family's body |
 
 `review` (the recipes with a review stage; the held item adds its own settings): `pitch` (number, degrees above the horizon, default 60),
 `directions` (whole number, default 8), `figure_height` (whole number, pixels of the
@@ -305,6 +306,9 @@ humanoid's `hunyuan21` takes only `shape_steps`, `shape_guidance`, `shape_seed` 
 | | `glow` | bool | argument `glow` (the regions mask also marks what glows) |
 | | `foot_slide_cm`, `hand_socket_cm`, `reach_shortfall_cm`, `penetration_cm` | number 0-100 | the motion report's thresholds |
 | | `stretch_p95` | number 0-10 | the motion report's stretch threshold |
+| | `conform_joint_cm`, `conform_outside_cm`, `conform_floor_cm` | number 0-100 | the conform's thresholds (with `inputs.body` only; defaults 4, 1.5, 4) |
+| | `conform_scale` | number 1-10 | the conform's segment stretch threshold (with `inputs.body` only; default 1.5) |
+| | `conform_torn_share` | number 0-1 | the conform's tear threshold (with `inputs.body` only; default 0.002) |
 | `godot_sheet` | `front_height` | int 64-2048 | argument `front_height` |
 | | `strip_frames` | int 1-32 | argument `strip_frames` |
 
@@ -348,6 +352,42 @@ piece's `review/` holds `sheet.png` and its layout.
   (metallic-roughness, opacity, emissive, occlusion; with `trellis2_texture` TRELLIS.2's
   own) are taken from the painted mesh. The written GLB is read back: a map that is lost,
   lossy or cannot be carried is a mesh flag ([conventions.md](conventions.md)).
+
+### A common body (`inputs.body`)
+
+A game wants all its figures of one kind (the outfits and armours of one crew, say) to
+share one approved body: the same skeleton (bone names, hierarchy, rest) and proportions,
+so that any animation, item socket or attachment works on every outfit. `inputs.body` (piece
+or family; a piece's own value wins and `null` drops the family's) names that body: a GLB the
+humanoid exporter wrote, with its `model.json` next to it. A path to a run's pick is enough
+(`<out>/<family>/<piece>/final/<piece>.glb`); a male and a female body are two pieces' picks,
+the family giving one and the pieces of the other kind overriding it.
+
+Every variant still gets its own rig (the rig stage is unchanged). Its export becomes
+`body_export` (stage `export`): the variant's rig is conformed to the body (the variant's
+bone map as usual; its mesh moved by its own weights so that its joints land on the body's;
+bound to the body's skeleton with its own weights; [conventions.md](conventions.md#a-figure-that-wears-an-approved-body)),
+then the humanoid exporter runs on it in the body's frame: the GLB has the body's skeleton
+(checked against the body's GLB), the body's height and proportions, and motions
+retargeted on that skeleton, the same on every variant that wears the body. The body's GLB
+and its `model.json` enter the export's specification: a new body (or a re-picked one)
+redoes the exports, sheets and decisions only.
+
+The order check refuses with a body: `params.height`, `head`, `hands`, `feet` and `widen` (the
+body sets them); a body that is not a GLB, has no readable humanoid `model.json` next to it,
+lacks a role's bone, or stands turned more than 15 degrees from facing +z (its shoulders' or
+hips' line); a body inside the piece's own output folder (`<family>/<piece>/`: a piece cannot
+wear its own pick); and skipping the rig and export. The `conform_*` export settings and the
+`conform_flags`, `conform_stretch_p95` and `body_outside_cm` limits are refused on a piece
+without a body.
+
+Files: `v<seed>_export/` also holds `conform_report.json` (a role of the export, copied to
+`final/`) and `conform/` (the conform's logs, `conformed.glb`, `frame.json`, `body_map.json`
+and the variant's own `bone_map.json`). A person corrects a variant's bone map in
+`v<seed>_export/conform/bone_map.json` (`"manual": true`), which redoes that export; the
+`bone_map.json` next to the GLB is the body's roles. The conform flags reject a variant by
+default (`conform_flags` 0, [below](#acceptance-and-reserve-variants)), and the sheet's
+label of each variant ends with a line of its conform measures.
 
 ### Motions of a humanoid
 
@@ -411,6 +451,9 @@ the others are `acceptable`.
 | `foot_slide_cm`, `hand_socket_cm`, `reach_shortfall_cm`, `penetration_cm` | number, at least 0 | not gated | the largest value of that measure over the clips |
 | `stretch_p95` | number, at least 0 | not gated | the largest edge stretch over the clips |
 | `bake_source_offset_m` | number, at least 0 | not gated | `bake_source_offset_m` of the mesh report (a bake source that does not line up is already a mesh flag) |
+| `conform_flags` | whole number, at least 0 | 0 | with `inputs.body` only: how many conform flags the variant may have (`conform_report.json` `flags`) |
+| `conform_stretch_p95` | number, at least 0 | not gated | with `inputs.body` only: the 95th percentile of the edges' stretch by the conform |
+| `body_outside_cm` | number, at least 0 | not gated | with `inputs.body` only: the 99th percentile of how far the body's surface lies outside the conformed outfit, cm |
 
 By default, then, a variant is rejected only for structural defects: a failed job (an
 invalid bone map included), any mesh flag (unweighted vertices, weights not normalised,
@@ -435,6 +478,10 @@ violation names the stage held responsible (`forge/acceptance.py`, a conservativ
 | a motion limit | `rig`; `library` when the same clip is over a limit on every variant that has a motion report (at least two) |
 | a missing clip, an unreadable report | `export` |
 | a NaN or infinite motion value | `unknown` |
+| a conform flag `joints:`, `scale:`, `outside:`, `tear:`, a `conform_stretch_p95` over its limit | `rig` (the conform follows the predicted joints and weights) |
+| a conform flag `floor:` | `unknown` (the outfit's soles or its predicted ankles) |
+| `body_outside_cm` over its limit | `mesh` |
+| a skeleton that differs from the body's (a mesh flag `skeleton: ...`) | `unknown` |
 
 `reserve` (piece or family, default 0): that many more variants, with the next seeds of
 `family/piece` (the first `variants` seeds stay the same), are expanded with their whole

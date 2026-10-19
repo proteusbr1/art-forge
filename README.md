@@ -28,7 +28,11 @@ are smoke-tested on a synthetic carbine and the synthetic humanoid only. The hum
 in `data/motions/`), BVH captures and HY-Motion Lite, every source brought to the library's
 canonical joints with recorded corrections; it is tested on synthetic motion and with a
 stand-in for HY-Motion: HY-Motion has not generated a clip through the factory yet (`-Check`
-imports its modules on this machine). See the
+imports its modules on this machine). A humanoid piece may also wear an approved body
+(`inputs.body`, 2026-10-19): every variant is conformed to a body the exporter wrote and
+exported on its skeleton, with the same motions on every outfit; it is tested on synthetic
+figures in Blender on the CPU and was checked on copies of a real night's armours (CPU only);
+the factory has not yet run it in a night. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).
@@ -41,7 +45,8 @@ imports its modules on this machine). See the
   mesh) and `humanoid` (skinned, human skeleton: every variant goes from a generated
   reference to an exported, animated GLB, then one review sheet and a provisional final
   pick among the variants that meet the order's acceptance limits, or the outcome
-  `no_variant_passed`, which can release reserve variants), `articulated` (the whole object
+  `no_variant_passed`, which can release reserve variants; with `inputs.body` every variant
+  wears one approved body: its skeleton, proportions and motions), `articulated` (the whole object
   generated, then cut into the order's parts on pivots: one node per part, joints in a
   model file) and `creature` (the humanoid's stages to the rig, then the predicted bones
   mapped onto the order's body plan or skeleton template and the order's motions made in
@@ -75,8 +80,9 @@ local ComfyUI with the custom nodes and models the workflows use (see the table 
 2. Write an order (start from [tests/fixtures/order_generic.json](tests/fixtures/order_generic.json),
    or [tests/fixtures/order_humanoid.json](tests/fixtures/order_humanoid.json) for characters,
    [order_articulated.json](tests/fixtures/order_articulated.json),
-   [order_creature.json](tests/fixtures/order_creature.json) and
-   [order_held_item.json](tests/fixtures/order_held_item.json)).
+   [order_creature.json](tests/fixtures/order_creature.json),
+   [order_held_item.json](tests/fixtures/order_held_item.json) and, for humanoids that
+   share one approved body, [order_humanoid_body.json](tests/fixtures/order_humanoid_body.json)).
 3. Check it and see what it costs, then start it. The output folder must be outside this
    repository:
 
