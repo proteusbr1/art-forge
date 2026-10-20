@@ -415,10 +415,98 @@ HELD_ITEM_OPTIONS = dict(_FRONT_STAGES, **{
 HELD_ITEM_DEFAULTS = {"reference": "qwen21_base", "cutout": "birefnet", "mesh": "trellis2", "paint": "hunyuan_paint",
                       "item": "item_frame", "hold": "figure_hold", "review": "item_sheet"}
 HELD_ITEM_SKIPPABLE = ("paint", "hold")
+# Options of the iso_tile recipe (forge/tile_jobs.py recipe_iso_tile): a sprite of an isometric
+# tile grid remade from the game's sprite. Floors and walls: the face taken out of the sprite,
+# repainted flat, its border joined to its seam group's material and put back on the exact face;
+# objects: the sprite repainted (a picture cut back into the grid) or meshed and rendered.
+TILE_SPRITE_SETTINGS = {
+    "max_overflow": {"type": "number", "min": 0.0, "max": 1.0, "arg": "max_overflow",
+                     "meaning": "footprint flag: the largest share of the sprite outside the original's silhouette "
+                                "(widened by tolerance) (default 0.04 for floors and walls, 0.08 for objects)"},
+    "min_cover": {"type": "number", "min": 0.0, "max": 1.0, "arg": "min_cover",
+                  "meaning": "footprint flag: the least share of the original's silhouette the sprite covers "
+                             "(default 0.85 for floors and walls, 0.6 for objects)"},
+    "tolerance": {"type": "number", "min": 0.0, "max": 8.0, "arg": "tolerance",
+                  "meaning": "grid pixels the original's silhouette is widened by before the overflow is measured "
+                             "(default 1)"},
+    "max_seam": {"type": "number", "min": 1.0, "max": 20.0, "arg": "max_seam",
+                 "meaning": "seam flag: how many times more a texture's opposite edges may differ than neighbouring "
+                            "texel rows (default 2.5)"},
+    "max_shading": {"type": "number", "min": 0.0, "max": 2.0, "arg": "max_shading",
+                    "meaning": "painted-light flag: the largest brightness slope across the albedo (a face's) or "
+                               "toward one side of the object, as a share of its mean (default 0.35 for floors and "
+                               "walls, 0.6 for objects)"},
+    "normal_strength": {"type": "number", "min": 0.0, "max": 10.0, "arg": "normal_strength",
+                        "meaning": "how steep the relief the albedo's detail gives the normal map (default 1)"},
+    "exposure": {"type": "choice", "choices": ("original", "none"), "arg": "exposure",
+                 "meaning": "original (default): the shaded sprite's mean brightness brought to the original's "
+                            "(0.6 to 1.6 times); none: as lit"},
+    "light_key": {"type": "number", "min": 0.0, "max": 2.0, "arg": "light_key",
+                  "meaning": "strength of the shaded sprite's key light, from the upper left (default 0.55)"},
+    "light_fill": {"type": "number", "min": 0.0, "max": 2.0, "arg": "light_fill",
+                   "meaning": "strength of the fill light, from the right (default 0.15)"},
+    "light_ambient": {"type": "number", "min": 0.0, "max": 2.0, "arg": "light_ambient",
+                      "meaning": "the shaded sprite's ambient light (default 0.5)"},
+    "cavity": {"type": "number", "min": 0.0, "max": 2.0, "arg": "cavity",
+               "meaning": "how much the relief's hollows are darkened in the shaded sprite (default 0.6)"},
+    "base_ao": {"type": "number", "min": 0.0, "max": 1.0, "arg": "base_ao",
+                "meaning": "how much a wall darkens toward its foot in the shaded sprite (default 0.18)"},
+    "glow_strength": {"type": "number", "min": 0.0, "max": 1.0, "arg": "glow_strength",
+                      "meaning": "the emissive frame's brightness (default 1)"},
+}
+ISO_TILE_OPTIONS = {
+    "guide": {
+        "unproject": {
+            "kind": "local", "group": "local", "outputs": ("guide", "layout"), "inputs": ("sprite", "silhouette"),
+            "meaning": "a floor's or wall's face taken out of the sprite into a flat texture (the seam group's "
+                       "material detail laid over its colours); an object's sprite, or a block of it in the "
+                       "piece's variant grid, upscaled onto grey",
+            "settings": {
+                "detail": {"type": "number", "min": 0.0, "max": 2.0, "arg": "detail",
+                           "meaning": "how much of the seam group's material detail the face's guide gets "
+                                      "(default 1)"},
+                "blur": {"type": "number", "min": 0.0, "max": 4.0, "arg": "blur",
+                         "meaning": "blur of the upscaled original, in its pixels (default 0.6: no pixel steps)"},
+            }},
+    },
+    "picture": {
+        "qwen_edit_2511": dict(HUMANOID_OPTIONS["pose"]["qwen_edit_2511"], settings=_edit_settings("picture")),
+    },
+    "edges": {
+        "inpaint_ring": {
+            "kind": "comfy", "workflow": "qwen_image_21_turbo_inpaint.json", "group": "qwen_inpaint",
+            "roles": {"12": "rgb"}, "outputs": ("rgb",),
+            "meaning": "the picture's border band replaced by the seam group's material and the ring between "
+                       "them repainted (Qwen Image 2.1 Turbo inpaint)"},
+    },
+    "form": {
+        "picture": {"kind": "local", "group": "local", "in_stage": "sprite",
+                    "meaning": "an object is its picture, cut back into the grid's columns"},
+        "mesh": {"kind": "local_gpu", "tool": "tile_render", "group": "local_gpu", "tools": ("blender_python",),
+                 "params": ("tris", "texture"),
+                 "meaning": "an object meshed (TRELLIS.2), painted (Hunyuan3D Paint) and rendered by the grid's "
+                            "camera (Blender, CPU), fitted to the original's silhouette"},
+    },
+    "sprite": {
+        "tile_sprite": {
+            "kind": "local", "group": "local", "params": ("scale",),
+            "outputs": ("tile", "mesh_report"),
+            "meaning": "the frames at the order's scale (albedo, normal, shaded, emissive), the checks",
+            "settings": TILE_SPRITE_SETTINGS},
+    },
+    "review": {
+        "tile_review": {"kind": "local", "group": "local", "outputs": ("sheet",),
+                        "meaning": "every variant beside the original, alone and repeated"},
+    },
+}
+ISO_TILE_DEFAULTS = {"guide": "unproject", "picture": "qwen_edit_2511", "edges": "inpaint_ring", "form": "picture",
+                     "sprite": "tile_sprite", "review": "tile_review"}
+ISO_TILE_SKIPPABLE = ("picture", "edges")
 STAGE_ORDER = {
     "articulated": ("reference", "cutout", "mesh", "paint", "parts", "review"),
     "creature": ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "review"),
     "held_item": ("reference", "cutout", "mesh", "paint", "item", "hold", "review"),
+    "iso_tile": ("guide", "picture", "edges", "form", "sprite", "review"),
 }
 
 # recipe -> stage -> {"default": option, "skippable": bool, "options": {option: fields}}.
@@ -442,6 +530,8 @@ CATALOGUE = {
                          "options": CREATURE_OPTIONS[stage]} for stage in STAGE_ORDER["creature"]},
     "held_item": {stage: {"default": HELD_ITEM_DEFAULTS[stage], "skippable": stage in HELD_ITEM_SKIPPABLE,
                           "options": HELD_ITEM_OPTIONS[stage]} for stage in STAGE_ORDER["held_item"]},
+    "iso_tile": {stage: {"default": ISO_TILE_DEFAULTS[stage], "skippable": stage in ISO_TILE_SKIPPABLE,
+                         "options": ISO_TILE_OPTIONS[stage]} for stage in STAGE_ORDER["iso_tile"]},
 }
 
 # Inputs of a workflow that an implementation is known to ignore or override: the
@@ -470,6 +560,7 @@ PARAMS = {
     "length": ("number", "length of an object or creature in metres, front to back (scales it instead of height)"),
     "front": ("choice", "the glTF axis the generated mesh's front points along (+z: toward the reference's camera); "
                         "the exported model faces +Z"),
+    "scale": ("int", "art pixels per pixel of the tile grid (iso_tile; default 4)"),
 }
 PARAM_CHOICES = {"image_format": ("lossless", "compact"), "front": ("+z", "-z", "+x", "-x")}
 
@@ -486,7 +577,7 @@ RECIPE_INPUTS = {
 }
 # Piece keys only some recipes read (the order check refuses them elsewhere).
 RECIPE_KEYS = {"parts": ("articulated",), "body": ("creature",), "motions": ("creature", "humanoid"),
-               "item": ("held_item",)}
+               "item": ("held_item",), "tile": ("iso_tile",)}
 # The tools of the humanoid motions' text source (HY-Motion Lite, forge/motion_text.py).
 MOTION_TEXT_TOOLS = ("hymotion_python", "hymotion_dir", "hymotion_model", "hymotion_text_encoder", "hymotion_clip")
 # The export settings that only a piece wearing an approved body (inputs.body) uses.

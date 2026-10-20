@@ -63,6 +63,12 @@ format in [docs/order.md](docs/order.md) and the design in
   `local_gpu` job kind: `rig`, `export`, `review`).
   `RUNNERS` also has `parts` (articulated), `creature_export` and `sheet` (the layout sheet
   of both new recipes), and `item`, `hold` and `item_sheet` (held_item).
+- The iso_tile recipe: `forge/tile_jobs.py` (its expansion into jobs, the family's seam
+  materials and set sheet, and its order check), `forge/tile_steps.py` (its local steps without
+  the card: the guide, the border blend, the sprite with its checks, the review and set sheets),
+  `tools/blender/iso_grid.py` (the grid's geometry, faces, projection and normals; no `bpy`) and
+  `tools/blender/tile_render.py` (a meshed object fitted to its sprite's silhouette and rendered
+  on the CPU; the runner `tile_render` of `forge/local_gpu.py`).
 - `forge/tool_specs.py`: the order check of part lists, body plans and motions, by the
   tools' own modules; `forge/sheet_layout.py`: the layout of the articulated and creature
   review sheet (Godot only renders it); `forge/item_sheet_layout.py`: the layout of the
@@ -108,14 +114,17 @@ format in [docs/order.md](docs/order.md) and the design in
 - `docs/conventions.md`: motion library, held items, exporter outputs and reports, sheet.
 - `tests/`: unit tests and the fake ComfyUI server; `tests/fixtures/` holds the sample
   orders (`order_generic.json`, `order_humanoid.json`, `order_articulated.json`,
-  `order_creature.json`, `order_held_item.json`, `order_humanoid_motions.json`),
+  `order_creature.json`, `order_held_item.json`, `order_humanoid_motions.json`, `order_iso_tile.json`),
   `tests/fixtures/humanoid/` the synthetic humanoid (generator, library, item, the pose
   checker), `tests/fixtures/motion/` the HY-Motion stand-in and a synthetic capture,
   `tests/motion_synth.py` the synthetic walk, `tests/fixtures/articulated/` and
   `tests/fixtures/creature/` the generators of the new tools' Blender fixtures and a
   role-space library, `tests/fixtures/held_item/` the synthetic carbine's generator and the
   held items' library;
-  `tests/creature_skeletons.py` the synthetic creature skeletons. `tests/humanoid_synth.py`
+  `tests/creature_skeletons.py` the synthetic creature skeletons, `tests/iso_tile_synth.py` the
+  synthetic tile sprites and map layout of `order_iso_tile.json` (written under
+  `local/fixtures/iso_tile/`) and `tests/fixtures/iso_tile/make_box.py` the painted box of the
+  render's smoke test. `tests/humanoid_synth.py`
   (capsule figures by role, NumPy), `tests/glb_synth.py` (small GLBs and stub bodies without
   Blender) and `tests/fixtures/humanoid/make_body_fixtures.py` (those figures rigged in Blender)
   serve the approved body's tests (`order_humanoid_body.json` is its sample order);
@@ -251,6 +260,8 @@ of other proportions to one (`local/smoke/humanoid_body/`).
 `tests/test_bench.py` tests the bench's clip selection, views, measures and page, and runs it
 on the synthetic humanoid when Blender and Godot are configured (no GPU lock; outputs in
 `local/smoke/bench/`).
+`tests/test_iso_tile.py` runs the tile render in Blender on the CPU when `forge.local.json`
+points to `blender_python` (outputs in `local/smoke/iso_tile/`), skipped otherwise.
 `tests/test_humanoid_motions.py` and `tests/test_launcher.py` need no tool: HY-Motion is
 replaced by `tests/fixtures/motion/hymotion_standin.py` (`FORGE_HYMOTION_ENTRY`), and the
 launcher test starts a factory detached (WMI) against the fake server with a private lock

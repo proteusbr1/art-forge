@@ -283,6 +283,10 @@ class Factory(ComfyJobs, LocalSteps):
             # The motion clips' code (forge/motion_clips.py): a fixed correction redoes them.
             from . import motion_jobs
             base["tool_sha"] = motion_jobs.code_fingerprint()
+        if job["kind"].startswith("tile_"):
+            # The iso_tile steps' code (forge/tile_steps.py, tools/blender/iso_grid.py).
+            from . import tile_steps
+            base["tool_sha"] = tile_steps.code_fingerprint()
         if job["kind"] == "pick":
             base["candidates"] = {c: self.entry(c).get("files", {}).get(job["role"], [None, None])[1]
                                   for c in job["from"] if self.done_ok(c)}

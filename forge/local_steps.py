@@ -55,6 +55,10 @@ class LocalSteps:
         elif job["kind"] in ("motion", "motions"):
             from . import motion_jobs
             inputs = motion_jobs.run_local(self, job, d, files)
+        elif job["kind"].startswith("tile_"):
+            # The iso_tile recipe's steps (forge/tile_steps.py).
+            from . import tile_steps
+            inputs = tile_steps.run_local(self, job, d, files)
         else:
             inputs = []
         rec["files"] = files

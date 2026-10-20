@@ -5,7 +5,7 @@ from the game's art list) and kept in the game's own repository. Keys are in Eng
 keeps the job-list format of the factory core (`version`, `style`, `families`, `assets`,
 `tasks`) and adds per-piece keys (`recipe`, `variants`, `stages`, `skip`, `params`,
 `inputs`, `review`, `accept`, `reserve`, and the recipe-specific `parts`, `body`, `motions`,
-`item`). Families are in priority order; each piece (an entry of a family's
+`item`, `tile`). Families are in priority order; each piece (an entry of a family's
 `assets`) expands into jobs through its recipe.
 
 Check an order before a night's run:
@@ -42,7 +42,9 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 [tests/fixtures/order_creature.json](../tests/fixtures/order_creature.json) and
 [tests/fixtures/order_held_item.json](../tests/fixtures/order_held_item.json), and
 [tests/fixtures/order_humanoid_motions.json](../tests/fixtures/order_humanoid_motions.json)
-(a humanoid motions list with every source).
+(a humanoid motions list with every source) and
+[tests/fixtures/order_iso_tile.json](../tests/fixtures/order_iso_tile.json) (tile sprites; see
+[the iso-tile recipe](#the-iso-tile-recipe)).
 
 ## Top level
 
@@ -88,6 +90,7 @@ object and a concept) and [tests/fixtures/order_humanoid.json](../tests/fixtures
 | `material_seeds` | inherited: number of material seeds (default 4; `variants` replaces it) |
 | `size` | `[width, height]` of the concepts |
 | `3d` | `false` makes a `prop` stop at the concept |
+| `grid`, `seams`, `seam_band`, `tile_texels`, `layout` | an iso_tile family's grid, seam groups, their border band, its face textures' resolution and its map layout ([below](#the-iso-tile-recipe)) |
 | `note` | free comment |
 
 A family may also set any per-piece key (`recipe`, `variants`, `stages`, `skip`,
@@ -133,6 +136,7 @@ New keys:
 | `parts` | the parts of an articulated piece ([below](#the-articulated-recipe)) |
 | `body`, `motions` | the body plan or template and the movements of a creature ([below](#the-creature-recipe)); `motions` also lists a humanoid's movements ([below](#motions-of-a-humanoid)) |
 | `item` | the hold class and socket template of a held item ([below](#the-held-item-recipe)) |
+| `tile` | the part of a tile an iso_tile piece is, its seam group, variant grid and canvas ([below](#the-iso-tile-recipe)) |
 
 `review`, `accept` and `reserve` do not apply to the core recipes. The stage catalogue is `forge/stages.py`.
 
@@ -201,6 +205,7 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `image_format` | `lossless` or `compact` | images of the exported GLB: `lossless` (default) writes every map as PNG; `compact` writes the base colour as JPEG at quality 92 (PNG when it carries opacity) and the technical maps (normal, metallic-roughness, occlusion, emissive) as PNG. A normal or metallic-roughness map or an opacity mask is never JPEG | humanoid export, articulated parts, creature export, held item |
 | `length` | number above 0 | length front to back in metres (scales instead of `height`) | articulated parts, creature export, held item (one of `length` and `height` is required) |
 | `front` | `+z`, `-z`, `+x`, `-x` | the glTF axis the generated front points along (default `+z`); the export faces +Z | articulated parts, creature export |
+| `scale` | whole number from 1 to 32 | art pixels per pixel of the tile grid (default 4) | iso_tile's sprite |
 
 `inputs`:
 
@@ -213,6 +218,8 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `figure` | held item's hold | a rigged humanoid GLB that holds the item on the review sheet ([below](#the-held-item-recipe)) |
 | `clips` | held item's hold | the motion library whose clips holding the item's class the figure plays |
 | `bone_map` | humanoid export | a bone map JSON that replaces the proposed one (roles to the rig's bone names), for every variant; or an object `{"v<seed>": file}` (the key may also be the bare seed) with one map per variant, since the rig predicts a skeleton per variant: a variant it does not name gets the proposal, a key that is no variant of the piece is a problem of the order |
+| `sprite` | iso_tile | the game's sprite of the piece, at the grid's cell size, transparent outside it: its footprint and its picture's guide ([below](#the-iso-tile-recipe)) |
+| `silhouette` | iso_tile | optional: an image of the cell's size whose alpha widens the footprint the sprite's check allows |
 | `body` | humanoid export | an approved body: a GLB the humanoid exporter wrote (a variant's `v<seed>_export/<piece>.glb` or a piece's `final/<piece>.glb`, of this run or another), its `model.json` next to it. Every variant is conformed to it and exported on its skeleton ([below](#a-common-body-inputsbody)). A piece's `null` drops its family's body |
 
 `review` (the recipes with a review stage; the held item adds its own settings): `pitch` (number, degrees above the horizon, default 60),
@@ -243,6 +250,7 @@ Seeds are fixed: derived from `family/piece` (the same order gives the same seed
 | `articulated` | per variant: reference -> cutout -> mesh -> paint -> parts; then review and final ([below](#the-articulated-recipe)) |
 | `creature` | per variant: reference -> pose -> cutout -> mesh -> paint -> rig -> export; then review and final ([below](#the-creature-recipe)) |
 | `held_item` | per variant: reference -> cutout -> mesh -> paint -> item -> hold; then review and final, which also fills `<family>/items/` ([below](#the-held-item-recipe)) |
+| `iso_tile` | per variant: guide -> picture -> (faces) blend -> edges, or (a meshed object) cutout -> mesh -> paint -> render -> sprite; then review and final; per family the seam groups' materials and the set sheet ([below](#the-iso-tile-recipe)) |
 
 Job ids: `family/piece/step`, with steps `concept_s<seed>`, `pick`, `view_90`,
 `view_180`, `view_270` (figure), `view_side`, `view_back`, `view_other_side`, `view_top`
@@ -820,6 +828,111 @@ pistol, a lantern held by its handle, a tool case without the hold stage).
 
 Estimates: the item, the hold and the item sheet count as `local_gpu` (60 s each).
 
+## The iso-tile recipe
+
+A sprite of an isometric tile grid, as 2D strategy games draw their maps: a floor, a wall or an
+object drawn in a fixed cell of a 2:1 grid, remade from the game's own sprite, which fixes its
+footprint ([design](superpowers/specs/2026-10-18-art-forge-design.md), section 7). The recipe
+is `iso_tile`; every piece needs `tile` (below) and `inputs.sprite`.
+
+Per variant `v<seed>` (default 3; the piece's guide is shared by its variants):
+
+| Kind | Jobs |
+|---|---|
+| `floor`, `west_wall`, `north_wall` | `guide` (the original's face taken out of the sprite into a flat texture, the seam group's material detail laid over it) -> `picture` (Qwen Image Edit 2511 repaints it) -> `blend` and `edges` (its border band replaced by the seam group's material, the ring repainted by Qwen Image 2.1 Turbo inpaint) -> `sprite` (put back on the exact face at the order's scale) |
+| `object`, form `picture` | `guide` (the original, or a block of it over the variant grid, upscaled onto grey) -> `picture` -> `sprite` (the picture's cut, BiRefNet's mask, cut back into the grid's columns) |
+| `object`, form `mesh` | `guide` -> `picture` -> `cutout` -> `mesh` (TRELLIS.2) -> `paint` (Hunyuan3D Paint) -> `render` (Blender, CPU: the mesh fitted to the original's silhouette and rendered by the grid's camera) -> `sprite` |
+
+then `review` (one sheet of the piece's variants) and `final` (the decision, as the other
+recipes': `accept` `mesh_flags`, `reserve`). Per family: one seamless material per seam group a
+piece uses (`<family>/_seam_<group>/`: Qwen Image 2.1 Turbo at the group texture's size, N
+seeds, the pick, rolled by half, the cross repainted, rolled back) and the set sheet
+`<family>/_set/sheet` over every piece's decision.
+
+| Stage | Default | Other options | Skippable |
+|---|---|---|---|
+| `guide` | `unproject` (local) | | no |
+| `picture` | `qwen_edit_2511` (Qwen Image Edit 2511, Lightning LoRA, 4 steps; text: `brief`, tier, family `style`, `global`, the kind's view) | | yes: a floor or wall is then its seam group's material (one variant) |
+| `edges` | `inpaint_ring` (Qwen Image 2.1 Turbo inpaint of the ring) | | yes: a plain cross-fade into the material |
+| `form` | `picture` (objects: the picture is the sprite) | `mesh` (objects of one tile) | no |
+| `sprite` | `tile_sprite` (local) | | no |
+| `review` | `tile_review` (local) | | no |
+
+Family keys:
+
+| Key | Meaning |
+|---|---|
+| `grid` | the grid (all optional): `cell` [w, h] of a sprite (default [32, 40]), `tile` [w, h] of the floor diamond (default [32, 16]), `level` (pixels per level, default 24), `floor_top` (the diamond's top corner in the cell, default [16, 24]), `elevation` (degrees; default from the diamond: 30), `wall_aspect` (a level's height in tile edges; default from the camera: about 1.22), `wall_thickness` (tile edges, 0 to 0.5, default 0), `normal_y` (`up`: green up, as OpenGL and Godot; or `down`) |
+| `seams` | `{group: {kind, brief, span, variants, view}}`: the seam groups. `kind` `floor` or `wall`; `brief` the material that owns the border of every face of the group; `span` the tiles one texture covers (a floor's [x, y] or a number, a wall's number along it, 1 to 8); `variants` the material's seeds (default 4); `view` a `style` key (default `material_top` for floors, `material_front` for walls) |
+| `seam_band` | the border band the group's material owns, a share of a tile (0.02 to 0.25, default 0.08) |
+| `tile_texels` | texels per tile edge of the face textures (64 to 1024, default 384; a texture is at most about 1.7 MP) |
+| `layout` | the game's map layout for the set sheet (a file, relative to the order; [conventions.md](conventions.md#iso-tiles)); without it the sheet lays out a test arrangement |
+
+`tile` (piece, or family as a default; merged key by key):
+
+| Key | Meaning |
+|---|---|
+| `kind` | `floor`, `west_wall`, `north_wall` or `object` (required) |
+| `seam` | a seam group of the family (floors and walls) |
+| `grid` | the variant grid [x, y]: the game draws frame `(y % gy) * gx + (x % gx)` at map tile (x, y); default the seam group's span (a west wall [1, n], a north wall [n, 1]), else [1, 1]. A piece of a group covers the group's span; an object with a grid over 1 x 1 is one picture of that block of tiles, cut back into them |
+| `height`, `thickness` | a wall's height (a share of one level, default 1) and thickness (tile edges, default the grid's) |
+| `rect` | the sprite's canvas [x, y, w, h] in grid pixels (default the cell): an object larger than the cell (a tree) gets a larger canvas, its `anchor` [x, y] |
+| `cutout` | `none` (the whole face, default of floors), `original` (the original face's alpha with its narrow gaps closed, default of walls) or `picture` (the picture's own cut: a fence; default of objects) |
+| `alpha` | `binary` (default of floors and walls: neighbours share no pixel) or `smooth` (default of objects) |
+| `dome` | an object's roundness for its normals (0 to 2; default 0.6) |
+| `glow` | the glowing colours (names or hue ranges, as "What glows"); default the piece's text's |
+| `name` | the frames' file name (default the piece id) |
+
+`params.scale` (1 to 32, default 4): art pixels per grid pixel. `params.tris` and
+`params.texture` (form `mesh`; defaults 20000 and 1024). `inputs.sprite` (required): the game's
+sprite at the cell's size, transparent outside the piece; `inputs.silhouette` (optional): an
+image of the cell's size whose alpha widens the footprint the check allows (a game's collision
+volume seen by the camera). A style needs `view_tile_floor`, `view_tile_wall` and
+`view_tile_object` for the kinds the pictures use, and `material_top` or `material_front` and
+`material_negative` with seam groups.
+
+`sprite` settings: `max_overflow` (default 0.04 for floors and walls, 0.08 for objects),
+`min_cover` (0.85 and 0.6), `tolerance` (grid pixels, default 1), `max_seam` (default 2.5),
+`max_shading` (0.35 and 0.6), `normal_strength` (default 1), `exposure` (`original`, default:
+the shaded frames' mean brightness brought to the original's, 0.6 to 1.6 times; or `none`),
+`light_key`, `light_fill`, `light_ambient` (0.55, 0.15, 0.5), `cavity` (0.6), `base_ao` (0.18)
+and `glow_strength` (1). `guide` settings: `detail` (how much of the material's detail the
+face guide gets, default 1) and `blur` (of the upscaled original, in its pixels, default 0.6).
+`picture` settings: as the humanoid's `qwen_edit_2511`.
+
+The sprite's flags (its `mesh_report.json`, so `accept.mesh_flags` gates them; default 0) and
+the stage held responsible:
+
+| Flag | Stage |
+|---|---|
+| `footprint: <x>% of the sprite lies outside the original's silhouette ...` (widened by `tolerance`, with `inputs.silhouette`) | `picture` |
+| `footprint: the sprite covers <x>% of the original's silhouette ...` | `picture` |
+| `seam: the texture's opposite edges differ <x> times more than neighbouring texels ...` (faces of a group) | `edges` |
+| `shading: the albedo brightens by <x>% ...` (painted light) | `picture` |
+
+The automatic pick among acceptable variants takes the smallest sum of each measure over its
+limit (`fit.excess`). The order check refuses: a missing or unknown `tile.kind`, unknown tile
+keys, a seam group the family lacks or of the other kind, a grid that differs from its group's
+span, a west wall's grid not [1, n] (a north wall's not [n, 1]), an object without its picture,
+a floor or wall that skips the picture without a seam group, form `mesh` on a floor or wall or
+over a grid larger than one tile, `cutout` `picture` without the picture, a missing or
+unreadable sprite (it must be the cell's size, with transparency), a family `grid`, `seams`,
+`seam_band`, `tile_texels` or `layout` that is invalid, a piece id starting with `_`, and a
+style without the views the pieces use. Complete sample:
+[tests/fixtures/order_iso_tile.json](../tests/fixtures/order_iso_tile.json) (a paved floor and a
+lawn, a plank wall and its north twin, a low fence, a crate meshed and a bush; the tests write
+its sprites with `tests/iso_tile_synth.py`).
+
+Files, in `<out>/<family>/<piece>/`: `guide_guide.png` and `guide_layout.json`;
+`v<seed>_picture_rgb.png` and `_mask.png`; `v<seed>_blend_image.png` and `_mask.png`;
+`v<seed>_edges_rgb.png`; `v<seed>_sprite/` (the frames, `texture.png` for a face, `tile.json`,
+`mesh_report.json`; [conventions.md](conventions.md#iso-tiles)); `review/sheet.png`;
+`pick_final.json` and `final/`. The set sheet: `<out>/<family>/_set/sheet/set_sheet.png` and
+`set_sheet.json`.
+
+Estimates: the sprite, the guide, the blend, the review and the set sheet are local steps; the
+render counts as `local_gpu` (60 s).
+
 ## Raw jobs (`tasks`)
 
 | Key | Meaning |
@@ -949,7 +1062,9 @@ In `<out>/<family>/<piece>/`, each file as `<step>_<role>.<ext>`:
 - articulated and creature: as the humanoid, with the folders `v<seed>_parts/` and
   `v<seed>_export/` ([conventions.md](conventions.md));
 - held item: as the humanoid, with the folders `v<seed>_item/` and `v<seed>_hold/`, and the
-  family's folder of picked items `<out>/<family>/items/`.
+  family's folder of picked items `<out>/<family>/items/`;
+- iso tile: as the humanoid, with the folders `v<seed>_sprite/` (and `v<seed>_render/` for a
+  meshed object), the family's `_seam_<group>/` materials and its `_set/sheet/`.
 
 At the root of `<out>`: `manifest.json` (each job with its state, specification hash,
 files and hashes, times, tries and provenance), `state.json` (count per state: `done`,

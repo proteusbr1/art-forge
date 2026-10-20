@@ -1,0 +1,485 @@
+"""The iso_tile recipe: the grid's geometry (faces, partition of neighbouring floors, the face
+taken out of a sprite and put back), the steps' measures on synthetic tiles (seams that join,
+painted light, footprint, a block cut back into its tiles), how a piece expands into jobs,
+what the order check refuses, the sample order (valid, verified against a fake /object_info,
+estimated from the command line) and a night with the fake server and a stand-in for the
+Blender render. The render itself is smoke-tested on the CPU when blender_python is
+configured (Blender on the CPU, the tests' private lock folder)."""
+
+import contextlib
+import io
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
+from PIL import Image
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+sys.path.insert(0, ROOT)
+import iso_tile_synth as synth  # noqa: E402
+from fake_comfy import FakeComfy  # noqa: E402
+from forge import local_gpu, tile_steps  # noqa: E402
+from forge.config import load_config  # noqa: E402
+from forge.factory_core import Factory  # noqa: E402
+from forge.factory_util import seeds_for  # noqa: E402
+from forge.order import check_order, load_order  # noqa: E402
+from forge.readiness import VERIFIED, check_environment  # noqa: E402
+from forge.recipes import expand  # noqa: E402
+from test_readiness import object_info  # noqa: E402
+
+G = tile_steps.G
+SAMPLE = os.path.join(HERE, "fixtures", "order_iso_tile.json")
+SPRITES = os.path.join(ROOT, "local", "fixtures", "iso_tile")
+
+
+def make_sprites():
+    return synth.make(SPRITES)
+
+
+class Geometry(unittest.TestCase):
+    def setUp(self):
+        self.g = G.grid_of({})
+
+    def test_defaults(self):
+        self.assertAlmostEqual(self.g["elevation"], 30.0, places=6)
+        self.assertAlmostEqual(self.g["wall_aspect"], math.sqrt(1.5), places=6)
+        self.assertEqual(G.grid_problems({"cell": [32, 40], "normal_y": "left"}),
+                         ["grid.normal_y must be up (green up, as OpenGL and Godot) or down (DirectX)"])
+        self.assertTrue(G.grid_problems({"floor_top": [16, 39]}))
+        self.assertEqual(G.grid_problems({"wall_thickness": 0.1}), [])
+
+    def test_neighbouring_floors_cover_each_pixel_once(self):
+        tex = {"alpha": np.ones((8, 8, 1))}
+        scale = 4
+        one = G.project(self.g, "floor", tex, scale, supersample=1)["alpha"][..., 0] >= 0.5
+        h, w = one.shape
+        count = np.zeros((h * 3, w * 3), int)
+        for x in range(2):
+            for y in range(2):
+                sx, sy = G.screen_position(self.g, (x, y, 0), scale)
+                ox, oy = int(sx) + w, int(sy) + h
+                count[oy:oy + h, ox:ox + w] += one
+        self.assertEqual(int(count.max()), 1)  # no pixel drawn twice
+        # The 2 x 2 block is one diamond twice as large: no pixel left out inside it.
+        self.assertEqual(int(count.sum()), 4 * int(one.sum()))
+        self.assertEqual(int(one.sum()), 32 * 16 // 2 * scale * scale)
+
+    def test_face_out_of_a_sprite_and_back(self):
+        spr = synth.sprite("floor", 3)
+        pre, a = G.unproject(self.g, "floor", spr, [64, 64])
+        rgb = pre / np.maximum(a[..., None], 1e-6)
+        self.assertGreater(float((a > 0.99).mean()), 0.95)
+        # As a cut, a full face is full to its edges: the tips pixel art leaves out are closed.
+        cut = tile_steps.face_alpha(a, 1.5 * 64 / 17.9)
+        self.assertGreater(float(cut.min()), 0.99)
+        wall = synth.sprite("west_wall", 4, height=0.5)
+        _, wa = G.unproject(self.g, "west_wall", wall, [64, 80])
+        cut = tile_steps.face_alpha(wa, 1.5 * 64 / 17.9)
+        self.assertLess(float(cut[:30].mean()), 0.05)  # a low wall's empty top stays open
+        self.assertGreater(float(cut[50:].min()), 0.99)
+        back = G.project(self.g, "floor", {"rgb": rgb, "alpha": a[..., None]}, 1)
+        inside = (back["alpha"][..., 0] > 0.99) & (spr[..., 3] > 0.5)
+        err = np.abs(back["rgb"] - spr[..., :3])[inside].mean()
+        self.assertLess(err, 0.08)
+
+    def test_walls(self):
+        tex = {"rgb": np.ones((8, 8, 3))}
+        a = G.project(self.g, "west_wall", tex, 1, supersample=1)["alpha"][..., 0] > 0.5
+        ys, xs = np.nonzero(a)
+        self.assertEqual((xs.min(), xs.max(), ys.min(), ys.max()), (0, 15, 0, 31))
+        n = G.project(self.g, "north_wall", tex, 1, supersample=1)["alpha"][..., 0] > 0.5
+        ys, xs = np.nonzero(n)
+        self.assertEqual((xs.min(), xs.max()), (16, 31))
+        thick = G.project(self.g, "north_wall", tex, 2, thickness=0.125, supersample=1)["alpha"][..., 0] > 0.5
+        self.assertGreater(int(thick.sum()), int(np.kron(n, np.ones((2, 2))).sum()))  # the top and the end show
+        low = G.project(self.g, "west_wall", tex, 1, height=0.5, supersample=1)["alpha"][..., 0] > 0.5
+        self.assertEqual(int(np.nonzero(low)[0].min()), 12)
+        view = G.to_view(self.g, np.array([[0, 0, 1.0], [1, 0, 0], [0, 1, 0]]))
+        self.assertAlmostEqual(view[0, 1], math.cos(math.radians(30)))  # a floor faces up and toward us
+        self.assertGreater(view[1, 0], 0.5)  # a west wall's face looks to the right
+        self.assertLess(view[2, 0], -0.5)  # a north wall's face to the left
+        rgb = G.encode_normal(self.g, view)
+        self.assertTrue(np.allclose(G.decode_normal(self.g, rgb), view, atol=0.01))
+        down = dict(self.g, normal_y="down")
+        self.assertEqual(int(G.encode_normal(down, view)[0, 1]), 255 - int(rgb[0, 1]))
+
+    def test_column_and_texture_size(self):
+        col = G.column_mask(self.g, (0, 0), None, 1, 1.0)
+        self.assertTrue(col[30, 16] and col[5, 16] and not col[5, 2])
+        self.assertEqual(G.face_texture_size(self.g, "floor", [4, 4], 384), [1296, 1296])
+        w, h = G.face_texture_size(self.g, "west_wall", 1, 384)
+        self.assertAlmostEqual(h / float(w), math.sqrt(1.5), delta=0.05)
+
+
+class Steps(unittest.TestCase):
+    def setUp(self):
+        self.g = G.grid_of({})
+
+    def spec(self, **kw):
+        s = {"kind": "floor", "seam": "g", "grid": [2, 2], "height": 1.0, "thickness": None, "rect": None,
+             "cutout": "none", "name": "t", "glow": None, "dome": 0.0, "alpha": "binary"}
+        s.update(kw)
+        return s
+
+    def test_pieces_of_a_group_join(self):
+        size = [128, 128]
+        m = synth.seamless(size, 1)
+        spec = self.spec()
+        sides = []
+        for seed in (5, 9):
+            pic = synth.seamless(size, seed, base=(0.3, 0.5, 0.2), cells=5)
+            b, _ = tile_steps.border_weight(spec, self.g, size, 0.08 * 0.45)
+            tex = pic * (1 - b[..., None]) + m * b[..., None]
+            self.assertLess(tile_steps.seam_ratio(tex, 1), 2.0)
+            sides.append(tex)
+        # Piece A's right edge meets piece B's left edge as the group's material meets itself.
+        jump = np.abs(sides[0][:, -1] - sides[1][:, 0]).mean()
+        inner = np.abs(m[:, 1:] - m[:, :-1]).mean()
+        self.assertLess(jump, 2.0 * inner)
+        noise = np.random.default_rng(0).random((64, 64, 3))
+        ramp = np.linspace(0, 1, 64)[None, :, None] * np.ones((64, 1, 3))
+        self.assertGreater(tile_steps.seam_ratio(ramp + 0.01 * noise, 1), 5)
+
+    def test_painted_light(self):
+        yy, xx = np.mgrid[0:64, 0:64] / 64.0
+        lit = 0.3 + 0.5 * xx
+        flat = 0.5 + 0.02 * np.sin(yy * 40)
+        mask = np.ones((64, 64), bool)
+        self.assertGreater(tile_steps.light_slope(lit, mask), 0.8)
+        self.assertLess(tile_steps.light_slope(flat, mask), 0.05)
+
+    def test_footprint(self):
+        orig = np.zeros((40, 32))
+        orig[10:30, 8:24] = 1
+        new = np.zeros((40, 32))
+        new[5:30, 8:24] = 1
+        over, cover = tile_steps.footprint(new, orig, None, 1, 1)
+        self.assertAlmostEqual(over, 4 * 16 / (25 * 16.0), places=3)
+        self.assertEqual(cover, 1.0)
+        over, cover = tile_steps.footprint(orig * 0, orig, None, 1, 1)
+        self.assertEqual((over, cover), (0.0, 0.0))
+
+    def test_a_block_is_cut_back_into_its_tiles(self):
+        spec = self.spec(kind="object", grid=[2, 2], rect=[0, -8, 32, 48])
+        from forge.tile_jobs import block_canvas
+        x0, y0, x1, y1 = block_canvas(self.g, spec)
+        scale = 2
+        h, w = int((y1 - y0) * scale), int((x1 - x0) * scale)
+        rng = np.random.default_rng(3)
+        alpha = (rng.random((h, w)) > 0.3).astype(float)
+        rgb = rng.random((h, w, 3))
+        frames = tile_steps.cut_block(self.g, spec, rgb, alpha, (x0, y0), scale)
+        self.assertEqual([f["index"] for f in frames], [0, 1, 2, 3])
+        back = np.zeros((h, w))
+        for f in sorted(frames, key=lambda f: (f["i"] + f["j"], f["i"])):
+            sx, sy = G.screen_position(self.g, (f["i"], f["j"], 0))
+            px = int(round((sx + spec["rect"][0] - x0) * scale))
+            py = int(round((sy + spec["rect"][1] - y0) * scale))
+            fa = f["alpha"][..., 0]
+            sub = back[py:py + fa.shape[0], px:px + fa.shape[1]]
+            sub[...] = np.maximum(sub, fa[:sub.shape[0], :sub.shape[1]])
+        drawn = np.zeros((h, w), bool)
+        for f in frames:
+            sx, sy = G.screen_position(self.g, (f["i"], f["j"], 0))
+            px = int(round((sx + spec["rect"][0] - x0) * scale))
+            py = int(round((sy + spec["rect"][1] - y0) * scale))
+            drawn[max(py, 0):py + 96, max(px, 0):px + 64] = True
+        # Every pixel any tile's canvas holds is kept, by exactly its owner.
+        self.assertTrue(np.array_equal((back > 0.5) & drawn, (alpha > 0.5) & drawn))
+
+    def test_sprite_and_layout_problems(self):
+        tmp = tempfile.mkdtemp(prefix="forge_tile_")
+        try:
+            p = os.path.join(tmp, "a.png")
+            Image.new("RGB", (32, 40)).save(p)
+            self.assertIn("has no transparency", tile_steps.sprite_problems(p, self.g)[0])
+            Image.new("RGBA", (16, 16)).save(p)
+            self.assertIn("16x16", tile_steps.sprite_problems(p, self.g)[0])
+            lay = os.path.join(tmp, "l.json")
+            with open(lay, "w") as f:
+                json.dump({"format": "forge-tile-layout", "maps": [{"tiles": [{"at": [0, 0]}]}]}, f)
+            self.assertTrue(tile_steps.layout_problems(lay, []))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+STYLE = {"global": "Plain test style.", "view_tile_floor": "A flat texture.", "view_tile_wall": "A flat wall face.",
+         "view_tile_object": "The object alone on grey.", "material_top": "A seamless texture of",
+         "material_front": "A seamless wall of", "material_negative": "text"}
+
+
+def order_of(pieces, family=None):
+    fam = {"id": "f", "recipe": "iso_tile", "variants": 2, "seams": {
+        "ground": {"kind": "floor", "brief": "gravel", "span": [2, 2]},
+        "wood": {"kind": "wall", "brief": "boards", "span": 2}}, "assets": pieces}
+    fam.update(family or {})
+    return {"version": 1, "style": dict(STYLE), "families": [fam]}
+
+
+def piece(pid, kind, sprite, **kw):
+    p = {"id": pid, "brief": "A test %s." % kind, "tile": dict({"kind": kind}, **kw.pop("tile", {})),
+         "inputs": {"sprite": sprite}}
+    p.update(kw)
+    return p
+
+
+class Recipe(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.files = make_sprites()
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="forge_tile_")
+        self.config = load_config(None)
+        self.config["blender_python"] = sys.executable
+        self.order_path = os.path.join(self.tmp, "order.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def load(self, order):
+        with open(self.order_path, "w", encoding="utf-8") as f:
+            json.dump(order, f)
+        return load_order(self.order_path)
+
+    def problems(self, *args, **kw):
+        return check_order(self.load(order_of(*args, **kw)), self.config)
+
+    def assertProblem(self, problems, text):
+        self.assertTrue(any(text in p for p in problems), "no problem with %r in %s" % (text, problems))
+
+    def test_expansion(self):
+        f = self.files
+        jobs = {j["id"]: j for j in expand(self.load(order_of([
+            piece("a", "floor", f["stone"], tile={"seam": "ground"}),
+            piece("w", "west_wall", f["plank_w"], tile={"seam": "wood"}),
+            piece("o", "object", f["bush"], tile={"grid": [2, 2], "rect": [0, -8, 32, 48]}),
+            piece("m", "object", f["crate"], stages={"form": "mesh"}),
+            piece("b", "floor", f["grass"], tile={"seam": "ground"}, skip=["picture"])])))}
+        s = seeds_for("f/a", 2)
+        self.assertEqual([j for j in jobs if j.startswith("f/a/")],
+                         ["f/a/guide"] + ["f/a/v%d/%s" % (x, st) for x in s for st in ("picture", "blend", "edges",
+                                                                                          "sprite")] +
+                         ["f/a/review", "f/a/final"])
+        sp = jobs["f/a/v%d/sprite" % s[0]]
+        self.assertEqual(sp["inputs"]["texture"], {"ref": "f/a/v%d/edges" % s[0], "role": "rgb"})
+        self.assertEqual(sp["inputs"]["material"], {"ref": "f/_seam_ground/seamless", "role": "rgb"})
+        self.assertEqual(sp["args"]["tile"]["grid"], [2, 2])  # the group's span
+        self.assertEqual(jobs["f/w/v%d/sprite" % seeds_for("f/w", 1)[0]]["args"]["tile"]["grid"], [1, 2])
+        self.assertEqual(jobs["f/a/v%d/picture" % s[0]]["values"]["$IMAGE1$"], {"ref": "f/a/guide", "role": "guide"})
+        self.assertIn("A flat texture.", jobs["f/a/v%d/picture" % s[0]]["values"]["$PROMPT$"])
+        # A floor that is its group's material: one variant, no picture.
+        self.assertEqual([j for j in jobs if j.startswith("f/b/")],
+                         ["f/b/v%d/sprite" % seeds_for("f/b", 1)[0], "f/b/review", "f/b/final"])
+        mv = seeds_for("f/m", 1)[0]
+        self.assertEqual([j for j in jobs if j.startswith("f/m/v%d/" % mv)],
+                         ["f/m/v%d/%s" % (mv, st) for st in ("picture", "cutout", "mesh", "paint", "render", "sprite")])
+        self.assertEqual(jobs["f/m/v%d/render" % mv]["tool"], "tile_render")
+        ob = jobs["f/o/v%d/sprite" % seeds_for("f/o", 1)[0]]
+        self.assertEqual(ob["inputs"]["guide_layout"], {"ref": "f/o/guide", "role": "layout"})
+        for g in ("ground", "wood"):
+            self.assertIn("f/_seam_%s/seamless" % g, jobs)
+        self.assertEqual(jobs["f/_seam_wood/raw_s%d" % seeds_for("f/_seam_wood", 1)[0]]["values"]["$WIDTH$"], 768)
+        sheet = jobs["f/_set/sheet"]
+        self.assertEqual(sheet["from"], ["f/%s/final" % x for x in ("a", "w", "o", "m", "b")])
+        self.assertEqual(jobs["f/a/final"]["accept"], {"mesh_flags": 0})
+
+    def test_problems(self):
+        f = self.files
+        self.assertEqual(self.problems([piece("a", "floor", f["stone"], tile={"seam": "ground"})]), [])
+        self.assertProblem(self.problems([piece("a", "roof", f["stone"])]), "tile.kind must be one of")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"seam": "wood"})]), "is a wall group")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"seam": "x"})]), "no seam group")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"seam": "ground", "grid": [1, 1]})]),
+                           "differs from its seam group's span")
+        self.assertProblem(self.problems([piece("a", "west_wall", f["plank_w"], tile={"grid": [2, 1]})]),
+                           "tile.grid must be [1, n]")
+        self.assertProblem(self.problems([piece("a", "object", f["crate"], skip=["picture"])]),
+                           "cannot skip the picture")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], skip=["picture"])]), "needs tile.seam")
+        self.assertProblem(self.problems([piece("a", "object", f["crate"], tile={"grid": [2, 1]},
+                                                stages={"form": "mesh"})]), "form mesh makes one object")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], stages={"form": "mesh"})]),
+                           "is for objects")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"wobble": 1})]), "unknown tile key")
+        self.assertProblem(self.problems([piece("a", "floor", f["layout"])]), "inputs.sprite: cannot be read")
+        self.assertProblem(self.problems([{"id": "a", "brief": "x", "tile": {"kind": "floor"}}]),
+                           "inputs.sprite is required")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], params={"scale": 0})]), "params.scale")
+        self.assertProblem(self.problems([piece("_a", "floor", f["stone"])]), "cannot start with _")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"])], {"seams": {"g": {"kind": "roof"}}}),
+                           "kind must be floor or wall")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"])], {"layout": "missing.json"}),
+                           "layout not found")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], stages={
+            "sprite": {"settings": {"max_overflow": 3}}})]), "max_overflow")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"glow": "plaid"})]), "tile.glow")
+        order = order_of([piece("a", "floor", f["stone"], tile={"seam": "ground"})])
+        del order["style"]["view_tile_floor"]
+        self.assertProblem(check_order(self.load(order), self.config), "style.view_tile_floor is required")
+        bad = order_of([dict(piece("a", "floor", f["stone"]), recipe="material")], {"recipe": "material"})
+        self.assertProblem(check_order(self.load(bad), self.config), "does not use tile")
+
+    def sample(self):
+        return load_order(SAMPLE)
+
+    def test_sample_order(self):
+        order = self.sample()
+        self.assertEqual(check_order(order, self.config), [])
+        env = check_environment(order, self.config, object_info())
+        self.assertEqual((env.status, env.problems), (VERIFIED, []))
+
+    def test_check_and_estimate_from_the_command_line(self):
+        fake = FakeComfy()
+        try:
+            fake.object_info = object_info()
+            config = os.path.join(self.tmp, "forge.local.json")
+            with open(config, "w", encoding="utf-8") as fh:
+                json.dump({"blender_python": sys.executable}, fh)
+            base = [sys.executable, "-m", "forge", "--order", SAMPLE, "--out", os.path.join(self.tmp, "out"),
+                    "--config", config, "--server", fake.url]
+            res = subprocess.run(base + ["--check"], cwd=ROOT, capture_output=True, text=True, timeout=120)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertIn("order: valid", res.stdout)
+            self.assertIn("environment: verified", res.stdout)
+            res = subprocess.run(base + ["--estimate"], cwd=ROOT, capture_output=True, text=True, timeout=120)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertIn("total 90 jobs", res.stdout)
+            self.assertFalse(any(r[1] == "POST" for r in fake.requests))
+        finally:
+            fake.close()
+
+
+def stand_in_render(mesh, sprite, out, config, tile, grid=None, scale=4, samples=None):
+    """The render's stand-in: the original sprite upscaled, a flat normal facing the viewer."""
+    os.makedirs(out, exist_ok=True)
+    g = G.grid_of(grid)
+    x0, y0, cw, ch = G.canvas(g, tile.get("rect"))
+    im = Image.open(sprite).convert("RGBA").resize((int(cw * scale), int(ch * scale)), Image.NEAREST)
+    im.save(os.path.join(out, "albedo.png"))
+    a = np.asarray(im)[..., 3]
+    n = np.zeros(a.shape + (4,), np.uint8)
+    n[..., :3] = (128, 128, 255)
+    n[..., 3] = a
+    Image.fromarray(n, "RGBA").save(os.path.join(out, "normal.png"))
+    with open(os.path.join(out, "fit.json"), "w") as f:
+        json.dump({"fit": {"iou": 1.0}}, f)
+    return {"albedo": os.path.join(out, "albedo.png"), "normal": os.path.join(out, "normal.png"),
+            "fit": os.path.join(out, "fit.json")}
+
+
+class Night(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        make_sprites()
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="forge_tile_night_")
+        self.fake = FakeComfy()
+        self.out = os.path.join(self.tmp, "out")
+
+    def tearDown(self):
+        self.fake.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_night(self, order_path):
+        a = SimpleNamespace(order=order_path, order_base="", out=self.out, only="", retry_failed=False, limit=6,
+                            one_pass=False, config="")
+        f = Factory(a, self.fake.url)
+        f.load()
+        f.config = load_config(None)
+        f.config["blender_python"] = sys.executable
+        f.pass_sleep, f.error_sleep = 0.02, 0.1
+        f.gpu_processes = lambda: []
+        calls = []
+
+        def render(*args, **kw):
+            calls.append(args[2])
+            return stand_in_render(*args, **kw)
+        with patch.object(local_gpu, "run_tile_render", render), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(f.run(), 0)
+        with open(os.path.join(self.out, "manifest.json"), encoding="utf-8") as fh:
+            return json.load(fh), calls
+
+    def test_sample_night(self):
+        m, calls = self.run_night(SAMPLE)
+        self.assertEqual(sorted(k for k, v in m.items() if v.get("status") != "done"), [])
+        self.assertEqual(len(calls), 2)  # the crate's two variants
+        yard = os.path.join(self.out, "yard")
+        with open(os.path.join(yard, "stone", "pick_final.json"), encoding="utf-8") as fh:
+            pick = json.load(fh)
+        self.assertEqual((pick["outcome"], pick["review"]), ("picked", "pending"))
+        final = sorted(os.listdir(os.path.join(yard, "stone", "final")))
+        self.assertIn("stone_v03_normal.png", final)  # the group's 2 x 2 span: four frames
+        with open(os.path.join(yard, "stone", "final", "tile.json"), encoding="utf-8") as fh:
+            tile = json.load(fh)
+        self.assertEqual((tile["scale"], tile["size"], tile["variant_grid"]), (4, [128, 160], [2, 2]))
+        im = Image.open(os.path.join(yard, "stone", "final", tile["frames"][0]["file"]))
+        self.assertEqual((im.size, im.mode), ((128, 160), "RGBA"))
+        self.assertEqual(sorted(set(np.asarray(im)[..., 3].ravel().tolist())), [0, 255])  # binary alpha: floors join
+        # The fake pictures are blobs on a light ground: the fence's cut from its picture and the bush
+        # overflow the originals' silhouettes and are flagged; no variant of theirs passes.
+        with open(os.path.join(yard, "fence", "pick_final.json"), encoding="utf-8") as fh:
+            fence = json.load(fh)
+        self.assertEqual(fence["outcome"], "no_variant_passed")
+        self.assertTrue(any(r.startswith("mesh: footprint:") for r in fence["candidates"][0]["reasons"]))
+        self.assertEqual(fence["responsible_stage"], "picture")
+        sheet = os.path.join(yard, "_set", "sheet")
+        with open(os.path.join(sheet, "set_sheet.json"), encoding="utf-8") as fh:
+            info = json.load(fh)
+        self.assertEqual((info["maps"], info["not_picked"]), (["yard"], ["bush", "fence"]))
+        self.assertTrue(os.path.isfile(os.path.join(sheet, "set_sheet.png")))
+        self.assertTrue(os.path.isfile(os.path.join(yard, "stone", "review", "sheet.png")))
+        # A second run changes nothing.
+        m2, calls = self.run_night(SAMPLE)
+        self.assertEqual(calls, [])
+        self.assertEqual({k: v["spec"] for k, v in m.items()}, {k: v["spec"] for k, v in m2.items()})
+
+
+class RenderSmoke(unittest.TestCase):
+    """The Blender render of a mesh object on the CPU (skipped without blender_python)."""
+
+    def setUp(self):
+        cfg = os.path.join(ROOT, "forge.local.json")
+        self.config = load_config(cfg if os.path.isfile(cfg) else None)
+        if not self.config.get("blender_python") or not os.path.isfile(self.config["blender_python"]):
+            self.skipTest("blender_python is not configured")
+        self.folder = os.path.join(ROOT, "local", "smoke", "iso_tile")
+        os.makedirs(self.folder, exist_ok=True)
+
+    def test_render_fits_the_original(self):
+        glb = os.path.join(self.folder, "box.glb")
+        script = os.path.join(HERE, "fixtures", "iso_tile", "make_box.py")
+        if not os.path.isfile(glb):
+            subprocess.run([self.config["blender_python"], script, glb], check=True, capture_output=True, timeout=300)
+        sprite = synth.save(synth.object_sprite(6, tall=0.7, wide=0.6), os.path.join(self.folder, "box.png"))
+        out = os.path.join(self.folder, "render")
+        files = local_gpu.run_tile_render(glb, sprite, out, self.config, {"kind": "object", "grid": [1, 1]}, scale=4,
+                                          samples=4)
+        with open(files["fit"], encoding="utf-8") as fh:
+            fit = json.load(fh)["fit"]
+        self.assertGreater(fit["iou"], 0.6)
+        albedo = np.asarray(Image.open(files["albedo"]).convert("RGBA")).astype(float)
+        self.assertEqual(albedo.shape[:2], (160, 128))
+        opaque = albedo[..., 3] > 127
+        self.assertGreater(opaque.sum(), 500)
+        self.assertGreater(albedo[opaque][:, 0].mean(), albedo[opaque][:, 2].mean())  # the box's orange paint
+        normal = G.decode_normal(G.grid_of({}), np.asarray(Image.open(files["normal"]).convert("RGB")))
+        up = G.to_view(G.grid_of({}), np.array([0, 0, 1.0]))
+        top = (normal @ up > 0.98) & opaque
+        self.assertGreater(top.sum(), 50)  # the lid faces up, in the sprite's view
+        self.assertGreater((normal[..., 2][opaque] > 0).mean(), 0.95)  # everything seen faces the viewer
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -112,6 +112,7 @@ The recipe is chosen by how the thing moves, not by what it is:
 | `articulated` | rigid parts on pivots | tank, turret, door, ramp, rotor, plated walker | built (2026-10-19) |
 | `creature` | skinned, own skeleton | quadruped, insectoid, serpent, hovering torso | built (2026-10-19) |
 | `held_item` | rigid, held by a figure (item space, sockets) | carbine, pistol, lantern, tool case | built (2026-10-19) |
+| `iso_tile` | a 2D sprite on a fixed isometric grid that keeps a given footprint | floor, wall, fence, crop field, tree, bale | built (2026-10-20) |
 
 A new recipe is added only when a way of moving appears that the table does not cover.
 A new model is added as an option of a stage and becomes available to every recipe that
@@ -498,6 +499,110 @@ worst, broken meshes). Never ran: the changed item stage in a factory night, the
 review sheets of the new frames, and a person's look at the picks (several accepted meshes are
 visibly poor, fans of long triangles: the gate has no measure of mesh quality).
 
+### The `iso_tile` recipe (2026-10-20)
+
+A 2D sprite on a fixed isometric grid that must keep a given footprint: the floors, walls and
+objects of a 2D strategy game's map, each drawn in a cell of a 2:1 grid and joined to its
+neighbours by the game. The game supplies each piece's own sprite (`inputs.sprite`): it fixes
+the footprint, which the game's collision and sight volumes match, and it is the picture's
+guide. The order says the piece's kind and, for walls, the height and thickness the game's
+volume gives (`tile`), and the factory remakes the sprite at the order's scale with an albedo,
+a normal map, a shaded frame and an optional emissive frame.
+
+| Stage | Default | Options | Skippable |
+|---|---|---|---|
+| guide | `unproject` (local) | | no |
+| picture | `qwen_edit_2511` | | yes (a floor or wall is then its seam group's material) |
+| edges | `inpaint_ring` (Qwen Image 2.1 Turbo inpaint) | | yes |
+| form | `picture` (objects) | `mesh` (TRELLIS.2, Hunyuan3D Paint, a Blender render) | no |
+| sprite | `tile_sprite` (local) | | no |
+| review | `tile_review` (local) | | no |
+
+Then `final` (acceptance limit `mesh_flags`, the sprite's flags; reserve variants). Per family
+the seam groups' materials and one set sheet.
+
+Decisions, each with its reason:
+
+1. **The grid's own geometry, exactly.** `tools/blender/iso_grid.py` (no `bpy`) knows the
+   orthographic camera of a 2:1 grid from a few numbers (cell, diamond, level, the diamond's
+   top corner): a floor and a wall are parallelograms of the cell, an affine image of a flat
+   texture. A face is taken out of the original sprite into a flat texture and put back by the
+   same map, at the order's scale with four samples per pixel and axis. Reason: the footprint
+   is then exact by construction (a floor covers its diamond, a wall its slab), and what joins
+   neighbours (texture edges) can be made to match in texture space, where a picture of the
+   sprite itself has a perspective to keep. The game's numbers are order keys (`grid`), so the
+   recipe serves any 2:1 grid.
+2. **Floors and walls are repainted flat, from the original's face.** The guide is the
+   original's face, upscaled and blurred (its pixel steps gone), with the seam group's material
+   detail laid over its colours; Qwen Image Edit 2511 repaints it as the brief says. Reason:
+   pieces differ by content a seamless material lacks (a window, a door, a burnt patch, crop
+   rows), and the edit keeps the original's layout while it adds detail; a text-to-image
+   texture would lose the layout, and projecting a plain material on every face (the other
+   candidate) would make every plank wall the same. A piece that is its group's plain material
+   skips the picture.
+3. **Seams are owned by a shared material.** Every face of a seam group has the group's
+   seamless material (made once, by the `material` recipe's roll and inpaint chain, at the
+   group's texture size) in the outer band of its texture; the ring between band and picture is
+   repainted by inpaint, and the exact band is put back after (the VAE changes it slightly).
+   Any two pieces of a group then join as the material joins itself. A group's `span` (up to 8
+   x 8 tiles) is the variant grid of its pieces: one texture covers the span and the game
+   picks a frame by the tile's position, so a field repeats only every span. Reason: a seam
+   cannot be checked between pictures made apart, only enforced; giving every piece of a
+   group the same border is the cheapest exact rule, and a span keeps the border's repetition
+   rare. Pieces of different groups meet at a visible edge, as the original tiles did.
+4. **Objects are pictures, or meshes when they are solid.** `form` `picture` (default): the
+   original sprite (or a block of it over the variant grid, a field of crops) upscaled onto
+   grey, repainted by the edit, cut by BiRefNet's mask and cut back into the grid's columns
+   (each pixel to the front-most tile whose column holds it, so the frames drawn back to front
+   give the picture again). `form` `mesh`: the picture meshed by TRELLIS.2, painted by
+   Hunyuan3D Paint and rendered by Blender on the CPU in the grid's camera, the mesh turned (8
+   headings), scaled and placed so that its silhouette overlaps the original's best; the
+   render gives an unlit albedo and exact normals. Reason: foliage, crops, debris and thin
+   posts come out of mesh generators as blobs, while a bale, a crate or a staircase meshes
+   well and gains true light; the order chooses per piece.
+5. **No light is painted.** The albedo is asked flat and evenly lit and checked for a
+   brightness slope (painted light); the shaded frame is made by the factory from the albedo
+   and the normals (a face's relief from its albedo's detail, an object's from its silhouette's
+   dome and detail, a mesh's from its geometry) with one light setup for the whole order,
+   hollows darkened and a wall darker at its foot, then brought to the original's mean
+   brightness. Reason: a game that lights the albedo itself (dynamic lights through the normal
+   map) needs it unlit; one that draws a lit picture gets one whose light is the same on
+   every piece, whatever each picture did; and a game whose darkening tables were made for the
+   original's brightness keeps them.
+6. **Binary alpha for faces, smooth for objects.** A floor's or wall's pixel is opaque when its
+   centre lies in the face (half-open quads), so neighbouring floors cover each pixel exactly
+   once; an object's edge is soft, its colours bled from inside. Reason: two half-covered edge
+   pixels drawn over each other leave a seam line; an object has no neighbour to join.
+7. **Structural checks gate, measures rank.** Flags: the footprint (the share of the sprite
+   outside the original's silhouette, widened by a tolerance and by the order's
+   `inputs.silhouette`, and the share of the original's silhouette the sprite covers), the seam
+   (a face texture's opposite edges against its neighbouring texels) and the painted light.
+   They reject a variant by default (`mesh_flags` 0); the pick among acceptable variants takes
+   the smallest sum of measures over their limits. Reason: as the other recipes, the factory
+   gates on what it can name and measure; the limits are first guesses (below).
+8. **Review sheets drawn by the factory.** The piece's sheet (each variant beside the original:
+   shaded, albedo, normal map, the albedo lit by one light from its normals, and the piece
+   repeated as the game lays it) and the set sheet (the game's map blocks, else a test
+   arrangement, drawn three times: originals, shaded frames, normals lit) are Pillow drawings.
+   Reason: the sprites are 2D; the set sheet is where seams, scale and coherence are judged.
+9. **Animation frames are pieces.** A game that keys art per frame replaces each frame of an
+   animation by its own piece. Reason: nothing animates in the first set; coherence between an
+   animation's frames is left for a set that needs it.
+
+Verified on 2026-10-20, without the GPU: unit tests of the geometry (neighbouring floors cover
+each pixel once, a face out of a sprite and back, walls with height and thickness, their caps,
+the view normals and their encoding), of the steps on synthetic tiles (pieces of a group join,
+painted light and a non-wrapping texture are measured, the footprint, a block cut back into its
+tiles), the recipe's expansion and order check, `-Check` and `-Estimate` on the sample order,
+a night with the fake server and a stand-in render (every piece decided, the set sheet drawn,
+a second run doing nothing), and the Blender render on the CPU of a painted box against a
+synthetic sprite (overlap 0.96, the albedo unlit, the lid's normal up in the sprite's view).
+The steps also ran on a game's real sprites with an earlier pipeline's generated materials
+standing in for the pictures (the sprites, the set sheet of two map blocks). Never ran: any
+picture, inpaint, material or mesh of a real night; the edit's behaviour on an upscaled pixel
+sprite (does it keep the layout, does it paint light); the limits on generated pictures; the
+mesh form on generated meshes.
+
 ### Limbless figures
 
 A shapeless figure that floats or crawls (a blob) needs no recipe of its own: the `figure`
@@ -572,6 +677,7 @@ because a WMI process does not inherit the console's environment.
   `-Check` and `-Estimate` on its sample order; and smoke tests of the item tool, the hold
   (on the synthetic humanoid and on a figure the exporter wrote) and the item sheet on
   synthetic Blender fixtures. Nothing of it has run on a generated mesh.
+- The iso-tile recipe (2026-10-20): see the end of its part of section 7.
 - The humanoid's motions list (2026-10-19): see the end of section 13 for what was verified
   and what never ran. The exporter's fix of the same day is checked by a Blender smoke test
   on the CPU (a synthetic figure facing -y, +x and -x, its bones' tails turned off their
@@ -600,7 +706,10 @@ recipe before spending a night on a full art list.
 6. `held_item` (built 2026-10-19): its first real night (2026-10-20) showed how the mesh
    generators orient a side view (section 7, held-item decisions 11 to 13); next, a night
    with the changed item stage, and what reference values the fit measures should have.
-7. Publishing the research behind the stage defaults (which model won each stage, steps,
+7. `iso_tile` (built 2026-10-20): its first real night, which will say whether the edit keeps
+   an upscaled sprite's layout and lights it flat, what limits the footprint and light checks
+   should have, and how the mesh form fits generated meshes to a sprite's silhouette.
+8. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
 
 ## 13. Next phase: the `motions` list in the order

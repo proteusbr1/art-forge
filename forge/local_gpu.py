@@ -62,6 +62,9 @@ HOLD_FILES = [FIGURE_SCRIPT, os.path.join(TOOLS, "blender", "forge_blender.py"),
               EXPORT_SCRIPT, BONES_SCRIPT, os.path.join(ROOT, "forge", "tool_specs.py")]
 ITEM_SHEET_FILES = ("project.godot", "item_sheet.tscn", "item_sheet.gd")
 ITEM_SHEET_LAYOUT = os.path.join(ROOT, "forge", "item_sheet_layout.py")
+TILE_RENDER_SCRIPT = os.path.join(TOOLS, "blender", "tile_render.py")
+TILE_RENDER_FILES = [TILE_RENDER_SCRIPT, os.path.join(TOOLS, "blender", "iso_grid.py"),
+                     os.path.join(TOOLS, "blender", "forge_blender.py"), os.path.join(TOOLS, "blender", "glb_materials.py")]
 
 RIG_METHODS = {
     "skintokens": ("skintokens_dir", "skintokens_python"),
@@ -70,7 +73,7 @@ RIG_METHODS = {
 STEP_TOOLS = {"export": ("blender_python",), "body_export": ("blender_python",), "review": ("godot",),
               "parts": ("blender_python",),
               "creature_export": ("blender_python",), "sheet": ("godot",), "item": ("blender_python",),
-              "hold": ("blender_python",), "item_sheet": ("godot",)}
+              "hold": ("blender_python",), "item_sheet": ("godot",), "tile_render": ("blender_python",)}
 # Creature motion report thresholds: name -> command-line option.
 CREATURE_THRESHOLDS = {"foot_slide_cm": "--max-foot-slide", "reach_shortfall_cm": "--max-reach",
                        "stretch_p95": "--max-stretch", "below_ground_cm": "--max-below-ground"}
@@ -211,6 +214,8 @@ def tool_fingerprint(job, config):
         scripts, extra = list(HOLD_FILES), {}
     elif tool == "item_sheet":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in ITEM_SHEET_FILES] + [ITEM_SHEET_LAYOUT], {}
+    elif tool == "tile_render":
+        scripts, extra = list(TILE_RENDER_FILES), {}
     elif tool == "motion_text":
         from . import motion_text
         scripts = [motion_text.entry_script(), os.path.join(ROOT, "forge", "motion_clips.py")]
@@ -1447,6 +1452,58 @@ def item_sheet_runner(factory, job, out_dir):
 
 
 RUNNERS.update({"item": item_runner, "hold": hold_runner, "item_sheet": item_sheet_runner})
+
+
+# ---- iso tiles: an object's mesh rendered as its sprite ------------------------------------------
+
+@_gpu_locked("tile_render")
+def run_tile_render(mesh, sprite, out, config, tile, grid=None, scale=4, samples=None, timeout=3600):
+    """An iso_tile object's painted mesh fitted to the original sprite's silhouette and rendered
+    by the grid's camera (tools/blender/tile_render.py in blender_python, Cycles on the CPU).
+    Returns {albedo, normal, fit}."""
+    _require(config, "tile_render")
+    out = os.path.abspath(out)
+    os.makedirs(out, exist_ok=True)
+    spec = {"tile": tile, "grid": grid or {}, "scale": scale}
+    if samples is not None:
+        spec["samples"] = samples
+    spec_path = os.path.join(out, "render_spec.json")
+    write_json(spec_path, spec)
+    files = {"albedo": os.path.join(out, "albedo.png"), "normal": os.path.join(out, "normal.png"),
+             "fit": os.path.join(out, "fit.json")}
+    for p in files.values():
+        if os.path.exists(p):
+            os.remove(p)
+    cmd = [config["blender_python"], TILE_RENDER_SCRIPT, "--mesh", os.path.abspath(mesh), "--sprite",
+           os.path.abspath(sprite), "--spec", spec_path, "--out", out]
+    seconds, text = _run(cmd, out, "render", timeout=timeout)
+    missing = [p for p in files.values() if not os.path.exists(p)]
+    if missing:
+        raise ToolError("render did not write %s, see %s" % (", ".join(missing), os.path.join(out, "render.stdout.log")))
+    version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
+    tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
+    rec = _record(TILE_RENDER_SCRIPT, TILE_RENDER_FILES, tools, dict(spec), [_input("mesh", mesh),
+                                                                            _input("sprite", sprite)])
+    rec["exec_seconds"] = seconds
+    rec["command"] = cmd
+    _write_provenance(out, "render", rec, files)
+    return files
+
+
+def tile_render_runner(factory, job, out_dir):
+    """An iso_tile object's mesh rendered as its sprite (args: tile, grid, scale)."""
+    args = job.get("args", {})
+    ins = job["inputs"]
+    mesh, _ = factory.resolve(ins["mesh"])
+    sprite, _ = factory.resolve(ins["sprite"])
+    files = run_tile_render(mesh, sprite, out_dir, factory.config, args["tile"], grid=args.get("grid"),
+                            scale=args.get("scale", 4), samples=args.get("samples"))
+    rec = _step_record(out_dir, "render")
+    settings = rec.get("settings", {})
+    return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
+
+
+RUNNERS["tile_render"] = tile_render_runner
 
 
 # ---- the humanoid motions' text source (HY-Motion Lite, forge/motion_text.py) ------------------

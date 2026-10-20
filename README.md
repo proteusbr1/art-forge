@@ -43,7 +43,14 @@ the factory has not yet run it in a night. The motion bench (`python -m forge.be
 [docs/bench.md](docs/bench.md), 2026-10-19) exports one figure with a motion library and one
 held item and renders each clip from the game's camera and from close into animated previews
 and a page of measures; it is smoke-tested on the synthetic humanoid and was used on one real
-rig. The humanoid and creature exporters light what glows (2026-10-20): the colours a piece's
+rig. The `iso_tile` recipe (2026-10-20) remakes the sprites of an isometric tile grid from a
+game's own sprites (floors and walls repainted flat from the original's face and put back on
+the exact face, their borders owned by a shared seamless material per seam group; objects as
+pictures cut back into the grid, or meshes rendered by the grid's camera in Blender on the
+CPU), with albedo, normal, shaded and emissive frames, footprint, seam and painted-light
+checks, and a set sheet of the game's map blocks; it is tested on synthetic tiles, against the
+fake server with a stand-in render, and its render on the CPU on a synthetic box; no picture of
+it has been generated yet. The humanoid and creature exporters light what glows (2026-10-20): the colours a piece's
 text names as glowing (visors, cores, energy seams, veins, thrusters) found on the painted
 texture and written into the GLB's emissive slot and the regions mask
 ([order.md](docs/order.md), "What glows"); `python -m forge.glow` does the same to a model
@@ -69,8 +76,10 @@ creatures and 2 figures (CPU only); no factory night has run it yet. See the
   those roles: procedural motion kinds or role-space library clips) and `held_item` (a
   strict side view meshed, put in item space at its real size with sockets from a class
   template, then held by a reference figure on the review sheet; the picks of a family form
-  a folder a humanoid order takes as its held items). A limbless figure is the `figure`
-  recipe's unrigged mesh.
+  a folder a humanoid order takes as its held items) and `iso_tile` (a 2D sprite on a fixed
+  isometric grid that keeps a given footprint: floors, walls and objects of a tile map, remade
+  from the game's sprites with a normal map, the joins of a seam group enforced by a shared
+  material). A limbless figure is the `figure` recipe's unrigged mesh.
 - **The order says everything else**, piece by piece: recipe, prompt, number of variants,
   budgets (triangles, texture size), input files, the model of each stage and its named
   settings (steps, seeds, guidance, sampler...). Format: [docs/order.md](docs/order.md).
@@ -97,8 +106,9 @@ local ComfyUI with the custom nodes and models the workflows use (see the table 
    or [tests/fixtures/order_humanoid.json](tests/fixtures/order_humanoid.json) for characters,
    [order_articulated.json](tests/fixtures/order_articulated.json),
    [order_creature.json](tests/fixtures/order_creature.json),
-   [order_held_item.json](tests/fixtures/order_held_item.json) and, for humanoids that
-   share one approved body, [order_humanoid_body.json](tests/fixtures/order_humanoid_body.json)).
+   [order_held_item.json](tests/fixtures/order_held_item.json),
+   [order_iso_tile.json](tests/fixtures/order_iso_tile.json) for tile sprites and, for humanoids
+   that share one approved body, [order_humanoid_body.json](tests/fixtures/order_humanoid_body.json)).
 3. Check it and see what it costs, then start it. The output folder must be outside this
    repository:
 

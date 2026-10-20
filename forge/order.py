@@ -15,8 +15,8 @@ from .config import missing_tools
 # Per-piece keys a family may set as defaults for its pieces. Dictionaries merge key by key
 # (the piece wins); the other keys are taken from the family when the piece has none.
 PIECE_KEYS = ("recipe", "variants", "stages", "skip", "params", "inputs", "review", "accept", "reserve",
-              "parts", "body", "motions", "item")
-DICT_KEYS = ("stages", "params", "inputs", "review", "accept", "item")
+              "parts", "body", "motions", "item", "tile")
+DICT_KEYS = ("stages", "params", "inputs", "review", "accept", "item", "tile")
 FORMAT_VERSION = 1
 # The view each of these recipes needs in style (the text of its reference).
 VIEWS = {"articulated": "the view of every articulated reference (the whole object in its rest pose, "
@@ -25,6 +25,13 @@ VIEWS = {"articulated": "the view of every articulated reference (the whole obje
                      "body, plain background, even light)",
          "held_item": "the view of every held item's reference (a strict side view of the whole item, its "
                       "front to the right, plain background, even light)"}
+# The style texts of the iso_tile recipe's pictures, by the kind of the pieces that use them.
+TILE_VIEWS = {"view_tile_floor": "the picture of every floor's face: a flat, straight-on texture of the ground, "
+                                 "flat even light",
+              "view_tile_wall": "the picture of every wall's face: a flat, straight-on view of the wall's face, flat "
+                                "even light",
+              "view_tile_object": "the picture of every object: the object alone as the game's camera sees it, plain "
+                                  "grey background, flat even light"}
 
 
 def _resolve(path, base):
@@ -95,6 +102,8 @@ def merge_order(order, base):
         fam["assets"] = pieces
         if isinstance(fam.get("inputs"), dict):
             fam["inputs"] = {k: _resolve_input(v, base) for k, v in fam["inputs"].items()}
+        if isinstance(fam.get("layout"), str):
+            fam["layout"] = _resolve(fam["layout"], base)  # an iso_tile family's map layout
     tasks = order.get("tasks")
     if isinstance(tasks, list):
         for t in tasks:
@@ -314,6 +323,8 @@ def check_order(order, config, server=None):
     fam_ids = set()
     humanoids = False
     recipes_used = set()
+    tile_views = set()
+    seams_used = False
     for i, fam in enumerate(fams):
         if not isinstance(fam, dict):
             problems.append("families[%d] must be an object" % i)
@@ -344,10 +355,22 @@ def check_order(order, config, server=None):
                                 "motions)" % fid)
             ids.add(pid)
             _check_piece("%s/%s" % (fid, pid), piece.get("recipe"), piece, config, problems)
+            if piece.get("recipe") == "iso_tile":
+                from . import tile_jobs
+                tile_jobs.check_iso_tile("%s/%s" % (fid, pid), piece, problems, fam)
+                if isinstance(piece.get("tile"), dict):
+                    spec = tile_jobs.tile_spec(fam, piece)
+                    if "picture" in stages.chosen_options("iso_tile", piece):
+                        tile_views.add(piece.get("view", fam.get("view", tile_jobs.VIEWS.get(spec["kind"]))))
+                    if spec["seam"] and spec["kind"] != "object":
+                        seams_used = True
             if piece.get("recipe") == "humanoid":
                 humanoids = True
             if piece.get("recipe") in VIEWS:
                 recipes_used.add(piece["recipe"])
+        if any(isinstance(a, dict) and a.get("recipe") == "iso_tile" for a in fam["assets"]):
+            from . import tile_jobs
+            tile_jobs.check_family(fam, problems)
     style = order.get("style") if isinstance(order.get("style"), dict) else {}
     if humanoids and not (isinstance(style.get("view_humanoid"), str) and style["view_humanoid"].strip()):
         problems.append("style.view_humanoid is required when the order has a humanoid: the view of every "
@@ -358,6 +381,14 @@ def check_order(order, config, server=None):
         if not (isinstance(style.get(key), str) and style[key].strip()):
             problems.append("style.%s is required when the order has a piece of recipe %s: %s" % (
                 key, recipe, VIEWS[recipe]))
+    for key in sorted(k for k in tile_views if k):
+        if not (isinstance(style.get(key), str) and style[key].strip()):
+            problems.append("style.%s is required by the order's iso_tile pieces: %s" % (
+                key, TILE_VIEWS.get(key, "the view a piece names")))
+    if seams_used:
+        for key in ("material_negative",):
+            if not (isinstance(style.get(key), str) and style[key].strip()):
+                problems.append("style.%s is required by the order's seam groups (their materials)" % key)
     tasks = order.get("tasks", [])
     if not isinstance(tasks, list):
         problems.append("tasks must be a list")

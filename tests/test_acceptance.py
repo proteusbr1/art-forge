@@ -99,6 +99,9 @@ class ResponsibleStageTest(unittest.TestCase):
         ("socket guard is off the mesh: 8.2 cm from the surface and outside its cross-section", "unknown"),
         ("frame: the longest axis is 85 degrees from the front axis (not squared): ...", "unknown"),
         ("facing: the hips' and the shoulders' lines are 40 degrees apart (more than 25): ...", "unknown"),
+        ("footprint: 7.2% of the sprite lies outside the original's silhouette (over 4.0%)", "picture"),
+        ("seam: the texture's opposite edges differ 3.1 times more than neighbouring texels (over 2.5)", "edges"),
+        ("shading: the albedo brightens by 41% across the face (painted light, over 35%)", "picture"),
         ("something new", "unknown"),
     )
 

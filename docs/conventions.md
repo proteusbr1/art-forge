@@ -5,7 +5,8 @@ socket file a game supplies, and what the exporter (`tools/blender/humanoid_expo
 and the review sheet (`tools/review_godot/`) produce. The runners are in
 `forge/local_gpu.py`; the synthetic examples are in `tests/fixtures/humanoid/`. The
 formats of the `articulated`, `creature` and `held_item` tools follow in
-[their own sections](#articulated-parts).
+[their own sections](#articulated-parts), and the `iso_tile` recipe's sprites in
+[Iso tiles](#iso-tiles).
 
 ## Axes and units
 
@@ -842,3 +843,73 @@ layout file `<name>.png.json` (`forge-sheet-layout`): `size`, `camera`, `banner`
 `variant`, `kind` small, front or strip, `rect`, `yaw`, `pitch`, `ppm`, `target`, `anim`,
 `time`, `pose` (joint values: node, kind, axis, value)), `texts`, `failures` and
 `load_failures` (a GLB Godot could not load).
+
+## Iso tiles
+
+The `iso_tile` recipe's files ([order.md](order.md#the-iso-tile-recipe)); the geometry is
+`tools/blender/iso_grid.py` (no `bpy`), the steps `forge/tile_steps.py`, the mesh render
+`tools/blender/tile_render.py`.
+
+**The grid.** A sprite cell is `cell` pixels (x right, y down, origin at its top-left). World:
+X along the grid's x axis (to the lower right on screen), Y along its y axis (to the lower left),
+Z up; one tile edge is 1 and one level `wall_aspect` tile edges. The floor's diamond has its top
+corner at `floor_top`; a world point (X, Y, Z levels) lies at `floor_top + X (tw / 2, th / 2) +
+Y (-tw / 2, th / 2) + Z (0, -level)`. The camera is orthographic, 45 degrees about the vertical,
+`elevation` degrees down (30 for a 2:1 diamond); one level is `level` pixels, so a level is
+`level / (tw / sqrt(2) cos(elevation))` tile edges high (sqrt(1.5) for the classic 32 x 16
+diamond with 24-pixel levels). The map's frame is left-handed (y runs south): a glTF mesh
+imported by Blender at (x, y, z) lies at map (x, -y, z).
+
+**Faces.** A floor's texture: u along +X, v along +Y, its texel (0, 0) at the diamond's top
+corner. A wall's texture is its face as seen, v = 0 at its top, always one tile edge wide and
+one level high per tile; a west wall stands on X = 0 and shows its +X face, a north wall on
+Y = 0 and shows its +Y face. A wall `thickness` thick has its face at that offset and also shows
+its top and its open end (the west wall's at Y = 1, the north wall's at X = 1), textured with
+the face's own top and end bands as deep as the wall is thick. A wall `height` levels high
+shows the lower part of its texture. A texture over a variant grid covers the grid's tiles
+along u (and v for a floor); a west wall's frames run from its +Y tile on the left of the
+texture to its Y = 0 tile.
+
+**Frames** (`v<seed>_sprite/`, copied to `final/`): per frame of the variant grid,
+`<name>.png` (shaded: the albedo lit from its normals by the order's light, the key from the
+upper left in front, the fill from the right, relative to a flat floor, times the relief's
+hollows and a wall's darker foot, then brought to the original's mean brightness), `<name>_albedo.png`
+(unlit), `<name>_normal.png` (the sprite's view: x right, y up (`normal_y` `up`, green up, as
+OpenGL and Godot; `down` flips it), z toward the viewer, as (n + 1) / 2) and, when anything
+glows, `<name>_emissive.png` (the glowing texels' colour at full value, alpha their weight).
+With a variant grid larger than one tile the names are `<name>_v<NN>`, NN = `(y % gy) * gx + (x %
+gx)`. Every frame is the canvas (`rect`, default the cell) at `scale` art pixels per grid pixel;
+its alpha is binary (floors and walls: each pixel belongs to the face whose quad holds its
+centre, so neighbours share no pixel) or smooth (objects, colours bled from the opaque pixels
+into the soft edge).
+
+`tile.json` (`forge-tile`): `name`, `kind`, `variant_grid`, `scale`, `anchor` (the canvas's
+top-left in grid pixels of the cell: [0, 0] for the cell), `size` (art pixels), `frames` (`index`,
+`at` [i, j], `file`, `albedo`, `normal`, `emissive` or null, `glow`), `grid` (the full grid),
+`measures`, `settings`, `form`. A face also writes `texture.png` (its final face texture).
+
+`mesh_report.json` (`forge-tile-report`): `flags` (texts; [order.md](order.md#the-iso-tile-recipe)),
+`measures` (`overflow`: the largest share of a frame outside the original's silhouette, widened;
+`cover`: the least share of the original's silhouette a frame covers; `seam`: how many times
+more a face texture's opposite edges differ than neighbouring texels, the worse axis;
+`border_difference`: the outermost texel column's mean difference from the group's material;
+`shading`: the albedo's brightness slope across a face or object, as a share of its mean;
+`exposure_gain`; `render_fit` for a meshed object) and `fit.excess` (each measure over its
+limit, summed: the ranking of acceptable variants).
+
+**A meshed object's render** (`v<seed>_render/`): `albedo.png` (the base colour, unlit, on
+the canvas at the scale), `normal.png` (the view normal, y up) and `fit.json`
+(`forge-tile-render`: `fit` with `heading_deg` of eight, `size`, `move` [X, Y] on the floor,
+`iou`, `cover` and `overflow` of its silhouette against the original's at four samples per grid
+pixel; `rect`, `scale`, `samples`). The mesh is turned by each heading, scaled so its
+silhouette's box fits in the original's, its bottom centre placed on the original's; the best
+overlap wins. Cycles renders on the CPU, emission only (no light), a box pixel filter.
+
+**The map layout** (a family's `layout`, `forge-tile-layout`): `{"format": "forge-tile-layout",
+"maps": [{"name", "size", "tiles": [{"at": [x, y, z], "floor": piece, "west_wall": piece,
+"north_wall": piece, "object": piece}]}]}`; a part names a piece id of the family (others are
+skipped and listed). The set sheet draws each map back to front (by level, then x + y, then x;
+per tile its floor, west wall, north wall, object) three times: the originals (nearest), the
+picked frames shaded, and their albedo lit by one light from their normal maps; a piece without
+a pick is drawn as its original. `set_sheet.json` lists the maps, the pieces picked, not picked
+and the ids skipped.

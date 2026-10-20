@@ -56,6 +56,7 @@ RECIPE_ACCEPT = {
                  "below_ground_cm"),
     "articulated": ("mesh_flags",),
     "held_item": ("mesh_flags",),
+    "iso_tile": ("mesh_flags",),
 }
 # Every motion measure a report may hold (the humanoid's, then the creature's).
 MOTION_MEASURES = dict(MOTION_DEFAULTS, below_ground_cm=3.0)
@@ -63,8 +64,8 @@ CLASSES = ("acceptable", "rejected")
 NO_VARIANT_PASSED = "no_variant_passed"
 # Stages in the order of the humanoid chain, then the motion library; "unknown" last. Ties of
 # the most frequent responsible stage go to the earliest.
-STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "parts", "item", "hold", "review",
-               "library", "unknown")
+STAGE_ORDER = ("reference", "pose", "cutout", "mesh", "paint", "rig", "export", "parts", "item", "hold", "guide",
+               "picture", "edges", "form", "sprite", "review", "library", "unknown")
 
 # The stage held responsible for a mesh flag (mesh_report.json "flags"), by its text: the
 # first matching row wins; no row: "unknown". "paint" is the stage that painted the mesh
@@ -89,6 +90,10 @@ MESH_FLAG_STAGES = (
      "the generated shape or the class template (or a manual sockets file) may be at fault"),
     (r"^frame: ", "unknown", "the concept may not be a side view, or the mesh generator turned the item"),
     (r"^facing: ", "unknown", "the generated figure may stand twisted (mesh) or its predicted joints may (rig)"),
+    # An iso_tile sprite's report (forge/tile_steps.py): the picture draws the shape and the light.
+    (r"^footprint: ", "picture", "the picture (or the render of its mesh) gives the sprite's shape"),
+    (r"^seam: ", "edges", "the edges stage joins the border to the seam group's material"),
+    (r"^shading: ", "picture", "the picture painted light into the albedo"),
 )
 # The stage held responsible for a conform flag (conform_report.json "flags"), by its text:
 # the conform follows the rig's joints and weights; the soles are the outfit's own shape.

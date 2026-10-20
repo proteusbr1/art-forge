@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "note": "A sample iso_tile order: a small yard (a paved floor, a lawn, a plank wall and its north twin, a low fence, a crate and a bush) remade from the synthetic sprites of tests/iso_tile_synth.py, which the tests write under local/fixtures/iso_tile/.",
+  "style": {
+    "global": "Hand-painted game art, rich natural detail, soft natural colours.",
+    "view_tile_floor": "A flat straight-down orthographic texture filling the whole square picture, flat even light, matte.",
+    "view_tile_wall": "A flat straight-on orthographic view of the wall's face filling the whole picture, flat even light, matte.",
+    "view_tile_object": "The object alone as an isometric game sprite seen from above at thirty degrees, plain grey background, flat even light.",
+    "material_top": "A seamless top-down texture of",
+    "material_front": "A seamless straight-on texture of",
+    "material_look": "Flat even light, matte, high detail.",
+    "material_negative": "text, letters, cast shadows, perspective, vignette"
+  },
+  "families": [
+    {
+      "id": "yard",
+      "recipe": "iso_tile",
+      "variants": 2,
+      "grid": {"wall_thickness": 0.1},
+      "layout": "../../local/fixtures/iso_tile/layout.json",
+      "seams": {
+        "paving": {"kind": "floor", "brief": "worn grey paving stones", "span": [2, 2]},
+        "lawn": {"kind": "floor", "brief": "short green lawn grass", "span": [2, 2]},
+        "boards": {"kind": "wall", "brief": "weathered vertical wooden boards", "span": 1}
+      },
+      "params": {"scale": 4},
+      "assets": [
+        {"id": "stone", "brief": "Worn grey paving stones with moss in the joints.",
+         "tile": {"kind": "floor", "seam": "paving"},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/stone.png"}},
+        {"id": "grass", "brief": "Short green lawn grass.", "skip": ["picture"],
+         "tile": {"kind": "floor", "seam": "lawn"},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/grass.png"}},
+        {"id": "plank_w", "brief": "A wall of weathered vertical wooden boards.",
+         "tile": {"kind": "west_wall", "seam": "boards"},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/plank_w.png"}},
+        {"id": "plank_n", "brief": "A wall of weathered vertical wooden boards.",
+         "tile": {"kind": "north_wall", "seam": "boards"},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/plank_n.png"}},
+        {"id": "fence", "brief": "A low fence of two pale wooden rails between posts.",
+         "tile": {"kind": "west_wall", "height": 0.6, "cutout": "picture"},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/fence.png"}},
+        {"id": "crate", "brief": "A sturdy wooden crate with iron corners.",
+         "tile": {"kind": "object"}, "stages": {"form": "mesh"}, "params": {"scale": 4, "tris": 8000, "texture": 1024},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/crate.png"}},
+        {"id": "bush", "brief": "A low round bush of small dark green leaves.",
+         "tile": {"kind": "object", "dome": 0.8},
+         "inputs": {"sprite": "../../local/fixtures/iso_tile/bush.png"}}
+      ]
+    }
+  ]
+}

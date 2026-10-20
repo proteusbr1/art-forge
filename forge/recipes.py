@@ -895,10 +895,16 @@ def check_creature(where, piece, problems):
                     where, key, ", ".join(names)))
 
 
+def recipe_iso_tile(fam, a, st):
+    """A sprite of an isometric tile grid remade from the game's sprite (forge/tile_jobs.py)."""
+    from .tile_jobs import recipe_iso_tile as expand_tile
+    return expand_tile(fam, a, st)
+
+
 RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "figure": recipe_figure,
            "object_3d": recipe_object_3d, "concept": recipe_concept, "prop": recipe_prop,
            "material": recipe_material, "humanoid": recipe_humanoid, "articulated": recipe_articulated,
-           "creature": recipe_creature, "held_item": recipe_held_item}
+           "creature": recipe_creature, "held_item": recipe_held_item, "iso_tile": recipe_iso_tile}
 # Recipe-specific checks of a piece, called by forge.order.check_order with the piece's
 # valid stages and skips: check(where, piece, problems).
 PIECE_CHECKS = {"humanoid": check_humanoid, "articulated": check_articulated, "creature": check_creature,
@@ -922,6 +928,9 @@ def expand(job_list, only=None):
         for j in made_motion_jobs(fam):
             j["family"], j["asset"] = fam["id"], MOTIONS_ASSET
             jobs.append(j)
+        # An iso_tile family's seam materials and set sheet (forge/tile_jobs.py).
+        from .tile_jobs import family_jobs
+        jobs.extend(family_jobs(fam, st))
     for t in job_list.get("tasks", []):
         fam = t["id"].split("/")[0]
         if only and fam not in only:
