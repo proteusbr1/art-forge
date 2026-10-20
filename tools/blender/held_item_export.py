@@ -5,21 +5,26 @@ proposed from a class template, and the socket file the humanoid exporter reads
 Runs with a Python that imports bpy (Blender as a module):
 
   python held_item_export.py --mesh PAINTED.glb --out DIR --spec ITEM.json [--name model]
-      [--length 0.9 | --height 0.3] [--front +x] [--top +y] [--snap auto|1|0] [--tris 12000]
-      [--tolerance-cm 1.0] [--metal-roughness MAP.png] [--image-format lossless|compact]
+      [--length 0.9 | --height 0.3] [--reference CUTOUT.png] [--front auto|+x|...] [--top auto|+y|...]
+      [--snap auto|1|0] [--tris 12000] [--tolerance-cm 1.0] [--metal-roughness MAP.png]
+      [--image-format lossless|compact]
 
 Steps (the geometry in held_item_geometry.py):
-1. The frame: the generated mesh's front points along the glTF axis --front (default +x: to
-   the right of the recipe's side-view concept) and its top along --top (default +y), or as
-   <out>/frame.json says when a person marked it "manual": true (front, top, and optionally
-   rotate_deg [about x, about y, about z] instead of the squaring). A long, straight item
-   (the template's "square", or --snap) is squared to its principal axes when it came out
-   turned by 8 to 30 degrees. Scaled so that its length along +x is --length (or its height
-   along +z is --height).
+1. The frame: found (`orient`, --front and --top auto, the default) from the side silhouette
+   of the reference picture (--reference: the cutout the mesh was made from; its alpha) seen
+   from every side, and for guns from the grip and the barrel; or given: the glTF axes the
+   mesh's front and top point along (--front, --top), or <out>/frame.json when a person
+   marked it "manual": true (front, top, and optionally rotate_deg [about x, about y, about
+   z] instead of the squaring). A long, straight item (the template's "square", or --snap)
+   is then squared: with the reference, turned about its side axis to the silhouette's best
+   match (3 to 30 degrees); without, to its principal axes when it came out turned by 8 to 30
+   degrees. Scaled so that its length along +x is --length (or its height along +z is
+   --height).
 2. The sockets: the class template (--spec: the order's item object) proposed on the surface,
    or <out>/sockets.json when a person marked it "manual": true. The grip becomes the origin.
-   Flags: a required socket missing, a socket off the mesh, an elongated item whose longest
-   axis is far from the front axis.
+   Flags: a required socket missing, a socket off the mesh, and the frame's (a mesh that
+   matches its reference from no side, gun cues that disagree with the reference, a long item
+   with no one long axis, an elongated long item whose longest axis is far from its front).
 3. Writes <out>/<name>.glb (item space: front glTF +x, top glTF +y, the grip at the origin),
    <out>/<name>.json (the socket file), <out>/model.json, <out>/frame.json, <out>/sockets.json
    and <out>/mesh_report.json (flags, fit measures, the materials read back from the GLB).
@@ -46,8 +51,9 @@ ap.add_argument("--spec", required=True, help="the order's item object (JSON)")
 ap.add_argument("--name", default="model")
 ap.add_argument("--length", type=float, default=0.0)
 ap.add_argument("--height", type=float, default=0.0)
-ap.add_argument("--front", default=hg.DEFAULT_FRONT, choices=tuple(hg.AXES))
-ap.add_argument("--top", default=hg.DEFAULT_TOP, choices=tuple(hg.AXES))
+ap.add_argument("--front", default=hg.AUTO, choices=tuple(hg.AXES) + (hg.AUTO,))
+ap.add_argument("--top", default=hg.AUTO, choices=tuple(hg.AXES) + (hg.AUTO,))
+ap.add_argument("--reference", default="", help="the reference picture (PNG with alpha) the mesh was made from")
 ap.add_argument("--snap", default="auto", choices=("auto", "0", "1"))
 ap.add_argument("--tris", type=int, default=0, help="triangle budget (reported; the mesh stage reduced it)")
 ap.add_argument("--tolerance-cm", type=float, default=1.0, help="how far from the surface a socket may be")
@@ -129,20 +135,43 @@ if a.metal_roughness:
         fb.link_metal_roughness(mat, img)
     SOURCES["metallic_roughness"] = "the paint stage's map %s" % os.path.basename(a.metal_roughness)
 
+def read_alpha(path):
+    """The alpha of a picture (2-D, row 0 the top), or (None, why)."""
+    try:
+        img = bpy.data.images.load(path, check_existing=False)
+    except RuntimeError as ex:
+        return None, str(ex)
+    w, h = img.size
+    ch = img.channels
+    if ch != 4 or w * h == 0:
+        bpy.data.images.remove(img)
+        return None, "the picture has no alpha channel"
+    px = np.empty(w * h * ch, np.float32)
+    img.pixels.foreach_get(px)
+    bpy.data.images.remove(img)
+    return px.reshape(h, w, ch)[::-1, :, 3].copy(), None
+
+
 # ---- 1. the frame and 2. the sockets ---------------------------------------------------------
 # Blender's axes (z up) are glTF's (y up) turned: glTF = C @ Blender.
 C = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
 verts_b, tris = fb.mesh_arrays(body)
 verts_g = verts_b @ C.T
-frame = {"format": "forge-item-frame", "version": 1, "manual": False, "front": a.front, "top": a.top,
+frame = {"format": "forge-item-frame", "version": 2, "manual": False, "front": a.front, "top": a.top,
          "snap": None if a.snap == "auto" else a.snap == "1"}
 manual_frame = read_manual("frame.json")
 if manual_frame is not None:
     frame = manual_frame
     print("FRAME manual", json.dumps(frame), flush=True)
 front, top = frame.get("front", a.front), frame.get("top", a.top)
-if front not in hg.AXES or top not in hg.AXES:
-    fb.fail(2, "frame.json: front and top must be one of %s" % ", ".join(hg.AXES))
+if front not in hg.AXES and front != hg.AUTO or top not in hg.AXES and top != hg.AUTO:
+    fb.fail(2, "frame.json: front and top must be auto or one of %s" % ", ".join(hg.AXES))
+REFERENCE = None
+if a.reference:
+    REFERENCE, _why = read_alpha(os.path.abspath(a.reference))
+    if REFERENCE is None:
+        report["problems"].append("frame: the reference picture %s cannot be read: %s" % (
+            os.path.basename(a.reference), _why))
 rotate = frame.get("rotate_deg") if frame.get("manual") else None
 if rotate is not None and not (isinstance(rotate, list) and len(rotate) == 3):
     fb.fail(2, "frame.json: rotate_deg must be [about x, about y, about z] in degrees")
@@ -156,7 +185,7 @@ if manual_sockets is not None:
 try:
     res = hg.place_item(verts_g, tris, TEMPLATE, front=front, top=top, snap=frame.get("snap"), rotate_deg=rotate,
                         length=a.length or None, height=a.height or None, manual_sockets=given,
-                        tolerance=a.tolerance_cm / 100.0)
+                        tolerance=a.tolerance_cm / 100.0, reference=REFERENCE)
 except ValueError as ex:
     fb.fail(2, str(ex))
 # Item space is Blender's space of the written GLB: item = M @ (C @ blender) + t.
@@ -169,10 +198,16 @@ body.data.transform(m4)
 body.data.update()
 body.name = body.data.name = a.name
 check, _ = fb.mesh_arrays(body)
-print("FRAME front %s top %s turned %.1f scale %.4f size %s" % (
-    front, top, res["frame"]["square"].get("turned_deg", 0.0), res["scale"], res["size_m"]), flush=True)
+found = res["frame"]["orient"]
+print("FRAME front %s top %s%s turned %.1f scale %.4f size %s" % (
+    front, top, "" if found is None else " (found by %s: front %s top %s)" % (
+        found["method"], found["front_axis"] or found["front"], found["top_axis"] or found["top"]),
+    res["frame"]["square"].get("turned_deg", 0.0), res["scale"], res["size_m"]), flush=True)
 frame.update({"turned_deg": res["frame"]["square"].get("turned_deg", 0.0), "square": res["frame"]["square"],
-              "scale": round(res["scale"], 6), "size_m": res["size_m"]})
+              "found": found, "scale": round(res["scale"], 6), "size_m": res["size_m"],
+              "how_to_change": "set manual to true and give front and top (the glTF axes the mesh's front and top "
+                               "point along) and optionally rotate_deg; the next factory run redoes this variant's "
+                               "item"})
 if manual_frame is None:
     fb.write_json(OUT, "frame.json", frame)
 if manual_sockets is None:
@@ -218,8 +253,9 @@ info = {"format": "forge-held-item-model", "version": 1, "status": "pending revi
                 "glTF +x, item z glTF +y, item y glTF -z",
         "size_m": res["size_m"], "box_m": res["box"], "length_m": res["length_m"],
         "socket_file": a.name + ".json", "socket_records": records, "required": res["required"],
-        "frame": {"file": "frame.json", "source": "manual" if manual_frame is not None else "order",
-                  "front_given": front, "top_given": top, "square": res["frame"]["square"],
+        "frame": {"file": "frame.json", "source": "manual" if manual_frame is not None else (
+                      "found" if found is not None else "order"),
+                  "front_given": front, "top_given": top, "found": found, "square": res["frame"]["square"],
                   "scale": round(res["scale"], 6)},
         "sockets_source": "manual" if manual_sockets is not None else "proposed",
         "fit": res["fit"], "mesh": {"triangles": tris_n, "report": "mesh_report.json", "image_format": a.image_format},

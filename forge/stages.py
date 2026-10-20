@@ -339,7 +339,7 @@ CREATURE_SKIPPABLE = ("pose", "paint")
 # Options of the held-item recipe (forge/recipes.py recipe_held_item): the object generated
 # from a strict side view, put in item space with its sockets (the socket file the humanoid
 # exporter reads), then held by a reference figure for the review.
-ITEM_AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
+ITEM_AXES = ("auto", "+x", "-x", "+y", "-y", "+z", "-z")
 HELD_ITEM_OPTIONS = dict(_FRONT_STAGES, **{
     "item": {
         "item_frame": {
@@ -347,17 +347,17 @@ HELD_ITEM_OPTIONS = dict(_FRONT_STAGES, **{
             "outputs": ("glb", "sockets", "model", "mesh_report", "frame", "socket_map"), "tools": ("blender_python",),
             "params": ("tris", "height", "length", "image_format"),
             "meaning": "the painted mesh put in item space (front +x, top +z, the grip at the origin) at its real size, "
-                       "squared to its principal axes when long and straight, its sockets proposed from the class "
-                       "template, and the socket file",
+                       "its frame found from the cutout's silhouette (and a gun's grip and barrel), squared when long "
+                       "and straight, its sockets proposed from the class template, and the socket file",
             "settings": {
                 "front": {"type": "choice", "choices": ITEM_AXES, "arg": "front",
-                          "meaning": "the glTF axis the generated item's front points along (default +x: to the right "
-                                     "of the side view)"},
+                          "meaning": "the glTF axis the generated item's front points along (default auto: found "
+                                     "from the reference picture's silhouette; give front and top to fix them)"},
                 "top": {"type": "choice", "choices": ITEM_AXES, "arg": "top",
-                        "meaning": "the glTF axis the generated item's top points along (default +y)"},
+                        "meaning": "the glTF axis the generated item's top points along (default auto)"},
                 "snap": {"type": "bool", "arg": "snap",
-                         "meaning": "square the item to its principal axes when it came out turned by 8 to 30 degrees "
-                                    "(default: the class template's)"},
+                         "meaning": "square the item when it came out turned (to the reference's silhouette, 3 to 30 "
+                                    "degrees; without one, to its principal axes, 8 to 30) (default: the class template's)"},
                 "tolerance_cm": {"type": "number", "min": 0.0, "max": 20.0, "arg": "tolerance_cm",
                                  "meaning": "how far from the surface a socket may lie before it is flagged off the "
                                             "mesh, outside its cross-section (default 1)"},

@@ -679,12 +679,13 @@ An object a figure holds ([design](superpowers/specs/2026-10-18-art-forge-design
 | `cutout` | `birefnet` | `qwen_edit_character` (text `cutout_held_item`, else `view_held_item`) | no | `rgba` |
 | `mesh` | `trellis2` | `hunyuan21` | no | `game_mesh`, `raw_mesh` |
 | `paint` | `hunyuan_paint` | `trellis2_texture` | yes | `painted_mesh` |
-| `item` | `item_frame` (Blender: the painted mesh and Hunyuan3D Paint's `metal_roughness`) | | no | `glb`, `sockets`, `model`, `mesh_report`, `frame`, `socket_map` |
+| `item` | `item_frame` (Blender: the painted mesh, Hunyuan3D Paint's `metal_roughness` and the cutout, whose silhouette finds the mesh's frame) | | no | `glb`, `sockets`, `model`, `mesh_report`, `frame`, `socket_map` |
 | `hold` | `figure_hold` (Blender: `inputs.figure` made ready, then the humanoid exporter with the item and the class's clips of `inputs.clips`) | | yes | `glb`, `model`, `mesh_report`, `motion_report`, `bone_map`, `clips`, `figure` |
 | `review` | `item_sheet` (Godot) | | no | `sheet`, `layout` |
 
 `style.view_held_item` is required: it must ask for a strict side view of the whole item with
-its front to the right (the item stage's default frame; [conventions.md](conventions.md)).
+its front to the right: the item stage finds the generated mesh's frame by matching its side
+silhouette to that picture's cutout ([conventions.md](conventions.md#held-item)).
 
 `params`: `length` or `height` (one of them is required: the real size in metres, the extent
 along the item's front, or its height), `tris`, `texture`, `image_format`. `inputs` (the hold
@@ -714,14 +715,20 @@ default `[0, 1]`), `required` (a variant without it is flagged; default false). 
 | `pistol` | no | `grip`* (u 0.22, band 0 to 0.55), `guard` (u 0.3), `muzzle`* (u 1), `top` (surface) |
 | `rifle`, `carbine` | yes | `butt`* (u 0, band 0.25 to 0.85), `grip`* (u 0.3, band 0 to 0.45), `guard`* (u 0.62, band 0.2 to 0.65), `muzzle`* (u 1), `top` (surface) |
 | `heavy` | yes | `butt` (u 0), `grip`* (u 0.34, band 0 to 0.45), `guard`* (u 0.58, band 0 to 0.6), `muzzle`* (u 1), `top` (surface) |
-| `launcher` | yes | `shoulder`* (surface, u 0.42 on top), `butt` (u 0), `grip`* (u 0.45, band 0 to 0.4), `guard` (u 0.62), `muzzle`* (u 1), `top` (surface) |
+| `launcher` | yes | `shoulder`* (surface, u 0.42 on top), `butt` (u 0), `grip`* (u 0.3, band 0 to 0.4), `guard` (u 0.62), `muzzle`* (u 1), `top` (surface) |
 | `device` | no | `grip`* (u 0.35), `muzzle` (u 1), `top` (surface) |
 | `thrown` | no | `grip`* (u 0.5, the centre), `top` (surface) |
 | `melee` | yes | `grip`* (u 0.15), `guard` (u 0.32), `tip`* (u 1) |
 
-Settings: `item_frame` `front` and `top` (one of `+x`, `-x`, `+y`, `-y`, `+z`, `-z`: the glTF
-axes the generated front and top point along; default `+x` and `+y`), `snap` (bool: square a
-long item turned by 8 to 30 degrees; default the template's) and `tolerance_cm` (number 0-20,
+The templates `pistol`, `rifle`, `carbine`, `heavy` and `launcher` are guns for the frame (their
+grip and barrel check the silhouette's frame), `melee` is long, `device` and `thrown` compact.
+A section socket whose station has nothing on the mesh moves to the nearest station within
+0.2 of the length that has.
+
+Settings: `item_frame` `front` and `top` (`auto`, or one of `+x`, `-x`, `+y`, `-y`, `+z`, `-z`:
+the glTF axes the generated front and top point along; default `auto`: found from the
+cutout's silhouette), `snap` (bool: square a long item that came out turned, to the cutout's
+silhouette by 3 to 30 degrees; default the template's) and `tolerance_cm` (number 0-20,
 default 1: how far from the surface a socket may lie before it is off the mesh, outside its
 cross-section); `figure_hold` `height` (number 0.3-4, the figure's height in metres, default
 1.8), `hand_socket_cm` and `penetration_cm` (number 0-100, the motion report's thresholds);
@@ -730,7 +737,9 @@ twice `figure_height`). `review` as the humanoid's (`front`: the side view).
 
 `accept`: `mesh_flags` only. The mesh flags and the stage held responsible: `socket <name> is
 missing: ...` and `socket <name> is off the mesh: ...` (`unknown`: the generated shape, the
-template or a manual file), `frame: the longest axis is ...` (`unknown`), and the material
+template or a manual file), `frame: ...` (`unknown`: the mesh matches its picture from no
+side, the cues disagree, the front cannot be told, a long item with no one long axis, the
+longest axis far from the front), and the material
 flags as the other recipes'. The automatic pick among acceptable variants takes the smallest
 fit excess (the mesh report's `fit`; [conventions.md](conventions.md)). A failed hold does not
 reject its item: the sheet shows it.

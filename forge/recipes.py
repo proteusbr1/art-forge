@@ -759,7 +759,8 @@ def recipe_held_item(fam, a, st):
     item_spec = a.get("item") or {}
 
     def tail(add, v, mesh, painted, opts):
-        ins = {"mesh": painted}
+        # The cutout the mesh was made from: the item step finds the mesh's frame by its silhouette.
+        ins = {"mesh": painted, "reference": {"ref": "%s/%s/%s/cutout" % (fam["id"], a["id"], v), "role": "rgba"}}
         if opts.get("paint") == "hunyuan_paint":
             ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
         p = a.get("params") or {}

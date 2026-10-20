@@ -481,25 +481,65 @@ file, SHA-256; a held-item folder lists each socket file), `command`, `exec_seco
 the geometry in `tools/blender/held_item_geometry.py`, no `bpy`). It reads the painted mesh
 (glTF axes) and writes the item in item space ([above](#axes-and-units)).
 
-The frame: the generated front points along the glTF axis `--front` (default `+x`, the right
-of the recipe's side-view concept) and its top along `--top` (default `+y`). A long, straight
-item (the template's `square`, or `--snap 1`) is turned so that its longest principal axis
-lies on +x, then rolled so that its second axis lies on +z, each only when the turn is 8 to
-30 degrees and the item is elongated (spread ratios 1.3 and 1.2); an item whose longest axis
-is further than 30 degrees from +x with a ratio of at least 1.5 gets the flag `frame: ...`.
-Then it is scaled to `--length` (its extent along +x) or `--height` (along +z), and moved so
-that its grip is the origin.
+The frame is found (`orient`) when `--front` and `--top` are both `auto` (the default); given
+axes (`--front`, `--top`, or a manual `frame.json`) skip the search. The mesh generators keep
+the reference picture's up on glTF +y but lay its left-right on any of glTF +x, -x, +z and -z
+(the first real night, 2026-10-20: all four among 88 variants).
+
+- With `--reference` (the cutout the mesh was made from, read for its alpha; the recipe gives
+  it): every candidate frame (the 24 with the front and the top on glTF axes, and, when the
+  item is elongated and its longest principal axis is more than 30 degrees from every glTF
+  axis, the 8 on its principal axes) is scored by its side silhouette (x to the right, z up)
+  against the picture's: each on a 64 x 64 grid over its own box, their overlap (intersection
+  over union) times the square root of the ratio of their aspects. A candidate ranks at its
+  best of the turns 0, 8, 16 and 24 degrees either way about its side axis, less 0.004 per
+  degree, plus 0.03 times the cosine between its top and glTF +y; the best one is used.
+  Flags: `frame: the mesh matches its reference picture from no side` (a score below 0.5).
+- The gun cues (templates `pistol`, `rifle`, `carbine`, `heavy`, `launcher`), over 24 stations
+  along the length: `rear` (0.5 minus the centre of the profile's height along x), `ends` (the
+  back end's height minus the front end's, over the tallest station) and `up` (how much more
+  the profile's bottom edge varies than its top edge). The front cue is rear / 0.05 + ends /
+  0.25. With a reference they check its frame: a front cue of -1 or less, or an up cue of
+  -0.04 or less, is the flag `frame: the cues disagree: ...`.
+- Without a reference: a gun or a `melee` item takes its longest principal axis as its length
+  (the nearest glTF axis when within 35 degrees), its top as near glTF +y as square to it,
+  then a gun's up cue and front cue turn it round when they say so; a front cue between -1
+  and 1 is the flag `frame: the front cannot be told: ...`. A `device` or `thrown` item keeps
+  the front glTF +x and the top +y.
+- A template with `square` whose two largest spreads are within a ratio of 1.3 gets the flag
+  `frame: a long item with no one long axis` (a mesh of two crossed bodies came out on the
+  night), and one whose longest axis (at a ratio of at least 1.5) is more than 30 degrees from
+  the front found, `frame: the longest axis is ...`. With a frame given, the squaring's flag
+  `frame: the longest axis is ... from the front axis` (at a ratio of at least 1.5, more than
+  30 degrees) is given to a template with `square` only (before 2026-10-20 to every template:
+  a pistol's grip pulled its longest axis 31 degrees off on the night).
+
+Then a long, straight item (the template's `square`, or `--snap 1`) is squared. With a
+reference it is turned about its side axis by the turn (1 degree steps, up to 30) that
+matches the picture best, when that is 3 degrees or more and raises the score by 0.01, and it
+is not rolled. Without one it is turned so that its longest principal axis lies on +x, then
+rolled so that its second axis lies on +z, each only when the turn is 8 to 30 degrees and the
+item is elongated (spread ratios 1.3 and 1.2). Then it is scaled to `--length` (its extent
+along +x) or `--height` (along +z), and moved so that its grip is the origin.
 
 The sockets: the class template merged with the order's `item.sockets`
 ([order.md](order.md#the-held-item-recipe)), placed on surface samples (20 000 points spread
 by area with a fixed seed, plus the vertices): `section` takes the points within 3 % of the
 length of station `u` (6 %, when fewer than 6 points are there) whose height is inside
-`band`, and puts the socket at that station, in the middle of their extent across and up;
-`surface` takes the closest point; `none` the template position. Flags: `socket <name> is
-missing: no geometry at its station` (a required socket), `socket <name> is off the mesh:
-<d> cm from the surface and outside its cross-section` (farther than `--tolerance-cm` from
-every surface point and outside the extent, widened by the tolerance, of the points of its
-own station).
+`band`, splits them where their heights leave a gap of 6 % of the item's height and keeps
+the run nearest the socket's height `w`, and puts the socket in the middle of their extent
+across and up, at the station (or at the nearest end of their extent along x when the slab
+only grazes them). The centre must be on the mesh: within `--tolerance-cm` of a surface point,
+or enclosed (surface points above, below and on both sides of it within 2 % of the item's
+largest extent, or the tolerance when larger). When it is not, or the band is empty there,
+the stations around it are tried, nearest first, in steps of 1 % of the length up to 20 %;
+a socket found off its station is centred on the piece it found (up to 4 steps, the middle
+of that piece's extent along x). `surface` takes the closest point; `none` the template
+position. Flags: `socket <name> is missing: no geometry at its station` (a required socket
+with no station on the mesh within reach), `socket <name> is off the mesh: <d> cm from the
+surface and outside its cross-section` (a manual socket farther than `--tolerance-cm` from
+every surface point and outside the extent, widened by the tolerance, of the points of its own
+station).
 
 Outputs in `<out>/`:
 
@@ -512,15 +552,23 @@ Outputs in `<out>/`:
 - `model.json` (`format` `forge-held-item-model`): `name`, `hold_class`, `template`, `axes`,
   `size_m` (item space), `box_m`, `length_m`, `socket_file`, `socket_records` (per socket:
   `used` (the position written), `source` (`proposed` or `manual`), `template_at`, `snap`,
-  `required`, `found`, `shift_m` (how far the snap moved it), `points`), `required`, `frame`
-  (`source` `order` or `manual`, `front_given`, `top_given`, `square` (`turned_deg`,
-  `length_deg`, `roll_deg`, `ratio`, `squared`, `flag`), `scale`), `sockets_source`, `fit`,
+  `required`, `found`, `shift_m` (how far the snap moved it), `points`, `station` (a
+  section's station used)), `required`, `frame` (`source` `found`, `order` or `manual`,
+  `front_given`, `top_given`, `found` (the search's record or null: `method` (`reference`,
+  `shape` or `default`), `shape`, `front` and `top` (glTF vectors), `front_axis` and
+  `top_axis` (their axis names, or null), `score`, `overlap`, `aspect`, `reference_aspect`,
+  `other_front` (the best candidate with another front) and `margin` (the ranks' difference),
+  `cues` (guns), `spreads`, `ratio`, `length_deg`, `flags`), `square` (`turned_deg`,
+  `length_deg`, `length_by` (`reference` or `principal axes`), `tilt_deg` and `tilt_gain`
+  (with a reference), `roll_deg`, `ratio`, `squared`, `flag`), `scale`), `sockets_source`, `fit`,
   `mesh`, `seconds_export`. It has no top-level `class` and `sockets`, so the humanoid
   exporter never reads it as a socket file.
-- `frame.json` (`forge-item-frame`): `front`, `top`, `snap`, `turned_deg`, `square`, `scale`,
-  `size_m`, `manual`. With `"manual": true` it is read and kept as written: `front`, `top`,
-  `snap`, and `rotate_deg` `[about x, about y, about z]` (degrees, applied in that order in item
-  axes) instead of the squaring.
+- `frame.json` (`forge-item-frame`, `version` 2): `front`, `top` (`auto` or the axes given),
+  `snap`, `turned_deg`, `square`, `found` (as in `model.json`), `scale`, `size_m`, `manual`,
+  `how_to_change`. With `"manual": true` it is read and kept as written: `front`, `top` (glTF
+  axes, or `auto` for the search), `snap`, and `rotate_deg` `[about x, about y, about z]`
+  (degrees, applied in that order in item axes) instead of the squaring (with `rotate_deg`,
+  an `auto` front or top is the default `+x` or `+y`).
 - `sockets.json` (`forge-item-sockets`): `manual`, `source`, `template`, `sockets` (the
   proposal, item space). With `"manual": true` it is read and kept as written: its `sockets`
   are the item's, in the item space of the frame in use; a grip other than `[0, 0, 0]` moves

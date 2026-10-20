@@ -1,7 +1,10 @@
 """The held item's geometry without Blender (tools/blender/held_item_geometry.py): the order's
-item object, the frame of a generated mesh (its axes and the squaring to its principal
-axes), the real size, the socket proposal of the class templates on synthetic meshes, the
-socket checks (missing, off the mesh), a manual sockets file and the fit measures."""
+item object, the frame of a generated mesh (found from the reference picture's silhouette and
+a gun's grip and barrel, or given; the squaring), the real size, the socket proposal of the
+class templates on synthetic meshes, the socket checks (missing, off the mesh), a manual
+sockets file and the fit measures. The found frame's cases are the first real night's: a
+side view that came out with its length along glTF z, reversed, upside down, turned, round,
+or broken."""
 
 import math
 import os
@@ -63,6 +66,28 @@ def as_generated(verts_item, tilt_deg=0.0, scale=0.37, offset=(0.1, -0.2, 0.05),
     tilt = np.array([[math.cos(a), 0.0, -math.sin(a)], [0.0, 1.0, 0.0], [math.sin(a), 0.0, math.cos(a)]])
     item = (verts_item - verts_item.mean(0)) @ tilt.T  # the nose goes up by tilt_deg (about item y)
     return item @ r0 * scale + np.array(offset)
+
+
+def side_picture(boxes, ppm=500.0, pad=12):
+    """The alpha of a strict side view of boxes given in item space (x to the right, z up), as
+    the cutout of the reference stage: 2-D, row 0 the top."""
+    lo = np.min([b[0] for b in boxes], axis=0)
+    hi = np.max([b[1] for b in boxes], axis=0)
+    w = int(round((hi[0] - lo[0]) * ppm)) + 2 * pad
+    h = int(round((hi[2] - lo[2]) * ppm)) + 2 * pad
+    alpha = np.zeros((h, w), bool)
+    for b0, b1 in boxes:
+        x0, x1 = (int(round((v - lo[0]) * ppm)) + pad for v in (b0[0], b1[0]))
+        z0, z1 = (int(round((v - lo[2]) * ppm)) for v in (b0[2], b1[2]))
+        alpha[h - pad - z1:h - pad - z0, x0:x1] = True
+    return alpha
+
+
+def turned_about_y(verts, deg):
+    """Vertices (glTF) turned deg degrees about glTF y (the generators' up)."""
+    a = math.radians(deg)
+    r = np.array([[math.cos(a), 0.0, math.sin(a)], [0.0, 1.0, 0.0], [-math.sin(a), 0.0, math.cos(a)]])
+    return verts @ r.T
 
 
 def inside(p, box, margin=0.004):
@@ -169,7 +194,8 @@ class Carbine(unittest.TestCase):
     def test_no_squaring_and_a_turned_mesh_is_flagged(self):
         res = self.place(as_generated(self.verts, tilt_deg=15.0), snap=False)
         self.assertEqual(res["frame"]["square"]["turned_deg"], 0.0)
-        res = self.place(as_generated(self.verts, front="+y", top="-x"))  # generated standing up
+        # Generated standing up, with a frame given by hand that says otherwise.
+        res = self.place(as_generated(self.verts, front="+y", top="-x"), front="+x", top="+y")
         found = [f for f in res["flags"] if f.startswith("frame: the longest axis is ")]
         self.assertTrue(found and int(found[0].split()[5]) > 60, res["flags"])
 
@@ -215,6 +241,149 @@ class Carbine(unittest.TestCase):
         f = hg.fit({"a": {"found": True, "snap": "section", "shift_m": 0.09}}, 0.9, 7.5, 0.01)
         self.assertEqual((f["socket_shift"], f["turned_deg"], f["loose_share"]), (0.1, 7.5, 0.01))
         self.assertAlmostEqual(f["excess"], 0.1 / 0.15 + 0.5 + 0.2, places=3)
+
+
+class FoundFrame(unittest.TestCase):
+    """The frame found without a hand-given front and top, on the night's failures made
+    synthetic: the carbine (a gun) with and without its reference picture."""
+
+    def setUp(self):
+        self.verts, self.tris = box_mesh(CARBINE.values())
+        self.template = hg.resolve({"class": "carbine"})
+        self.picture = side_picture(list(CARBINE.values()))
+
+    def place(self, verts, **kw):
+        kw.setdefault("length", 0.9)
+        return hg.place_item(verts, self.tris, self.template, **kw)
+
+    def assertRightWayRound(self, res):
+        """Front +x (the muzzle at the front end, the butt at the back), top +z (the grip below
+        the barrel), the length at its real size, no flags."""
+        self.assertEqual(res["flags"], [])
+        self.assertAlmostEqual(res["size_m"][0], 0.9, places=2)
+        s = res["sockets"]
+        self.assertGreater(s["muzzle"][0] - s["butt"][0], 0.85)
+        self.assertGreater(s["muzzle"][2], s["grip"][2] + 0.08)
+        self.assertGreater(s["top"][2], 0.15)
+        self.assertGreater(res["size_m"][2], 2.5 * res["size_m"][1])  # its side, not its top, faces the camera
+
+    def test_every_way_the_generators_laid_it(self):
+        for front in ("+x", "-x", "+z", "-z"):
+            for picture in (None, self.picture):
+                with self.subTest(front=front, picture=picture is not None):
+                    res = self.place(as_generated(self.verts, front=front, top="+y"), reference=picture)
+                    self.assertRightWayRound(res)
+                    found = res["frame"]["orient"]
+                    self.assertEqual((found["front_axis"], found["top_axis"]), (front, "+y"))
+                    self.assertEqual(found["method"], "shape" if picture is None else "reference")
+                    self.assertEqual(res["frame"]["front"], "auto")
+
+    def test_upside_down(self):
+        for picture in (None, self.picture):
+            res = self.place(as_generated(self.verts, front="-z", top="-y"), reference=picture)
+            self.assertRightWayRound(res)
+            self.assertEqual(res["frame"]["orient"]["top_axis"], "-y")
+
+    def test_turned_in_any_direction(self):
+        g = turned_about_y(as_generated(self.verts, front="+x", top="+y"), 45.0)
+        res = self.place(g, reference=self.picture)
+        self.assertRightWayRound(res)
+        front = np.array(res["frame"]["orient"]["front"])
+        np.testing.assert_allclose(front, [math.sqrt(0.5), 0.0, -math.sqrt(0.5)], atol=0.1)
+        # Without the picture its longest principal axis is its length: about 5 degrees off the
+        # bore (the grip and the stock pull it), the right way round.
+        res = self.place(g)
+        self.assertEqual(res["flags"], [])
+        s = res["sockets"]
+        self.assertGreater(s["muzzle"][0] - s["butt"][0], 0.85)
+        self.assertGreater(s["top"][2], 0.15)
+        bore = turned_about_y(np.array([[1.0, 0.0, 0.0]]), 45.0)[0]
+        self.assertLess(math.degrees(math.acos(float(res["rotation"][0] @ bore))), 8.0)
+
+    def test_a_tilt_is_squared_to_the_picture_not_to_the_principal_axes(self):
+        res = self.place(as_generated(self.verts, tilt_deg=15.0, front="+z"), reference=self.picture)
+        sq = res["frame"]["square"]
+        self.assertEqual(sq["length_by"], "reference")
+        self.assertAlmostEqual(abs(sq["tilt_deg"]), 15.0, delta=2.0)
+        self.assertRightWayRound(res)
+        straight = self.place(as_generated(self.verts, front="+z"), reference=self.picture)
+        self.assertEqual(straight["frame"]["square"]["turned_deg"], 0.0)  # the grip's pull is not a tilt
+
+    def test_cues_that_disagree_are_flagged(self):
+        mirrored = self.picture[:, ::-1]  # a picture with the muzzle to the left
+        res = self.place(as_generated(self.verts), reference=mirrored)
+        self.assertTrue(any(f.startswith("frame: the cues disagree") for f in res["flags"]), res["flags"])
+
+    def test_a_mesh_that_matches_no_side_of_its_picture_is_flagged(self):
+        ring = np.zeros((200, 200), bool)
+        yy, xx = np.mgrid[0:200, 0:200]
+        ring[(np.hypot(yy - 100, xx - 100) < 95) & (np.hypot(yy - 100, xx - 100) > 70)] = True
+        res = self.place(as_generated(self.verts), reference=ring)
+        self.assertTrue(any("matches its reference picture from no side" in f for f in res["flags"]), res["flags"])
+
+    def test_two_crossed_bodies_are_flagged(self):
+        a = as_generated(self.verts)
+        a = a - a.mean(0)
+        verts = np.vstack([a, turned_about_y(a, 90.0)])
+        tris = np.vstack([self.tris, self.tris + len(a)])
+        res = hg.place_item(verts, tris, self.template, length=0.9, reference=self.picture)
+        self.assertTrue(any(f.startswith("frame: a long item with no one long axis") for f in res["flags"]),
+                        res["flags"])
+
+    def test_a_pistol_backwards_is_turned_round(self):
+        verts, tris = box_mesh(PISTOL.values())
+        for picture in (None, side_picture(list(PISTOL.values()))):
+            res = hg.place_item(as_generated(verts, front="-x"), tris, hg.resolve({"class": "pistol"}), length=0.2,
+                                reference=picture)
+            self.assertEqual(res["flags"], [])
+            self.assertEqual(res["frame"]["orient"]["front_axis"], "-x")
+            self.assertGreater(res["sockets"]["muzzle"][0], 0.12)
+
+
+class FoundFrameCompact(unittest.TestCase):
+    def test_a_round_item_takes_the_up_of_its_picture_and_has_no_frame_flag(self):
+        # A grenade lying on its side in its picture (the night's side views drew them so),
+        # generated with that length along glTF z: a body, a fuse at one end, a lever on top.
+        boxes = [((0.0, -0.03, 0.0), (0.09, 0.03, 0.06)), ((0.09, -0.012, 0.018), (0.11, 0.012, 0.042)),
+                 ((0.01, -0.006, 0.06), (0.08, 0.006, 0.066))]
+        verts, tris = box_mesh(boxes)
+        template = hg.resolve({"class": "hand", "template": "thrown"})
+        for front in ("+x", "-z", "+z"):
+            res = hg.place_item(as_generated(verts, front=front), tris, template, length=0.11,
+                                reference=side_picture(boxes))
+            self.assertEqual(res["flags"], [], front)
+            self.assertEqual(res["frame"]["orient"]["top_axis"], "+y")
+            self.assertAlmostEqual(res["size_m"][0], 0.11, places=3)
+            self.assertAlmostEqual(res["size_m"][2], 0.066, delta=0.004)
+
+    def test_without_a_picture_a_compact_item_keeps_the_default_frame(self):
+        verts, tris = box_mesh([((0.0, -0.03, 0.0), (0.06, 0.03, 0.09))])
+        res = hg.place_item(as_generated(verts, front="+z"), tris, hg.resolve({"class": "hand", "template": "thrown"}),
+                            length=0.06)
+        self.assertEqual(res["flags"], [])
+        self.assertEqual(res["frame"]["orient"]["method"], "default")
+
+
+class Sockets(unittest.TestCase):
+    def test_a_launcher_grip_behind_its_station_and_a_section_in_the_air(self):
+        # A tube with a pistol grip at 0.17 to 0.22 of its length and a magazine at 0.55: the
+        # grip's band at the class's station holds the tube's bottom and nothing under it.
+        boxes = [((0.0, -0.05, 0.12), (1.0, 0.05, 0.22)), ((0.17, -0.015, 0.0), (0.22, 0.015, 0.12)),
+                 ((0.55, -0.015, 0.03), (0.6, 0.015, 0.12))]
+        verts, tris = box_mesh(boxes)
+        res = hg.place_item(as_generated(verts, front="+z"), tris, hg.resolve({"class": "launcher"}), length=1.0,
+                            reference=side_picture(boxes))
+        self.assertEqual(res["flags"], [])
+        grip = np.array(res["proposal"]["grip"]["at"]) - np.array(res["box"][0])
+        self.assertTrue(0.18 <= grip[0] <= 0.21 and grip[2] < 0.12, grip)  # in the grip, not on its face
+        self.assertLess(res["proposal"]["grip"]["station"], 0.22)
+
+    def test_a_grip_with_no_geometry_within_reach_is_still_missing(self):
+        boxes = [((0.0, -0.05, 0.12), (1.0, 0.05, 0.22)), ((0.62, -0.015, 0.0), (0.67, 0.015, 0.12))]
+        verts, tris = box_mesh(boxes)
+        res = hg.place_item(as_generated(verts), tris, hg.resolve({"class": "launcher"}), length=1.0,
+                            reference=side_picture(boxes))
+        self.assertIn("socket grip is missing: no geometry at its station", res["flags"])
 
 
 class OtherTemplates(unittest.TestCase):

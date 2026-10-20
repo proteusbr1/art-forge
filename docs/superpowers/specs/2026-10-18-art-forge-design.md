@@ -369,10 +369,10 @@ Decisions, each with its reason:
 2. **The concept is a strict side view with the front to the right** (the order's
    `view_held_item` says so; the order check requires it), so the default frame is fixed by
    the recipe: the generated front points along glTF +x and its top along glTF +y. Reason:
-   a side view shows an item's whole profile (grip, magazine, barrel), and a fixed view
-   gives the mesh a known orientation without a search. How the mesh generators orient a
-   side view has not been measured on the GPU; the stage settings `front` and `top` (any
-   glTF axis) change the default for a whole piece, and a person corrects one variant in its
+   a side view shows an item's whole profile (grip, magazine, barrel). The first real night
+   showed that the view does not fix the mesh's orientation: the frame is now found
+   (decision 11). The stage settings `front` and `top` (any glTF axis) fix it for a whole
+   piece instead, and a person corrects one variant in its
    `frame.json` (`"manual": true`, with `front`, `top` and optionally `rotate_deg`), which
    redoes only that variant's item and hold, as the articulated recipe's frame file.
 3. **Squared to its principal axes only when long and straight and clearly turned.** A class
@@ -438,6 +438,65 @@ Decisions, each with its reason:
     picks are one folder. A piece cannot be named `items`. The variant folders and `final/`
     hold other JSON files too; none of them has both `class` and `sockets`, so the humanoid
     exporter would skip them in any case.
+
+After the first real night (2026-10-20: 30 pieces, 88 variants with the reserves, TRELLIS.2
+meshes painted by Hunyuan3D Paint), which accepted 26 variants and left 11 pieces without a
+pick, mostly for the frame flag (`frame: the longest axis is 90 degrees from the front axis`),
+the item tool was changed:
+
+11. **The frame is found, from the cutout's silhouette, not assumed.** Measured on the night:
+    the generators kept the picture's up on glTF +y (every gun variant) but laid its
+    left-right on glTF +z (44 variants), +x (15), -x (16) or -z (13) (the frames found,
+    checked by eye on side views of every variant against its picture), so the fixed default
+    (front +x) was 90 degrees off on 57 variants and reversed on 16; 13 of the 26 accepted
+    variants and 9 of the 19 picks faced the wrong way, which no flag caught (a compact
+    template is not flagged; a reversed item has its longest axis on +x). The item stage now
+    takes the cutout the mesh was made from and scores every frame with its front and top on
+    glTF axes (and on the principal axes of a long item turned further than 30 degrees from
+    every axis) by the overlap of its side silhouette with the cutout's; the best frame wins,
+    with a pull towards a top on glTF +y and against a tilt. Reason: the generators rebuild
+    the picture, so their mesh seen from the right side is the picture; on the night the
+    frame chosen for each of the 46 gun variants scored 0.55 to 0.88 and ranked at least 0.13
+    above the best frame with another front (but for the crossed mesh of decision 12). A
+    cylinder or a box rolled a quarter turn about its length can match a little better (by
+    up to 0.021); the pull of 0.03 keeps their levers and windows on top.
+12. **A gun's grip and barrel check the silhouette, and real failures stay flagged.** For the
+    gun templates, the profile's height is larger in the back half (grip, magazine, stock),
+    the barrel is the thin end and the bottom edge varies more than the top: measured on all
+    46 gun variants in the frame their silhouette chose, never against it (front cue 0.70 to
+    6.3, up cue 0.019 to 0.25). A clear cue against the silhouette is a flag (the cues
+    disagree), as are a mesh whose best silhouette score is below 0.5 (none on the night), a
+    long item whose two largest spreads are within 1.3 (a heavy-weapon variant came out as two
+    crossed bodies) and a long item whose longest axis is more than 30 degrees from the found
+    front. Without a cutout (the tool run alone) the cues decide a gun's front and top, and a
+    compact item keeps the default frame. Reason: the gate must name what it rejects; a
+    round or symmetric item that matches several frames equally has no wrong frame to flag.
+13. **The squaring follows the cutout, and sockets snap to the geometry near their station.**
+    With a cutout, a long item is turned about its side axis to the silhouette's best match
+    (3 to 30 degrees) and not rolled: the night's meshes came out straight (every gun but
+    two poor meshes within 2 degrees of its picture), while the principal axes of three guns lay 8.6 to 11.5
+    degrees off their bore and squaring by them dropped their silhouette scores (0.72 to
+    0.46, 0.86 to 0.68, 0.80 to 0.78). A section socket keeps the run of points nearest its
+    height (the centre of a band holding a tube's bottom and a grip's top fell in the air
+    between them) and, when its centre is not on the mesh, moves to the nearest station
+    within 0.2 of the length whose centre is, centred on the piece it found; with none it is
+    missing, as before. The launcher template's grip moved from 0.45 to 0.3 of the length:
+    the night's launcher variants had their pistol grips at about 0.2 to 0.35. The item
+    stage's specification moves on purpose (the cutout is a new input, the scripts changed):
+    a resumed night redoes the items, the holds, the reviews and the decisions.
+
+Verified on 2026-10-20, without the GPU: the geometry on synthetic meshes made from the
+night's failures (a carbine laid along each of glTF +x, -x, +z and -z, upside down, turned 45
+degrees about the up axis, tilted 15 degrees, with and without its picture; a pistol reversed;
+a grenade lying on its side; two crossed bodies; a picture of another object; a launcher grip
+behind its station and a grip out of reach) and the Blender smoke test with a cutout. On the
+CPU, on copies of the night's 88 variants (all 30 pieces): 87 acceptable (before: 26), the one
+rejected the crossed heavy weapon; every accepted gun faces its picture within 2.5 degrees of
+tilt (the silhouette's best turn) and 1 degree of yaw (the item's top view), but one poor
+pistol mesh (score 0.55) left 6 degrees of tilt; every other item within 9.2 degrees (the
+worst, broken meshes). Never ran: the changed item stage in a factory night, the holds and the
+review sheets of the new frames, and a person's look at the picks (several accepted meshes are
+visibly poor, fans of long triangles: the gate has no measure of mesh quality).
 
 ### Limbless figures
 
@@ -538,9 +597,9 @@ recipe before spending a night on a full art list.
    factory. For the creature, `bvh` with a capture-joint-to-role map, and `text` once a local
    creature text-to-motion model exists.
 5. Held items with sockets for creatures beyond the item bones of `body.holds`.
-6. `held_item` (built 2026-10-19): its first real night, which will say how the mesh
-   generators orient a side view, whether the templates' stations fit generated items and
-   what reference values the fit measures should have.
+6. `held_item` (built 2026-10-19): its first real night (2026-10-20) showed how the mesh
+   generators orient a side view (section 7, held-item decisions 11 to 13); next, a night
+   with the changed item stage, and what reference values the fit measures should have.
 7. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
 

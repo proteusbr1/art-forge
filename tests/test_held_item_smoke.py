@@ -83,6 +83,20 @@ def carbine():
     return path
 
 
+def carbine_picture():
+    """The carbine's reference picture: a strict side view, straight, the front to the right,
+    on a transparent background (the fixture's mesh came out tilted 15 degrees from it)."""
+    import test_held_item_geometry as geometry
+    path = os.path.join(CACHE, "carbine_cutout.png")
+    alpha = geometry.side_picture(list(geometry.CARBINE.values()))
+    rgba = np.zeros(alpha.shape + (4,), np.uint8)
+    rgba[..., :3] = 60
+    rgba[..., 3] = np.where(alpha, 255, 0)
+    os.makedirs(CACHE, exist_ok=True)
+    Image.fromarray(rgba, "RGBA").save(path)
+    return path
+
+
 def fresh(*parts):
     path = os.path.join(SMOKE, *parts)
     if os.path.exists(path):
@@ -94,7 +108,7 @@ def fresh(*parts):
 def item_files():
     out = fresh("item")
     return out, local_gpu.run_item(carbine(), out, CONFIG, {"class": "carbine"}, name="carbine",
-                                   params={"length": 0.9})
+                                   params={"length": 0.9}, reference=carbine_picture())
 
 
 @unittest.skipUnless(HAVE_BLENDER, "blender_python is not configured in forge.local.json")
@@ -107,6 +121,9 @@ class Item(unittest.TestCase):
         self.assertEqual(sorted(sockets["sockets"]), ["butt", "grip", "guard", "muzzle", "top"])
         self.assertAlmostEqual(model["size_m"][0], 0.9, places=3)
         self.assertTrue(model["frame"]["square"]["squared"])  # the fixture is tilted 15 degrees
+        self.assertAlmostEqual(abs(model["frame"]["square"]["tilt_deg"]), 15.0, delta=2.0)
+        self.assertEqual((model["frame"]["source"], model["frame"]["found"]["method"]), ("found", "reference"))
+        self.assertEqual(model["frame"]["found"]["front_axis"], "+x")
         # The GLB in item space: front glTF +x, top glTF +y, the grip at the origin.
         doc, binary = glb_materials.read_glb(files["glb"])
         acc = doc["accessors"][doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]

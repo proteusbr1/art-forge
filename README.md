@@ -26,7 +26,11 @@ were then fixed and run on the CPU on copies of that night's 42 painted meshes a
 (design, section 7: articulated decisions 8 and 9, creature decisions 11 and 12); the fixed
 tools have not run in a factory night yet. The `held_item` recipe (2026-10-19) is built and tested the same way:
 its item tool, its hold (the humanoid exporter on a reference figure) and its review sheet
-are smoke-tested on a synthetic carbine and the synthetic humanoid only. The humanoid's
+are smoke-tested on a synthetic carbine and the synthetic humanoid; its first real night
+(2026-10-20) rejected most variants for a frame the meshes did not have, and the item tool
+now finds the frame from the cutout's silhouette and a gun's grip and barrel (design,
+section 7, held-item decisions 11 to 13); run on the CPU on copies of that night's 88
+variants, it has not run in a factory night yet. The humanoid's
 `motions` list (2026-10-19) chooses its clips from motion libraries (a starter library ships
 in `data/motions/`), BVH captures and HY-Motion Lite, every source brought to the library's
 canonical joints with recorded corrections; it is tested on synthetic motion and with a

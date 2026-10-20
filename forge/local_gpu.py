@@ -1129,11 +1129,12 @@ RUNNERS.update({"parts": parts_runner, "creature_export": creature_export_runner
 
 @_gpu_locked("item")
 def run_item(mesh, out, config, item, name="model", params=None, metal_roughness=None, image_format=None,
-             front=None, top=None, snap=None, tolerance_cm=None, timeout=3600):
+             front=None, top=None, snap=None, tolerance_cm=None, reference=None, timeout=3600):
     """The held item (tools/blender/held_item_export.py in blender_python): the painted mesh
-    put in item space at its real size (params: length or height, tris), its sockets proposed
-    from the class template of `item` (the order's item object). Returns {glb, sockets, model,
-    mesh_report, frame, socket_map}."""
+    put in item space at its real size (params: length or height, tris), its frame found from
+    the reference picture (the cutout the mesh was made from) unless front and top are given,
+    its sockets proposed from the class template of `item` (the order's item object). Returns
+    {glb, sockets, model, mesh_report, frame, socket_map}."""
     _require(config, "item")
     out = os.path.abspath(out)
     os.makedirs(out, exist_ok=True)
@@ -1162,6 +1163,9 @@ def run_item(mesh, out, config, item, name="model", params=None, metal_roughness
     if metal_roughness:
         cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
         inputs.append(_input("metal_roughness", metal_roughness))
+    if reference:
+        cmd += ["--reference", os.path.abspath(reference)]
+        inputs.append(_input("reference", reference))
     for stale in ("model.json", "mesh_report.json", name + ".json", name + ".glb"):
         if os.path.exists(os.path.join(out, stale)):
             os.remove(os.path.join(out, stale))
@@ -1183,15 +1187,18 @@ def run_item(mesh, out, config, item, name="model", params=None, metal_roughness
 
 def item_runner(factory, job, out_dir):
     """The held item of a variant's painted mesh (args: name, item, length, height, tris,
-    image_format, front, top, snap, tolerance_cm)."""
+    image_format, front, top, snap, tolerance_cm; inputs: mesh, and metal_roughness and
+    reference, the cutout the mesh was made from, when the recipe gives them)."""
     args = job.get("args", {})
     ins = job["inputs"]
     mesh, _ = factory.resolve(ins["mesh"])
     mr = factory.resolve(ins["metal_roughness"])[0] if "metal_roughness" in ins else None
+    ref = factory.resolve(ins["reference"])[0] if "reference" in ins else None
     params = {k: args[k] for k in ("length", "height", "tris") if k in args}
     files = run_item(mesh, out_dir, factory.config, args["item"], name=args.get("name", "model"), params=params,
                      metal_roughness=mr, image_format=args.get("image_format"), front=args.get("front"),
-                     top=args.get("top"), snap=args.get("snap"), tolerance_cm=args.get("tolerance_cm"))
+                     top=args.get("top"), snap=args.get("snap"), tolerance_cm=args.get("tolerance_cm"),
+                     reference=ref)
     rec = _step_record(out_dir, "item")
     settings = rec.get("settings", {})
     return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
