@@ -132,6 +132,26 @@ RIG_SEED = {"type": "int", "min": 0, "max": 2 ** 32 - 1, "arg": "seed",
 # Options of the humanoid recipe (forge/recipes.py recipe_humanoid). "outputs" are the
 # roles each option hands to the next stage. Kinds besides comfy and local_gpu: "local"
 # (a step of the factory without the card) and "input" (a file of the order, no job).
+# The glow of the humanoid and creature exporters (tools/blender/glow_regions.py): by default
+# the colours the piece's text names as glowing ("glowing cyan seams", forge/recipes.py
+# glow_colours) light up on the painted texture; nothing glows when the text names none.
+GLOW_SETTINGS = {
+    "glow": {"type": "bool", "arg": "glow",
+             "meaning": "false: nothing glows; true: the glow also when the piece's text names no glowing colour "
+                        "(then the hues 165-225, cyan to blue)"},
+    "glow_colours": {"type": "colours", "arg": "glow_colours",
+                     "meaning": "the glowing colours (names such as cyan, emerald, violet, magenta, orange, or "
+                                "low-high hue degrees, comma separated) instead of those the piece's text names"},
+    "glow_strength": {"type": "number", "min": 0.0, "max": 100.0, "arg": "glow_strength",
+                      "meaning": "emissive strength of what glows (default 2)"},
+    "glow_value": {"type": "number", "min": 0.0, "max": 1.0, "arg": "glow_value",
+                   "meaning": "a light's brightest texels: value (max of R, G, B) at least this (default 0.42)"},
+    "glow_chroma": {"type": "number", "min": 0.0, "max": 1.0, "arg": "glow_chroma",
+                    "meaning": "a light's brightest texels: chroma (max - min of R, G, B) at least this (default 0.30)"},
+    "glow_max_region": {"type": "number", "min": 0.0, "max": 1.0, "arg": "glow_max_region",
+                        "meaning": "the largest glowing region, as a share of the texture (default 0.006)"},
+}
+
 HUMANOID_OPTIONS = {
     "reference": {
         "qwen21_base": {
@@ -221,7 +241,7 @@ HUMANOID_OPTIONS = {
             "settings": {
                 "normal_map": {"type": "int", "min": 256, "max": 8192, "arg": "normal_map",
                                "meaning": "size of the baked normal map (default: params.texture)"},
-                "glow": {"type": "bool", "arg": "glow", "meaning": "also mark what glows in the regions mask"},
+                **GLOW_SETTINGS,
                 "foot_slide_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "foot_slide_cm",
                                   "meaning": "motion report threshold: foot slide in cm"},
                 "hand_socket_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "hand_socket_cm",
@@ -316,10 +336,11 @@ CREATURE_OPTIONS = dict(_FRONT_STAGES, **{
     "export": {
         "creature_export": {
             "kind": "local_gpu", "tool": "creature_export", "group": "local_gpu",
-            "outputs": ("glb", "model", "bone_map", "mesh_report", "motion_report", "clips"),
+            "outputs": ("glb", "model", "regions_mask", "bone_map", "mesh_report", "motion_report", "clips"),
             "tools": ("blender_python",), "inputs": ("clips", "bone_map"),
             "params": ("tris", "height", "length", "front", "image_format"),
             "settings": {
+                **GLOW_SETTINGS,
                 "foot_slide_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "foot_slide_cm",
                                   "meaning": "motion report threshold: foot slide in cm"},
                 "reach_shortfall_cm": {"type": "number", "min": 0.0, "max": 100.0, "arg": "reach_shortfall_cm",
@@ -584,6 +605,14 @@ def setting_problem(decl, v):
         return None if isinstance(v, str) and v.strip() else "a name (text)"
     if kind == "choice":
         return None if v in decl["choices"] else "one of %s" % ", ".join(decl["choices"])
+    if kind == "colours":
+        # Glow colours: names or "low-high" hue degrees (tools/blender/glow_regions.py).
+        if not (isinstance(v, str) and v.strip()) and not (
+                isinstance(v, list) and v and all(isinstance(x, str) and x.strip() for x in v)):
+            return "glow colours: a comma-separated text or a list of names or low-high degrees"
+        from .tool_specs import glow_colours_problem
+        p = glow_colours_problem(v)
+        return "glow colours (%s)" % p if p else None
     lo, hi = decl.get("min"), decl.get("max")
     if kind == "int":
         ok = _is_int(v)

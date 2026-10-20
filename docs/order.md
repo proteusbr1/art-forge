@@ -267,7 +267,7 @@ Everything it delivers is a candidate pending human review.
 | `mesh` | `trellis2` (TRELLIS.2 at 1024, remesh, reduction to `params.tris`) | `hunyuan21` (Hunyuan3D 2.1 shape only, reduced to `params.tris`; heavy) | no | `game_mesh` (reduced) and `raw_mesh` (before the reduction) |
 | `paint` | `hunyuan_paint` (Hunyuan3D Paint 2.1 over `game_mesh` by its local path, 10 steps, `params.texture`; heavy) | `trellis2_texture` (the mesh job keeps TRELLIS.2's own bake, at `params.texture`) | yes: TRELLIS.2's texture stays | `painted_mesh` |
 | `rig` | `skintokens` (seed 9001, 10 beams: the validated setting; the `seed` setting overrides it) | `unirig` (seed 9001) | yes, with export (a statue) | `rig` |
-| `export` | `humanoid_export` (Blender: bone map, Godot humanoid names, `raw_mesh` as `--bake-source`, the painted mesh as `--material-source`, Hunyuan3D Paint's `metal_roughness` as `--metal-roughness`, `params`, `inputs.clips`, `inputs.items`, `inputs.bone_map`) | | yes | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report` |
+| `export` | `humanoid_export` (Blender: bone map, Godot humanoid names, `raw_mesh` as `--bake-source`, the painted mesh as `--material-source`, Hunyuan3D Paint's `metal_roughness` as `--metal-roughness`, `params`, `inputs.clips`, `inputs.items`, `inputs.bone_map`; what glows: the colours the piece's text names as glowing, weighed by the variant's cutout, see "What glows" below) | | yes | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report` |
 | `review` | `godot_sheet` (Godot off screen, the piece's `review` camera) | | no | `sheet`, `layout` |
 
 The order check refuses: a skipped paint or `trellis2_texture` with mesh `hunyuan21`
@@ -303,7 +303,7 @@ humanoid's `hunyuan21` takes only `shape_steps`, `shape_guidance`, `shape_seed` 
 | | `postprocess` | bool | argument `postprocess` |
 | `unirig` | `seed` | int 0 to 2^32 - 1 | argument `seed` |
 | `humanoid_export` | `normal_map` | int 256-8192 | argument `normal_map` (default `params.texture`) |
-| | `glow` | bool | argument `glow` (the regions mask also marks what glows) |
+| | `glow`, `glow_colours`, `glow_strength`, `glow_value`, `glow_chroma`, `glow_max_region` | see "What glows" below | the exporter's glow |
 | | `foot_slide_cm`, `hand_socket_cm`, `reach_shortfall_cm`, `penetration_cm` | number 0-100 | the motion report's thresholds |
 | | `stretch_p95` | number 0-10 | the motion report's stretch threshold |
 | | `conform_joint_cm`, `conform_outside_cm`, `conform_floor_cm` | number 0-100 | the conform's thresholds (with `inputs.body` only; defaults 4, 1.5, 4) |
@@ -314,6 +314,60 @@ humanoid's `hunyuan21` takes only `shape_steps`, `shape_guidance`, `shape_seed` 
 
 `birefnet`, `input_image` and `trellis2_texture` have no settings (TRELLIS.2's texture
 sampler is set with the mesh's `texture_*` settings).
+
+### What glows (humanoid and creature exports)
+
+The painted texture of a generated figure carries its lights as colour only: a visor, a
+chest core, energy seams, psionic nodes, plasma vents, sigils, veins, thrusters. The
+`humanoid_export` and `creature_export` options find them on the written GLB's base colour
+(`tools/blender/glow_regions.py`, no `bpy`) and give the GLB's material an emissive map
+(the texel's own colour at full value times its weight, PNG) with the strength as
+`KHR_materials_emissive_strength`, and the regions mask's blue channel the same weight.
+
+By default (no setting) the glowing colours are the ones the piece's text names next to a
+glow word: the text of its concepts (brief, tier style, family style, `global`, view) is
+read phrase by phrase, and a colour word right after a glow word (`glow`, `glowing`,
+`luminous`, `bioluminescent`, `neon`, `emissive`, `incandescent`, `lights`, `lit`, ...) up
+to the next stop word, or before it back to the previous one, is a glowing colour:
+"thin glowing cyan seams" gives `cyan`, "glowing emerald or magenta lights" `emerald` and
+`magenta`, "a faint emerald glow underneath" `emerald`, "orange-red glowing cracks" `red` and
+`orange`, "rust red with glowing orange vents" only `orange`; "no glowing parts" binds
+nothing (a negation). A piece whose text names no glowing colour exports as before:
+nothing glows. The export job then has the argument `glow_colours` and the input
+`reference` (the variant's cutout, the picture the paint stage projected).
+
+A texel glows when its hue is in one of those colours, its value (max of R, G, B) at least
+0.42, its chroma (max - min) at least 0.30 and its saturation (chroma / value) at least 0.5,
+and it stands out (its value at least 0.08 above the mean of the 13 x 13 texels around it,
+or its chroma 0.25 above theirs without being darker); weaker texels of that colour (value
+0.32, chroma 0.18) join a light they touch; the light's region must be small (at most 0.6 %
+of the texture: a painted panel is not a light) and saturated through (mean saturation 0.42:
+a pastel patch shaded at its edges is not); a very bright texel (value 0.86) within 2 texels
+of a light is its white core. Skin and hair (the regions mask's red and green) never glow.
+The cutout weighs the colours by hue and saturation (the paint stage takes the light out of
+the picture, so values differ): a texel whose colour the cutout shows lit glows up to 1.6
+times more, one it never shows lit 0.4 times. A light glows at 0.55 to 1 of the strength.
+
+Colour names (hue degrees of sRGB): `red` 350-12, `crimson` 348-8, `scarlet` 350-12,
+`orange` 8-40, `amber` 28-50, `gold` 38-55, `yellow` 45-66, `lime` 70-105, `chartreuse`
+70-100, `green` 95-165, `emerald` 125-183, `jade` 130-183, `teal` 160-192, `turquoise`
+163-192, `aqua` 168-198, `cyan` 168-202, `azure` 195-215, `blue` 200-238, `indigo` 238-262,
+`violet` and `lavender` 255-292, `purple` 262-300, `magenta` 290-335, `fuchsia` 295-335,
+`pink` 310-345. White is not a glow colour (white plates and pale skin would light up).
+
+| Setting | Type and range | Meaning |
+|---|---|---|
+| `glow` | bool | `false`: nothing glows; `true`: the glow also when the text names no glowing colour (then the hues 165-225, as the exporter's `--glow` had them) |
+| `glow_colours` | colour names or `low-high` hue degrees, a comma-separated text or a list | the glowing colours instead of the text's |
+| `glow_strength` | number 0-100 | emissive strength (default 2) |
+| `glow_value` | number 0-1 | the strong texels' value (default 0.42) |
+| `glow_chroma` | number 0-1 | the strong texels' chroma (default 0.30) |
+| `glow_max_region` | number 0-1 | the largest light, as a share of the texture (default 0.006) |
+
+The other recipes have no automatic glow: a vehicle and a figure with `emissive` have the
+emissive mask of their own; a figure's painted mesh (and any exported GLB) can be given
+the glow afterwards with `python -m forge.glow` ([conventions.md](conventions.md), "Glow
+on an exported model").
 
 Jobs and files, per variant `v<seed>` in `<out>/<family>/<piece>/`: `v<seed>_reference_*`,
 `v<seed>_pose_*`, `v<seed>_cutout_rgba.png`, `v<seed>_mesh_game_mesh.glb` and
@@ -595,7 +649,7 @@ and `final`.
 | `mesh` | `trellis2` | `hunyuan21` | no | `game_mesh`, `raw_mesh` |
 | `paint` | `hunyuan_paint` | `trellis2_texture` | yes | `painted_mesh` |
 | `rig` | `skintokens` (seed 9001, 10 beams) | `unirig` | no | `rig` |
-| `export` | `creature_export` (Blender) | | no | `glb`, `model`, `bone_map`, `mesh_report`, `motion_report`, `clips` |
+| `export` | `creature_export` (Blender; what glows as the humanoid's, see "What glows") | | no | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report`, `clips` |
 | `review` | `layout_sheet` (Godot) | | no | `sheet`, `layout` |
 
 `params`: `tris`, `texture`, `height` or `length`, `front`, `image_format`. `inputs`:
@@ -639,8 +693,9 @@ plan: one chain per id, its direction, joints, bends and lengths from its bones.
 | `prompt`, `file`, `note` | `prompt` for `text`, `file` for `bvh` (later); a comment |
 
 Settings: `creature_export` `foot_slide_cm`, `reach_shortfall_cm`, `below_ground_cm`
-(number 0-100) and `stretch_p95` (number 0-10): the motion report's thresholds;
-`layout_sheet` as above.
+(number 0-100) and `stretch_p95` (number 0-10): the motion report's thresholds; `glow`,
+`glow_colours`, `glow_strength`, `glow_value`, `glow_chroma` and `glow_max_region`: what
+glows, as the humanoid's ("What glows"); `layout_sheet` as above.
 
 `accept`: `mesh_flags`, `missing_clips`, `foot_slide_cm`, `reach_shortfall_cm`,
 `stretch_p95`, `below_ground_cm`. An export stopped by an invalid bone map is held on the

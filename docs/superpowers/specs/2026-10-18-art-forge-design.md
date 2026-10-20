@@ -868,3 +868,79 @@ CPU without a bake: every front within 0.0 degrees of glTF +Z after the turn and
 the worst of each figure's hips' and shoulders' lines 4.5 degrees from across (40.4 before; the
 remainder is the angle between the two lines). Never ran: the fixed exporter in a factory night
 with the GPU bake, the review sheet of a squared figure, and a game playing one.
+
+## 16. What glows on a figure (2026-10-20)
+
+The exports of the first real nights marked no glowing part on any piece: the armours' cyan
+and emerald seams and visors, the figures' psionic nodes, plasma vents, sigils and veins and
+the creatures' lit eyes and thrusters were painted on their textures and nothing lit them. The causes: the humanoid exporter's glow was off unless the order set
+`glow` (no order did: every `model.json` had `glow_pixels: null`); when on, it took one hue
+range (165-225 degrees, cyan to blue), so emerald, violet, magenta and orange lights could not
+glow while cobalt-blue plates could (that rule marks 1 % of a powered armour's texture, its blue
+plates' highlights with its seams, and nothing on the figures lit in violet, magenta or orange); its thresholds were absolute
+(value 0.55) while the paint stage paints lights darker than the picture shows them (a teal
+node at value 0.45); it wrote only the mask's blue channel, never the GLB's emissive slot; and
+the creature exporter had no glow at all. The colour space was not a cause: the painted base
+colour is an 8-bit sRGB PNG and Blender's pixels of it are its sRGB values (the new code reads
+the written GLB's image directly).
+
+The glow is now found by `tools/blender/glow_regions.py` (no `bpy`), shared by the humanoid and
+creature exporters and the glow command (formats in [order.md](../../order.md), "What glows",
+and [conventions.md](../../conventions.md)).
+
+Decisions, each with its reason:
+
+1. **The colours come from the piece's text.** The order already says what glows ("thin
+   glowing cyan seams", "glowing emerald or magenta lights"); a colour word bound to a glow
+   word in one phrase is a glowing colour, a negation binds nothing. Reason: the factory stays
+   game-neutral and an order that never thought of the glow gets it right (the night's 20
+   pieces: the 6 conventional ones name none, the 14 others name the colours their pictures
+   show); `glow_colours` overrides, `glow: false` turns it off.
+2. **On by default for the humanoid and creature exports.** Nothing changes for a piece whose
+   text names no glowing colour. Reason: the lights are part of the look the order asked for.
+   The vehicle and figure recipes keep their own emissive mask; the articulated and held-item
+   exporters have no glow (not built).
+3. **Relative cues, not absolute ones.** A light's texels are in a glow colour, saturated
+   (chroma 0.30, saturation 0.5) and stand out from what is around them (value 0.08 above the
+   mean around, or chroma 0.25 above it without being darker); weaker texels join by hysteresis;
+   a white-hot core within 2 texels joins. Reason: the painted lights are dim (value 0.45 to
+   0.7) but always brighter or more colourful than their surroundings.
+4. **Lights are small and saturated through.** A region larger than 0.6 % of the texture is a
+   painted panel (a cerulean plate, a whole violet harness), and a region whose mean saturation
+   is under 0.42 is a pastel patch seeded only at its shaded edges (a robed figure's lavender
+   head: 7 such regions, means 0.24 to 0.39, against 0.42 to 0.98 for the real lights of every
+   piece). Pale skin and white plates (chroma under 0.12) never seed a light.
+5. **The reference picture weighs, it does not place.** The cutout's lit colours (bright,
+   saturated, brighter than around them, in a glow colour) are counted by hue and saturation;
+   a texel whose colour the picture shows lit glows up to 1.6 times more, one it never shows lit
+   0.4 times. Reason: the paint stage projects the picture's colours but takes the light out,
+   so values do not match and places are unknown without the views; by RGB the lookup missed
+   the dimmer painted lights (a small figure's teal nodes were 0.4 % supported by RGB, 51 % by hue and
+   saturation).
+6. **Hue ranges a little wider than the names.** `emerald` runs to 183 degrees: a light armour's
+   "emerald" lines were painted teal (the pictures' lit lines at 163 to 181 degrees).
+7. **The GLB is rewritten without Blender.** The emissive map (the texel's colour at full
+   value times its weight) goes into each material's emissive slot with
+   `KHR_materials_emissive_strength` 2 (Godot 4 reads it as emission energy 2); the binary
+   chunk is rebuilt view by view. Reason: one code path for the exporters and for refreshing a
+   game's models without a GPU night; a material's own emissive map is kept.
+
+Verified on 2026-10-20, without the GPU and without the server: unit tests on synthetic
+textures and on five 128-pixel crops of generated textures (pale skin around a teal node,
+white plates and a cyan seam, white plates and an orange paint tab, lavender skin, pale lines
+on dark armour); the GLB rewrite read back by `glb_materials.py`; the humanoid exporter
+(normal map baked on the CPU) and the creature exporter run with the glow on one real rig each
+(a slender humanoid and a hovering creature: emissive slot present, lossless, no mesh flag); `python -m forge.glow`
+on copies of a real night's 14 humanoid finals, 4 creature finals and 2 figures' painted
+meshes, each rendered in Godot off screen lit and in the dark from four sides. What glows on
+them, with the order's texts: two powered armours' visor, chest core and cyan seams (0.39 % and
+0.48 % of the texture), two light armours' emerald-teal lines, chest emblem and back unit
+(0.42 %, 0.14 %), a slender figure's temple, chest and hip nodes (0.52 %), an armoured brute's
+chest vent, eyes and emerald and magenta gauntlet and boot lights (0.18 %), a robed figure's
+sigils and gems (0.39 %), an infected civilian's veins on the neck and hands (0.96 %), four
+creatures' lit eyes, joints, plates, pods and scale patches (0.13 % to 2.7 %), a translucent
+blob's magenta and emerald patches (4.6 %) and a magma blob's cracks and eyes (8.9 %); the
+six pieces whose texts name no glowing colour (unarmoured and lightly armoured soldiers,
+civilians) nothing; no pale skin, white plate, cobalt plate or orange paint lit. Never ran: a
+factory night with the glow, the review sheet showing it, a game drawing it; the translucent
+blob's glow is patchy (its painted magenta patches light up as they are painted).

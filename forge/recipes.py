@@ -27,7 +27,7 @@ params.tris and params.texture set the mesh's face budget and texture size (the 
 
 import os
 
-from . import acceptance, stages
+from . import acceptance, stages, tool_specs
 from .factory_util import seeds_for
 from .stages import apply_settings
 
@@ -271,6 +271,7 @@ def recipe_humanoid(fam, a, st):
     tex = param(a, "texture", "texture_size", stages.HUMANOID_PARAMS["texture"])
     w, h = a.get("size", fam.get("size", HUMANOID_SIZE))
     text, pose_text, cutout_text = humanoid_texts(st, fam, a)
+    glow_colours = tool_specs.glow_colours_in_text(text)
     keep_texture = opts.get("paint", "trellis2_texture") == "trellis2_texture"
     body = inputs.get("body") if "export" in opts else None
     jobs, variants = [], []
@@ -382,6 +383,11 @@ def recipe_humanoid(fam, a, st):
                 ins["bone_map"] = {"file": bone_map}
             args = {"name": aid, "tris": tris, "normal_map": tex}
             args.update({k: v for k, v in (a.get("params") or {}).items() if k in EXPORT_PARAMS})
+            # What glows: the colours the piece's text names as glowing, weighed by the cutout
+            # the paint stage projected (forge/local_gpu.py job_glow).
+            if glow_colours:
+                args["glow_colours"] = glow_colours
+                ins["reference"] = dict(cut_ref)
             tool = "export"
             if body:
                 # The approved body: the variant conformed to it and exported on its skeleton
@@ -714,6 +720,7 @@ def recipe_creature(fam, a, st):
     the final decision."""
     inputs = a.get("inputs") or {}
     from . import tool_specs
+    glow_colours = tool_specs.glow_colours_in_text(prompt_of(st, fam, a, a.get("view", fam.get("view", "view_creature"))))
 
     def tail(add, v, mesh, painted, opts):
         args = {"method": opts["rig"], "seed": RIG_SEED}
@@ -732,6 +739,10 @@ def recipe_creature(fam, a, st):
         if bone_map:
             ins["bone_map"] = {"file": bone_map}
         args = dict({"name": a["id"], "body": a.get("body"), "motions": a.get("motions") or []}, **_tool_params(a))
+        if glow_colours:
+            # What glows (forge/local_gpu.py job_glow), weighed by the variant's cutout.
+            args["glow_colours"] = glow_colours
+            ins["reference"] = {"ref": "%s/%s/%s/cutout" % (fam["id"], a["id"], v), "role": "rgba"}
         return add("export", {"kind": "local_gpu", "tool": "creature_export", "inputs": ins, "args": args}), "glb"
     return _variants(fam, a, st, "creature", CREATURE_SIZE, "view_creature", tail)
 

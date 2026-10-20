@@ -32,6 +32,10 @@ TOOLS = os.path.join(ROOT, "tools")
 EXPORT_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_export.py")
 BONES_SCRIPT = os.path.join(TOOLS, "blender", "humanoid_bones.py")
 MATERIALS_SCRIPT = os.path.join(TOOLS, "blender", "glb_materials.py")
+# What glows on a painted texture (the exporters' glow, python -m forge.glow).
+GLOW_SCRIPT = os.path.join(TOOLS, "blender", "glow_regions.py")
+# The glow's detection settings an order may give (stage settings "glow_<name>").
+GLOW_SETTINGS = ("value", "chroma", "max_region")
 REVIEW_PROJECT = os.path.join(TOOLS, "review_godot")
 REVIEW_FILES = ("project.godot", "main.tscn", "main.gd")
 SKINTOKENS_ENTRY = os.path.join(TOOLS, "rig", "skintokens_entry.py")
@@ -47,7 +51,7 @@ PARTS_FILES = [PARTS_SCRIPT, os.path.join(TOOLS, "blender", "articulated_parts.p
 CREATURE_SCRIPT = os.path.join(TOOLS, "blender", "creature_export.py")
 CREATURE_FILES = [CREATURE_SCRIPT, os.path.join(TOOLS, "blender", "creature_bones.py"),
                   os.path.join(TOOLS, "blender", "creature_motion.py"),
-                  os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
+                  os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT, GLOW_SCRIPT]
 SHEET_FILES = ("project.godot", "sheet.tscn", "sheet.gd")
 SHEET_LAYOUT = os.path.join(ROOT, "forge", "sheet_layout.py")
 ITEM_SCRIPT = os.path.join(TOOLS, "blender", "held_item_export.py")
@@ -190,9 +194,9 @@ def tool_fingerprint(job, config):
         folder = (config or {}).get(key) if key else None
         extra = {"checkout_revision": _git_revision(folder) if folder else None}
     elif tool == "export":
-        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT], {}
+        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT, GLOW_SCRIPT], {}
     elif tool == "body_export":
-        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT] + BODY_FILES, {}
+        scripts, extra = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT, GLOW_SCRIPT] + BODY_FILES, {}
     elif tool == "review":
         scripts, extra = [os.path.join(REVIEW_PROJECT, f) for f in REVIEW_FILES], {}
     elif tool == "parts":
@@ -426,8 +430,9 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
 
     params: tris, height, head, hands, feet, widen (piece params), normal_map (normal map
     size; default texture, else 2048). clips: motion library; items: held-item folder;
-    bake_source: the raw high mesh; bone_map: the order's bone map (a JSON file); glow: True
-    or (low, high) hues; device: Cycles device (default: the configuration's bake_device);
+    bake_source: the raw high mesh; bone_map: the order's bone map (a JSON file); glow: what
+    glows (glow_args: {"colours", "reference", "strength", "settings"}), or the older True or
+    (low, high) hues; device: Cycles device (default: the configuration's bake_device);
     thresholds: motion report thresholds by name (THRESHOLDS); metal_roughness: the paint
     stage's metallic-roughness map (glTF convention: roughness green, metallic blue);
     material_source: the painted mesh the rig was made from (maps the rig's material lacks
@@ -477,11 +482,10 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
         cmd += ["--material-source", os.path.abspath(material_source)]
         inputs.append(_input("material_source", material_source))
     if glow:
-        cmd.append("--glow")
-        settings["glow"] = True
-        if isinstance(glow, (list, tuple)):
-            cmd += ["--glow-hues", "%s,%s" % (glow[0], glow[1])]
-            settings["glow_hues"] = list(glow)
+        extra, glow_settings, glow_inputs = glow_args(glow)
+        cmd += extra
+        settings.update(glow_settings)
+        inputs += glow_inputs
     for k, v in (thresholds or {}).items():
         if k not in THRESHOLDS:
             raise ValueError("unknown motion threshold %s (known: %s)" % (k, ", ".join(THRESHOLDS)))
@@ -502,7 +506,7 @@ def run_export(rig, out, config, params=None, clips=None, items=None, name="mode
         raise ToolError("export did not write %s, see %s" % (", ".join(missing), os.path.join(out, "export.stdout.log")))
     version = next((ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("BPY ")), None)
     tools = {"blender_python": {"path": config["blender_python"], "version": "bpy " + version if version else None}}
-    scripts = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT]
+    scripts = [EXPORT_SCRIPT, BONES_SCRIPT, MATERIALS_SCRIPT, GLOW_SCRIPT]
     rec = _record(EXPORT_SCRIPT, scripts, tools, settings, inputs)
     rec["exec_seconds"] = seconds
     rec["command"] = cmd
@@ -738,11 +742,56 @@ def _clips_path(factory, ref):
     return ref["file"] if "file" in ref else factory.resolve(ref)[0]
 
 
+def glow_args(glow):
+    """(command arguments, settings, inputs) of an exporter's glow. glow: {"colours": names or
+    ranges, "reference": the reference picture or None, "strength": number or None,
+    "settings": {detection setting: value}}; or True (the hues 165-225) or (low, high) hues,
+    as the exporter took them before the glow colours."""
+    if glow is True or isinstance(glow, (list, tuple)):
+        lo, hi = (165, 225) if glow is True else glow
+        return (["--glow", "--glow-hues", "%s,%s" % (lo, hi)], {"glow": True, "glow_colours": ["%s-%s" % (lo, hi)]},
+                [])
+    cmd = ["--glow-colours", ",".join(str(c) for c in glow["colours"])]
+    settings = {"glow": True, "glow_colours": list(glow["colours"])}
+    inputs = []
+    if glow.get("reference"):
+        cmd += ["--glow-reference", os.path.abspath(glow["reference"])]
+        inputs.append(_input("glow_reference", glow["reference"]))
+    if glow.get("strength") is not None:
+        cmd += ["--glow-strength", str(glow["strength"])]
+        settings["glow_strength"] = glow["strength"]
+    if glow.get("settings"):
+        cmd += ["--glow-settings", json.dumps(glow["settings"], sort_keys=True)]
+        settings.update({"glow_" + k: v for k, v in glow["settings"].items()})
+    return cmd, settings, inputs
+
+
+GLOW_PASSED = ("glow", "glow_colours", "glow_strength") + tuple("glow_" + k for k in GLOW_SETTINGS)
+
+
+def job_glow(factory, args, ins):
+    """What an export job makes glow (glow_args' form), or None. The job's args: glow_colours
+    (the colours the piece's text names, forge/recipes.py, or the order's glow_colours
+    setting), glow (false: nothing glows; true without colours: the hues 165-225),
+    glow_strength and glow_<setting> (GLOW_SETTINGS); its input "reference" (the cutout the
+    paint stage projected) weighs the colours."""
+    if args.get("glow") is False:
+        return None
+    colours = args.get("glow_colours")
+    if isinstance(colours, str):
+        colours = [c.strip() for c in colours.split(",") if c.strip()]
+    if not colours:
+        return True if args.get("glow") else None
+    ref = factory.resolve(ins["reference"])[0] if "reference" in ins else None
+    return {"colours": list(colours), "reference": ref, "strength": args.get("glow_strength"),
+            "settings": {k: args["glow_" + k] for k in GLOW_SETTINGS if "glow_" + k in args}}
+
+
 def export_runner(factory, job, out_dir):
     """The humanoid export of a variant's rig, with its raw mesh as the bake source and the
     order's motion library, held items and bone map, the paint stage's metallic-roughness map
     and the painted mesh as the material source (args: name, tris, normal_map, height, head,
-    hands, feet, widen, glow, image_format and the motion thresholds). An invalid bone map stops it
+    hands, feet, widen, image_format, the motion thresholds and the glow: job_glow). An invalid bone map stops it
     with the report (ToolError, not retried)."""
     args = job.get("args", {})
     ins = job["inputs"]
@@ -758,15 +807,14 @@ def export_runner(factory, job, out_dir):
                        items=ins["items"]["folder"] if "items" in ins else None,
                        name=args.get("name", "model"), bake_source=bake,
                        bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
-                       glow=True if args.get("glow") else None, thresholds=thresholds or None,
+                       glow=job_glow(factory, args, ins), thresholds=thresholds or None,
                        metal_roughness=maps.get("metal_roughness"), material_source=maps.get("material_source"),
                        image_format=args.get("image_format"))
     rec = _step_record(out_dir, "export")
     settings = rec.get("settings", {})
     passed = {k: settings[k] for k in args if k in settings}
     passed.update({k: v for k, v in (settings.get("thresholds") or {}).items() if k in args})
-    if "glow" in args:
-        passed["glow"] = bool(settings.get("glow", False))
+    passed.update({k: settings[k] for k in GLOW_PASSED if k in settings and k in args})
     return {"files": files, "passed": passed, "provenance": rec}
 
 
@@ -789,7 +837,7 @@ def body_export_runner(factory, job, out_dir):
                             items=ins["items"]["folder"] if "items" in ins else None,
                             name=args.get("name", "model"), bake_source=bake,
                             bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
-                            glow=True if args.get("glow") else None, thresholds=thresholds or None,
+                            glow=job_glow(factory, args, ins), thresholds=thresholds or None,
                             conform_thresholds=conform or None, metal_roughness=maps.get("metal_roughness"),
                             material_source=maps.get("material_source"), image_format=args.get("image_format"))
     rec = _step_record(out_dir, "export")
@@ -797,8 +845,7 @@ def body_export_runner(factory, job, out_dir):
     passed = {k: settings[k] for k in args if k in settings}
     passed.update({k: v for k, v in (settings.get("thresholds") or {}).items() if k in args})
     passed.update({k: v for k, v in ((rec.get("conform") or {}).get("settings") or {}).items() if k in args})
-    if "glow" in args:
-        passed["glow"] = bool(settings.get("glow", False))
+    passed.update({k: settings[k] for k in GLOW_PASSED if k in settings and k in args})
     return {"files": files, "passed": passed, "provenance": rec}
 
 
@@ -954,12 +1001,12 @@ def parts_runner(factory, job, out_dir):
 @_gpu_locked("creature_export")
 def run_creature_export(rig, out, config, body, motions=(), name="model", params=None, clips=None,
                         libraries=(), bone_map=None, metal_roughness=None, image_format=None, thresholds=None,
-                        timeout=7200):
+                        glow=None, timeout=7200):
     """The creature export (tools/blender/creature_export.py in blender_python): the rig turned
     to face +Z and scaled, its bones mapped onto `body` (the order's plan or template), the
     motions made in those roles. clips: the piece's library (inputs.clips); libraries: other
-    library files the motions name. Returns {glb, model, bone_map, mesh_report, clips[,
-    motion_report]}."""
+    library files the motions name; glow: what glows (glow_args). Returns {glb, model,
+    regions_mask, bone_map, mesh_report, clips[, motion_report]}."""
     _require(config, "creature_export")
     out = os.path.abspath(out)
     os.makedirs(out, exist_ok=True)
@@ -991,13 +1038,19 @@ def run_creature_export(rig, out, config, body, motions=(), name="model", params
             raise ValueError("unknown motion threshold %s (known: %s)" % (k, ", ".join(CREATURE_THRESHOLDS)))
         cmd += [CREATURE_THRESHOLDS[k], str(v)]
         settings.setdefault("thresholds", {})[k] = v
+    if glow:
+        extra, glow_settings, glow_inputs = glow_args(glow)
+        cmd += extra
+        settings.update(glow_settings)
+        inputs += glow_inputs
     for stale in ("model.json", "motion_report.json", "mesh_report.json", "bone_map_report.json", "clips.json",
-                  name + ".glb"):
+                  "regions_mask.png", name + ".glb"):
         if os.path.exists(os.path.join(out, stale)):
             os.remove(os.path.join(out, stale))
     seconds, text = _run(cmd, out, "export", timeout=timeout)
     files = {"glb": os.path.join(out, name + ".glb"), "model": os.path.join(out, "model.json"),
-             "mesh_report": os.path.join(out, "mesh_report.json"), "clips": os.path.join(out, "clips.json")}
+             "mesh_report": os.path.join(out, "mesh_report.json"), "clips": os.path.join(out, "clips.json"),
+             "regions_mask": os.path.join(out, "regions_mask.png")}
     bm = os.path.join(out, "bone_map.json")
     files["bone_map"] = bm if os.path.exists(bm) else os.path.join(out, "bone_map_report.json")
     if motions:
@@ -1016,7 +1069,7 @@ def run_creature_export(rig, out, config, body, motions=(), name="model", params
 
 def creature_export_runner(factory, job, out_dir):
     """The creature export of a variant's rig (args: name, body, motions, height, length,
-    tris, front, image_format and the motion thresholds). An invalid bone map stops it with
+    tris, front, image_format, the motion thresholds and the glow: job_glow). An invalid bone map stops it with
     its report (ToolError, not retried)."""
     args = job.get("args", {})
     ins = job["inputs"]
@@ -1030,7 +1083,7 @@ def creature_export_runner(factory, job, out_dir):
                                 libraries=[x["file"] for x in ins.get("libraries", [])],
                                 bone_map=ins["bone_map"]["file"] if "bone_map" in ins else None,
                                 metal_roughness=mr, image_format=args.get("image_format"),
-                                thresholds=thresholds or None)
+                                thresholds=thresholds or None, glow=job_glow(factory, args, ins))
     rec = _step_record(out_dir, "export")
     settings = rec.get("settings", {})
     passed = {k: settings[k] for k in args if k in settings}

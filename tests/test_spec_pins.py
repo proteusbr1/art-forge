@@ -37,10 +37,14 @@ ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_
 # purpose on 2026-10-19 with the facing fix (the figure squared by its hips' and shoulders' lines,
 # not by the axis its feet point to; the body frame an exporter option): the exporter and the
 # bone map module are in the export's specification, so a resumed night redoes its exports,
-# sheets and decisions.
+# sheets and decisions. It moved again on purpose on 2026-10-20 with the glow (what glows on the
+# painted texture found from the colours the piece's text names, written into the GLB's
+# emissive slot): the exporter and tools/blender/glow_regions.py are in the export's
+# specification. The sample order's texts name no glowing colour, so its exports write the same
+# files as before; a resumed night redoes them, their sheets and decisions all the same.
 PINS = {
     "order_generic.json": "a148805423689b29e1f8fa3cff06720115ec0753be4f28d322bc879f25c78e44",
-    "order_humanoid.json": "d09341550fb44be243d9b79e64b5fd060c02496c6ae84bf4bc28d59805305362",
+    "order_humanoid.json": "5e754c9e077c89aa959025f97ad77ae77d21999c6bb2a2c8518f1c20b3564c97",
 }
 
 

@@ -43,7 +43,12 @@ the factory has not yet run it in a night. The motion bench (`python -m forge.be
 [docs/bench.md](docs/bench.md), 2026-10-19) exports one figure with a motion library and one
 held item and renders each clip from the game's camera and from close into animated previews
 and a page of measures; it is smoke-tested on the synthetic humanoid and was used on one real
-rig. See the
+rig. The humanoid and creature exporters light what glows (2026-10-20): the colours a piece's
+text names as glowing (visors, cores, energy seams, veins, thrusters) found on the painted
+texture and written into the GLB's emissive slot and the regions mask
+([order.md](docs/order.md), "What glows"); `python -m forge.glow` does the same to a model
+already exported. It was tuned and checked on copies of a real night's 14 humanoids, 4
+creatures and 2 figures (CPU only); no factory night has run it yet. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).

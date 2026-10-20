@@ -9,6 +9,8 @@ Runs with a Python that imports bpy (Blender as a module):
       [--clips LIBRARY.json] [--library OTHER.json ...] [--bone-map MAP.json]
       [--metal-roughness MAP.png] [--image-format lossless|compact]
       [--max-foot-slide 2] [--max-reach 1] [--max-stretch 0.5] [--max-below-ground 3]
+      [--glow-colours violet,emerald [--glow-reference PICTURE] [--glow-strength 2]
+      [--glow-settings JSON]]
 
 SPEC.json: {"body": the order's body (a plan or a template), "motions": the order's
 motions list}. Steps (formats in docs/conventions.md):
@@ -28,8 +30,12 @@ motions list}. Steps (formats in docs/conventions.md):
 4. Every motions entry is made from its source (creature_motion.py: procedural kinds, or a
    library clip in role space) and keyed, one animation per entry, named as the entry. A
    role's twin bones (the map's "twins") turn as the role's bones at the same place.
-5. Writes <out>/<name>.glb, <out>/model.json, <out>/mesh_report.json and <out>/clips.json
-   (every clip in role space: forge-creature-clips).
+5. Writes <out>/<name>.glb, <out>/model.json, <out>/mesh_report.json, <out>/clips.json
+   (every clip in role space: forge-creature-clips) and <out>/regions_mask.png (blue: what
+   glows; red and green 0). What glows (glow_regions.py, with --glow-colours): texels of the
+   written base colour in those colours, bright, saturated and brighter than around them, in
+   small regions, weighed by the reference picture's lit colours (--glow-reference); the
+   GLB's material gets their emissive map (--glow-strength) unless it has one of its own.
 6. With motions, the GLB is loaded again and every clip played on it:
    <out>/motion_report.json (foot slide in the contact frames, reach shortfall of the legs'
    inverse kinematics, edge stretch, depth below the ground; flags over the thresholds).
@@ -69,6 +75,10 @@ ap.add_argument("--max-foot-slide", type=float, default=2.0)
 ap.add_argument("--max-reach", type=float, default=1.0)
 ap.add_argument("--max-stretch", type=float, default=0.5)
 ap.add_argument("--max-below-ground", type=float, default=3.0)
+ap.add_argument("--glow-colours", default="", help="glow colours: names or low-high degrees (glow_regions.py)")
+ap.add_argument("--glow-reference", default="", help="the reference picture the paint stage projected (RGBA)")
+ap.add_argument("--glow-strength", type=float, default=None, help="emissive strength of what glows")
+ap.add_argument("--glow-settings", default="", help="detection settings (JSON object, glow_regions.DEFAULTS)")
 a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 OUT = os.path.abspath(a.out)
 os.makedirs(OUT, exist_ok=True)
@@ -341,6 +351,18 @@ fb.export_glb(GLB, [arm, body] + ([ref] if ref else []), animations=bool(clips))
 if os.path.isdir(MAPS):
     import shutil  # noqa: E402
     shutil.rmtree(MAPS, ignore_errors=True)
+# What glows: the written base colour's lights into the GLB's emissive slot and the mask's blue.
+import glow_regions  # noqa: E402
+GLOW_COLOURS = [c.strip() for c in a.glow_colours.split(",") if c.strip()]
+GLOW = glow_regions.glow_files(GLB, GLOW_COLOURS, reference=a.glow_reference or None,
+                               regions_out=os.path.join(OUT, "regions_mask.png"),
+                               settings=json.loads(a.glow_settings) if a.glow_settings else None,
+                               strength=a.glow_strength)
+REGIONS = dict({"mask": "regions_mask.png"}, **glow_regions.glow_record(GLOW))
+REGIONS["glow_reference"] = GLOW["reference"]
+if "written" in GLOW["emissive"].values():
+    SOURCES["emissive"] = "the exporter's glow (%s)" % ", ".join(GLOW_COLOURS)
+print("GLOW", ",".join(GLOW_COLOURS) or "none", GLOW["glow_pixels"], "pixels", json.dumps(GLOW["emissive"]), flush=True)
 materials, mflags = fb.material_report(GLB, "body", SOURCES, a.image_format, NOT_CARRIED)
 for slot in sorted(mflags):
     report["problems"].append("material slot %s: %s" % (slot, mflags[slot]))
@@ -372,7 +394,7 @@ info = {"format": "forge-creature", "version": 1, "status": "pending review", "n
         "animations": [{"name": c["name"], "kind": c["kind"], "source": c["source"], "frames": c["frames"],
                         "fps": c["fps"], "loop": c["loop"], "seconds": c["frames"] / c["fps"], "holds": c["holds"],
                         "stance": c["stance"], "travel": c["travel"], "params": c["params"]} for c in clips],
-        "clips": "clips.json",
+        "clips": "clips.json", "regions": REGIONS,
         "mesh": {"triangles": tris_out, "reduced": REDUCED, "report": "mesh_report.json",
                  "image_format": a.image_format},
         "seconds_export": round(time.time() - T0, 1)}

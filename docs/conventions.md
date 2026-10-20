@@ -219,7 +219,11 @@ boxes (`model.json` `classes`).
 `source`, `pose_frame`), `mesh` (`triangles`, `reduced`, `normal_map`, `normal_baked`, `report`,
 `image_format`),
 `regions` (`mask`, mean luminance of `skin` and `hair` in the painted texture, pixel
-counts, `glow_hues`), `facing` (below), `seconds_export`.
+counts `skin_pixels`, `hair_pixels`, `glow_pixels` (texels whose glow weight is over 0.5;
+`null` when no glow colour was given), and with a glow colour `glow_share` (of the
+texture), `glow_colours`, `glow_hues` (their hue ranges in degrees), `emissive_strength`
+(`null` when nothing glows) and `glow_reference` (the reference picture's file name)),
+`facing` (below), `seconds_export`.
 
 ### The way an exported figure faces
 
@@ -256,8 +260,58 @@ most 10.3 degrees from the front used, and no rig was flagged.
 
 `<out>/regions_mask.png`: the painted texture's size; red = skin (warm, moderately
 saturated colour on the head), green = hair (darker warm colour on the top of the head),
-blue = what glows (bright saturated colour in the `--glow-hues` range, only with
-`--glow`). A game can recolour these regions; the factory does not.
+blue = what glows: the glow weight 0-255 (0.5 and over is a light), found with
+`--glow-colours` (the order's "What glows", [order.md](order.md)) or `--glow` (the
+`--glow-hues` range) by `tools/blender/glow_regions.py` on the written GLB's base colour,
+never on skin or hair. The same lights are the GLB material's emissive map (below). A game
+can recolour these regions; the factory does not.
+
+### What glows in the GLB
+
+With a glow colour the exporter (and `python -m forge.glow`) rewrites the written GLB
+without Blender: every material with a base-colour texture gets `emissiveTexture` (a PNG
+named `emissive_glow_<material>`: each glowing texel's own colour brought to full value,
+times its weight; black elsewhere; the base colour's sampler and UV set),
+`emissiveFactor` `[1, 1, 1]` and, when the strength is not 1,
+`KHR_materials_emissive_strength` (`emissiveStrength`, default 2; listed in
+`extensionsUsed`; Godot 4 reads it as the material's emission energy). The binary chunk is
+rebuilt view by view, every view keeping its index. A material whose emissive slot already
+holds a map of its own (carried from the material source) keeps it, and only the mask
+marks the lights. When nothing glows the GLB is left as written. `mesh_report.json`
+`materials.slots.emissive.source_from` is then "the exporter's glow (colours)".
+
+### Glow on an exported model
+
+`python -m forge.glow` gives an exported model its glow again without exporting it (no
+Blender, no GPU, nothing sent to a server): after the detection changed, or with other
+colours, a strength, or the reference picture.
+
+    python -m forge.glow SOURCE --out DIR [--colours cyan,emerald] [--text TEXT]
+                         [--order ORDER.json --piece FAMILY/PIECE] [--reference PICTURE]
+                         [--strength 2] [--set name=value ...] [--off]
+
+`SOURCE` is an exporter's folder (`<name>.glb` with `model.json` and, for a humanoid,
+`regions_mask.png`: the humanoid's or the creature's `final/` or `v<seed>_export/`) or a
+GLB file (a figure's `mesh_painted_mesh.glb`). The colours come from `--colours`, else from
+the colour words of `--text`, else from the piece's text in an order (`--order` with
+`--piece`: the text the factory composes for its concepts), else from the model's
+`model.json` (`regions.glow_colours`). `--reference` is the picture the paint stage
+projected (the variant's `v<seed>_cutout_rgba.png`, a figure's `pick_chosen.png`).
+`--set` changes a detection setting (`value`, `chroma`, `saturation`, `region_saturation`,
+`chroma_contrast`, `contrast`, `weak_value`, `weak_chroma`, `core_value`, `max_region`,
+`max_total`, `reference_weight`; defaults in `glow_regions.DEFAULTS`). `--off` takes the
+glow out. An earlier glow (the exporter's or this command's) is replaced; an emissive map
+of the material's own is kept. Exit code 2 on a problem (no colours, an unknown colour or
+setting, no base-colour texture).
+
+Writes into `DIR` (which may be the source folder: its files are replaced): the GLB (same
+name), `glow_emissive.png` (the map), the mask (`regions_mask.png`, a copy of the source's
+with red and green kept and blue replaced, or `glow_mask.png`, the weight in grey, for a GLB
+without one), `model.json` (a copy with `regions` updated as the exporter writes it) and
+`glow.json` (`forge-glow`: `colours`, `strength`, `reference`, `glow_pixels`, `glow_share`,
+`emissive` per material (`written`, `none`, `kept ...`) and per material the detection's
+report: `hues`, `settings`, `regions`, `regions_too_large`, `regions_pale`,
+`largest_region_share`, `reference` (`lit_pixels`, `supported`), `capped`).
 
 `<out>/bone_map.json` (`format` `forge-bone-map`):
 
@@ -754,7 +808,12 @@ without), `twins`, `facing`, `unmapped_bones`, `bone_map`, `item_bones`,
 `ends` (each role's tip bone), `animations` (per motion: `name`, `kind`, `source`,
 `frames`, `fps`, `loop`, `seconds`, `holds`, `stance`, `travel`, `params` (the effective
 settings, with the automatic ones: a gait's stride, lift, duty, phases, crouch; a
-collapse's drop)), `clips`, `mesh`, `seconds_export`.
+collapse's drop)), `clips`, `regions` (`mask` and the glow keys of the humanoid's
+`regions`), `mesh`, `seconds_export`.
+
+`<out>/regions_mask.png`: the painted texture's size; blue = what glows (as the humanoid's,
+with `--glow-colours`), red and green 0. The GLB's material gets the emissive map as the
+humanoid's.
 
 `<out>/mesh_report.json` (`kind` `creature`): as the humanoid's without the normal map and
 the bake source (`normal_map` is `null`).

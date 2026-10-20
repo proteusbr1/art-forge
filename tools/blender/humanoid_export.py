@@ -6,7 +6,8 @@ Runs with a Python that imports bpy (Blender as a module):
 
   python humanoid_export.py --rig RIG.glb --out DIR [--name model] [--tris 25000] [--tex 2048]
       [--height 1.8] [--head 1.0] [--hands 1.0] [--feet 1.0] [--widen 1.0]
-      [--clips LIBRARY.json] [--items DIR] [--glow [--glow-hues 165,225]]
+      [--clips LIBRARY.json] [--items DIR] [--glow-colours cyan,emerald [--glow-reference PICTURE]
+      [--glow-strength 2] [--glow-settings JSON]] [--glow [--glow-hues 165,225]]
       [--bake-source HIGH.glb] [--bone-map MAP.json] [--device GPU|CPU] [--only idle,walk]
       [--max-foot-slide 2] [--max-hand-socket 2] [--max-reach 1] [--max-stretch 0.5]
       [--max-penetration 2] [--metal-roughness MAP.png] [--material-source PAINTED.glb]
@@ -46,7 +47,12 @@ Steps (formats in docs/conventions.md):
    chain): a rig tool's joints may carry orientations whose axes do not point to their
    children. Without a library the GLB has the rest pose only.
 5. Writes <out>/<name>.glb, <out>/model.json and <out>/regions_mask.png (red: skin, green:
-   hair of the head, blue: what glows, with --glow). The normal, metallic-roughness and
+   hair of the head, blue: what glows). What glows (glow_regions.py, with --glow-colours, or
+   --glow and --glow-hues): texels of the written base colour in those colours, bright,
+   saturated and brighter than around them, in small regions, never skin or hair, weighed by
+   the reference picture's lit colours (--glow-reference); the GLB's material gets their
+   emissive map (strength --glow-strength, KHR_materials_emissive_strength) unless it already
+   has an emissive map of its own. The normal, metallic-roughness and
    occlusion maps and an opacity mask are never JPEG: --image-format lossless (default)
    writes every map as PNG, compact the base colour as JPEG (quality 92). The written GLB
    is read back (glb_materials.py): mesh_report.json gets its "materials" section, and a
@@ -86,8 +92,12 @@ ap.add_argument("--feet", type=float, default=1.0)
 ap.add_argument("--widen", type=float, default=1.0, help="body width scale (across, both horizontal axes)")
 ap.add_argument("--clips", default="", help="motion library (JSON)")
 ap.add_argument("--items", default="", help="folder of held-item socket files (<name>.json)")
-ap.add_argument("--glow", action="store_true", help="mark what glows in the mask's blue channel")
+ap.add_argument("--glow", action="store_true", help="mark what glows (the --glow-hues range) when no --glow-colours")
 ap.add_argument("--glow-hues", default="165,225", help="hue range in degrees that glows: low,high")
+ap.add_argument("--glow-colours", default="", help="glow colours: names or low-high degrees (glow_regions.py)")
+ap.add_argument("--glow-reference", default="", help="the reference picture the paint stage projected (RGBA)")
+ap.add_argument("--glow-strength", type=float, default=None, help="emissive strength of what glows")
+ap.add_argument("--glow-settings", default="", help="detection settings (JSON object, glow_regions.DEFAULTS)")
 ap.add_argument("--bake-source", default="", help="raw high-resolution mesh to bake the normal map from")
 ap.add_argument("--bone-map", default="", help="bone map given by the order (wins over everything)")
 ap.add_argument("--device", default="GPU", choices=("GPU", "CPU"), help="Cycles device for the bake")
@@ -1301,14 +1311,10 @@ mask[..., 1] = hair * 255
 regions = {"mask": "regions_mask.png", "skin": float(lum[skin].mean()) if skin.any() else None,
            "hair": float(lum[hair].mean()) if hair.any() else None, "skin_pixels": int(skin.sum()),
            "hair_pixels": int(hair.sum()), "glow_pixels": None}
-if a.glow:
-    _hue = np.degrees(np.arctan2(np.sqrt(3.0) * (rgb[..., 1] - rgb[..., 2]),
-                                 2.0 * rgb[..., 0] - rgb[..., 1] - rgb[..., 2])) % 360.0
-    _lo, _hi = (float(x) for x in a.glow_hues.split(","))
-    glow = ~skin & ~hair & (mx > 0.55) & (sat > 0.35) & (_hue > _lo) & (_hue < _hi)
-    mask[..., 2] = glow * 255
-    regions["glow_pixels"] = int(glow.sum())
-    regions["glow_hues"] = [_lo, _hi]
+# What glows is found on the written GLB's base colour after the export (glow_regions.py).
+GLOW_COLOURS = [c.strip() for c in a.glow_colours.split(",") if c.strip()]
+if not GLOW_COLOURS and a.glow:
+    GLOW_COLOURS = ["%s-%s" % tuple(x.strip() for x in a.glow_hues.split(","))]
 PILImage.fromarray(np.flipud(mask)).save(os.path.join(OUT, "regions_mask.png"))
 info["regions"] = regions
 
@@ -1417,6 +1423,19 @@ print("NOTE the Draco line above is harmless: the GLB is written without Draco c
 if os.path.isdir(MAPS):
     import shutil  # noqa: E402
     shutil.rmtree(MAPS, ignore_errors=True)
+
+# What glows: the written base colour's lights into the GLB's emissive slot and the mask's blue.
+import glow_regions  # noqa: E402
+if GLOW_COLOURS:
+    _mask = os.path.join(OUT, "regions_mask.png")
+    GLOW = glow_regions.glow_files(GLB, GLOW_COLOURS, reference=a.glow_reference or None, regions=_mask,
+                                   regions_out=_mask, settings=json.loads(a.glow_settings) if a.glow_settings else None,
+                                   strength=a.glow_strength)
+    regions.update(glow_regions.glow_record(GLOW))
+    regions["glow_reference"] = GLOW["reference"]
+    if "written" in GLOW["emissive"].values():
+        MATERIAL["sources"]["emissive"] = "the exporter's glow (%s)" % ", ".join(GLOW_COLOURS)
+    print("GLOW", ",".join(GLOW_COLOURS), GLOW["glow_pixels"], "pixels", json.dumps(GLOW["emissive"]), flush=True)
 
 # The materials as the written GLB holds them (its JSON and image bytes, not this scene): a
 # slot whose source map existed but that is missing or lossy is a mesh flag, and so is a

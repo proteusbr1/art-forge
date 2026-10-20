@@ -84,6 +84,10 @@ format in [docs/order.md](docs/order.md) and the design in
   `humanoid_export.py` (the humanoid export, run by `blender_python`; `--body-frame` runs it in
   an approved body's frame) and
   `glb_materials.py` (what a written GLB's material holds, read from the file; no `bpy`).
+  `glow_regions.py` (what glows on a painted texture: the colours a piece's text names as
+  glowing, the detection, the emissive map written into a GLB without Blender; no `bpy`), used
+  by the humanoid and creature exporters and by `forge/glow.py` (`python -m forge.glow`: the
+  glow of an exported model again, without exporting it; [docs/conventions.md](docs/conventions.md)).
   `articulated_parts.py` (part lists and region geometry, no `bpy`) and
   `articulated_export.py` (the parts); `creature_bones.py` (body plans, templates and the
   role map) and `creature_motion.py` (motion kinds, gaits, role-space clips), both without

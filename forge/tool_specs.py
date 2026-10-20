@@ -17,6 +17,16 @@ def _tool(name):
     return importlib.import_module(name)
 
 
+def glow_colours_problem(colours):
+    """None when colours are valid glow colours (tools/blender/glow_regions.py), else why."""
+    return _tool("glow_regions").hue_problem(colours)
+
+
+def glow_colours_in_text(text):
+    """The glow colours a piece's text names (tools/blender/glow_regions.py)."""
+    return _tool("glow_regions").colours_in_text(text)
+
+
 def check_parts(parts):
     return _tool("articulated_parts").check_parts(parts)
 
