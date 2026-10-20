@@ -208,6 +208,25 @@ Decisions, each with its reason:
    Reason: the layout is then tested without Godot, and the same renderer serves both new
    recipes. The humanoid's sheet (`main.gd`) is left as it is, so its jobs keep their
    specification.
+8. **Only the cut's own open edges are a failure** (after the first real night, 2026-10-19).
+   The generated meshes (TRELLIS.2 remeshed, then painted) are not watertight: on the night
+   every one of 42 variants had open edges before any cut (9 to 428), and counting every open
+   edge of a part after its cut rejected all of them. The exporter now takes the mesh's open
+   edges before the cuts; a part's open edge along one of them is the source's, not the
+   cut's. Where a cut crosses such a hole its section is an open chain: the nearest free
+   ends on the plane are bridged before the fill, a loop the fill leaves gets a fan, the
+   round is repeated, and a lone edge of a sliver on the plane is reported, not flagged.
+   Reason: a cut left open is a real failure a person would see; the source's holes are not
+   the parts stage's and were there before.
+9. **A `[low, high]` edge resolves to the waist nearest the parent**, not to the narrowest
+   level anywhere in the range (same date). Reason: on the night's tanks the narrowest
+   section in a turret's range was often its own tapering top, which left the turret on the
+   hull, and a barrel's narrowest section lies anywhere along it. The first level, from the
+   parent's side, where the section stops shrinking (and is no wider than the narrowest plus
+   half the range's spread) is the ring above the deck and the barrel's base at the turret's
+   face. A tiny or empty part's flag now says that the order's box probably misses the part,
+   and the `max_width` setting flags an object generated facing sideways (two of the night's
+   30 vehicles were wider than long).
 
 ### The `creature` recipe (2026-10-19)
 
@@ -289,6 +308,25 @@ Decisions, each with its reason:
     the paint stage's metallic-roughness map replaces the rig's, the rest stays as the rig
     delivers it, and the written GLB is checked. A later option, as for the articulated
     recipe.
+11. **The map takes the skeletons the rig tools really predict** (after the first real
+    night, 2026-10-19, where 11 of 18 creature exports stopped on an invalid map). SkinTokens
+    predicted the same humanoid template for every body: two arms with hands and two
+    four-bone legs, whatever the order asked. So: `min_pairs` lets a paired chain go without
+    its last pairs (the four-armed body got two arms on every variant); a required single
+    chain no run points along takes the nearest remaining limb (a serpent's tail predicted as
+    legs pointing down); the mirror run beside a single chain becomes its twin and moves with
+    it (the other leg of that tail, the other half of a propulsion unit); a single chain must
+    run along the middle unless it points its way and has a twin (a beast's vestigial arms
+    were taken for its neck); a chain with fewer bones than joints gives them the joints in
+    order. Reason: per-variant hand work cannot be the normal path (decision 3), and each
+    rule answers one measured failure.
+12. **A skeleton predicted a quarter turn off is turned by its feet** (same date). Two of the
+    beast's four rigs lay with their left and right front to back (the generated mesh faced
+    glTF +X). The mirrored runs give the left-right line; past 45 degrees from the side, the
+    exporter turns the rig a quarter turn so the feet of the pairs at the root path point to
+    the front, or stops with a `facing:` problem when no feet tell. Smaller turns are not
+    made. Reason: a sideways creature walks sideways in the game; the feet are the cue that
+    held on the night (within 2 degrees of the side axis on both turned rigs).
 
 ### The `held_item` recipe (2026-10-19)
 

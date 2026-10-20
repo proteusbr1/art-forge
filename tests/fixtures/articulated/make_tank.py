@@ -2,7 +2,9 @@
 boxes (a hull, a narrow turret ring, a turret and a barrel pointing to glTF +Z), one mesh
 with UVs and a painted base-colour texture, written as a GLB like the paint stage's.
 
-  <blender_python> make_tank.py --out DIR      (writes DIR/painted_tank.glb)
+  <blender_python> make_tank.py --out DIR [--open]  (writes DIR/painted_tank.glb, or with
+      --open DIR/painted_tank_open.glb: not watertight, as a generated mesh: a hole in the
+      hull's side and one through the turret ring where the turret's cut goes)
 """
 import argparse
 import os
@@ -14,6 +16,7 @@ import numpy as np
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
+ap.add_argument("--open", action="store_true")
 a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 os.makedirs(a.out, exist_ok=True)
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -31,6 +34,11 @@ for lo, hi in BOXES:
 # Subdivided a little, as a generated mesh is dense.
 bmesh.ops.subdivide_edges(bm, edges=list(bm.edges), cuts=3, use_grid_fill=True)
 bmesh.ops.triangulate(bm, faces=list(bm.faces))
+if a.open:
+    holes = [f for f in bm.faces if (abs(f.calc_center_median().x + 0.6) < 1e-4 and abs(f.calc_center_median().y) < 0.2
+                                     and 0.1 < f.calc_center_median().z < 0.3)
+             or (abs(f.calc_center_median().x - 0.25) < 1e-4 and abs(f.calc_center_median().y) < 0.07)]
+    bmesh.ops.delete(bm, geom=holes, context="FACES")
 me = bpy.data.meshes.new("tank")
 bm.to_mesh(me)
 bm.free()
@@ -60,7 +68,7 @@ tex = nt.nodes.new("ShaderNodeTexImage")
 tex.image = img
 nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
 me.materials.append(mat)
-path = os.path.join(a.out, "painted_tank.glb")
+path = os.path.join(a.out, "painted_tank_open.glb" if a.open else "painted_tank.glb")
 bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True,
                           export_draco_mesh_compression_enable=False)
 print("WROTE", path, flush=True)

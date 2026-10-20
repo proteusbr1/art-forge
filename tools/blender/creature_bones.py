@@ -15,8 +15,10 @@ Each chain hangs from the root (the first branching bone of the skeleton) or fro
 listed before it, and points "toward" up, down, front, back or side. A chain with "pairs"
 n is 2n chains, one per side and index: its roles are <id>_l<i> and <id>_r<i>, index 0 the
 highest (then the frontmost). A chain hanging from a paired chain is paired the same way
-(a hand on each arm). "optional": true lets the map go without it. "holds" names the roles
-that carry held items (the exporter adds an item bone at their tip).
+(a hand on each arm). "optional": true lets the map go without it; "min_pairs" k lets a
+paired chain go without its pairs from index k on (a four-armed body on a rig predicted
+with two arms), and a role hanging from an optional role is optional too. "holds" names
+the roles that carry held items (the exporter adds an item bone at their tip).
 
 The proposal (propose()):
 - the root path: from the skeleton's root down its single children to the first bone that
@@ -25,11 +27,17 @@ The proposal (propose()):
   (the root path for "root"); a short run that ends in a branch (a connector, under
   CONNECTOR of the body size) also offers its children's runs;
 - each candidate is scored by how its direction (from its first head to its last tail)
-  matches the chain's "toward" (a side chain also by side), and by its length; the best
+  matches the chain's "toward" (a side chain also by side; a single chain runs along the
+  middle, unless it points its way and has a mirror twin), and by its length; the best
   pairs (chain, candidate) are taken first; a paired chain's left and right are split by
   the side of the body;
 - a chain with no candidate that hangs at the end of a single chain of 2 bones or more
   takes the last third of that chain (a neck that the skeleton grew as part of its spine);
+- a required single chain still missing takes the nearest remaining run of its parent by
+  direction (a serpent's tail the rig predicted as legs pointing down), if it is a limb's
+  length and runs along the middle or has a mirror twin;
+- a single chain whose mirror run hangs unmapped beside it gets that run as its twin
+  ("twins": {role: [bones]}): the exporter turns the twin's bones as the role's;
 - every chain is checked (validate()): a required chain is missing, a role's bones do not
   form a parent-child chain, a bone has two roles, a chain does not hang below its parent,
   a left or right chain is on the wrong side, a pair differs in length by more than
@@ -38,6 +46,9 @@ The proposal (propose()):
 A map is {"roles": {role: [bone, ...]}} (bones from the base to the tip); bone_map.json
 holds it with its validation (format forge-creature-map). choose() applies the precedence:
 a map given by the order, then a bone_map.json marked "manual": true, then the proposal.
+
+skeleton_facing() tells a skeleton predicted a quarter turn off (its mirrored legs and arms
+lying front to back) and which way its feet point; the exporter turns it before the map.
 
 This module does not import bpy: it works over a tree of points,
 {bone: {"parent": name or None, "head": (x, y, z), "tail": (x, y, z)}} in the exporter's
@@ -60,6 +71,12 @@ CONNECTOR = 0.12         # a branching run shorter than this share of the body i
 SPLIT_SHARE = 1.0 / 3.0  # the share of a chain a missing child chain takes from its end
 SIDE_TOLERANCE = 0.35    # largest relative length difference of the two sides of a pair
 SIDE_MIN = 0.02          # a side chain's mean |x| from the hub, as a share of the body size
+MIRROR_MIN_SHARE = 0.2   # a run of a mirrored pair is at least this share of the body size (no fingers)
+MIRROR_TOLERANCE = 0.15  # a mirrored run lands on its pair within this share of their length
+FEET_LIMIT_DEG = 45.0    # feet within this of the side axis tell a quarter-turned skeleton's front
+FALLBACK_MIN_SHARE = 0.12  # a nearest remaining run taken for a missing chain is at least this long
+MIDLINE = 0.08           # a single chain's mean |x| from the hub stays under this share of the body size
+TWIN_SCORE = 0.7         # ... unless it points within ~45 degrees of the chain's way and has a mirror twin
 
 
 # ---- vectors -------------------------------------------------------------------------------
@@ -84,7 +101,8 @@ def _unit(a):
 # ---- the plan ------------------------------------------------------------------------------
 
 BENDS = ("front", "back", "up", "down", "out", "in", "none")
-CHAIN_KEYS = ("id", "from", "toward", "pairs", "optional", "joints", "bends", "lengths", "direction", "note")
+CHAIN_KEYS = ("id", "from", "toward", "pairs", "min_pairs", "optional", "joints", "bends", "lengths", "direction",
+              "note")
 
 
 def _number(v):
@@ -166,6 +184,13 @@ def check_plan(plan):
             problems.append("%s: hangs from the paired chain %s, so it has its %d pair(s)" % (where, src, parent_pairs))
         if "optional" in c and not isinstance(c["optional"], bool):
             problems.append("%s: optional must be true or false" % where)
+        if "min_pairs" in c:
+            mp, own = c["min_pairs"], pairs if isinstance(pairs, int) and not isinstance(pairs, bool) else None
+            if not own:
+                problems.append("%s: min_pairs needs pairs of its own" % where)
+            elif not (isinstance(mp, int) and not isinstance(mp, bool) and 0 <= mp <= own):
+                problems.append("%s: min_pairs must be a whole number from 0 to its pairs (%d), not %r" % (
+                    where, own, mp))
         if c.get("toward") == "side" and not (pairs or parent_pairs):
             problems.append("%s: a chain toward side needs pairs (one chain on each side)" % where)
         seen[cid] = pairs or parent_pairs
@@ -183,9 +208,12 @@ def check_plan(plan):
 
 def plan_roles(plan):
     """[(role, slot)] of a valid plan in plan order. A slot: chain, parent (the parent role,
-    "root" or a role), toward, side ("l", "r" or None), index, optional."""
+    "root" or a role), toward, side ("l", "r" or None), index, optional. A role is optional
+    when its chain is, when its pair index is at or past the chain's min_pairs, or when the
+    role it hangs from is optional."""
     out = []
     by_chain = {}
+    optional = {}
     for c in plan["chains"]:
         cid, src = c["id"], c.get("from", "root")
         pairs = c.get("pairs") or (by_chain.get(src, {}).get("pairs"))
@@ -194,6 +222,7 @@ def plan_roles(plan):
                   "joints": c.get("joints"), "bends": c.get("bends"), "lengths": c.get("lengths"),
                   "direction": c.get("direction")}
         if pairs:
+            least = c.get("min_pairs", pairs) if c.get("pairs") else pairs
             for i in range(pairs):
                 for side in ("l", "r"):
                     role = "%s_%s%d" % (cid, side, i)
@@ -203,10 +232,14 @@ def plan_roles(plan):
                         parent = "%s_%s%d" % (src, side, i)
                     else:
                         parent = src
-                    out.append((role, dict(common, parent=parent, side=side, index=i)))
+                    opt = common["optional"] or i >= least or optional.get(parent, False)
+                    optional[role] = opt
+                    out.append((role, dict(common, parent=parent, side=side, index=i, optional=opt)))
                     entry["roles"].append(role)
         else:
-            out.append((cid, dict(common, parent=src, side=None, index=None)))
+            opt = common["optional"] or optional.get(src, False)
+            optional[cid] = opt
+            out.append((cid, dict(common, parent=src, side=None, index=None, optional=opt)))
             entry["roles"].append(cid)
         by_chain[cid] = entry
     return out
@@ -312,6 +345,11 @@ def expand_template(template):
         if side:
             chain["pairs"] = len(set(r for r in by_role if r != "root" and ROLE.match(r).group(1) == cid
                                      and ROLE.match(r).group(2) == "l"))
+            # The pairs past the first whose bones are marked optional may be missing.
+            needed = [i for i in range(chain["pairs"])
+                      if not any(x.get("optional") for s in "lr" for x in by_role.get("%s_%s%d" % (cid, s, i), []))]
+            if needed and len(needed) < chain["pairs"]:
+                chain["min_pairs"] = max(needed) + 1
         if any(x.get("optional") for x in rep):
             chain["optional"] = True
         chains.append(chain)
@@ -330,14 +368,22 @@ def _snap(d, paired):
 
 def joint_map(tree, plan, roles):
     """{role: [{"bone", "joint", "bend"}]}: each mapped bone's joint of its chain (by where
-    its head falls along the chain, against the chain's relative joint lengths) and the
-    direction that joint bends, for the chains that give joints."""
+    its middle falls along the chain, against the chain's relative joint lengths) and the
+    direction that joint bends, for the chains that give joints. A chain the rig predicted
+    with fewer bones than the plan's joints gives its bones the joints in order (the first
+    bone the first joint, the next bone the next): a two-bone leg of a three-joint plan
+    still has a hip and a knee that bend their own ways, and only the last joints go
+    without a bone."""
     tr = Tree(tree)
     out = {}
     for role, slot in plan_roles(plan):
         bones = roles.get(role) or []
         k = slot.get("joints")
         if not bones or not k:
+            continue
+        bends = slot.get("bends") or ["none"] * k
+        if len(bones) < k:
+            out[role] = [{"bone": b, "joint": j, "bend": bends[j]} for j, b in enumerate(bones)]
             continue
         lens = slot.get("lengths") or [1.0 / k] * k
         edges, acc = [], 0.0
@@ -349,7 +395,7 @@ def joint_map(tree, plan, roles):
         for b in bones:
             mid = (pos + tr.length(b) / 2.0) / total
             j = next((i for i, e in enumerate(edges) if mid <= e + 1e-9), k - 1)
-            rows.append({"bone": b, "joint": j, "bend": (slot.get("bends") or ["none"] * k)[j]})
+            rows.append({"bone": b, "joint": j, "bend": bends[j]})
             pos += tr.length(b)
         out[role] = rows
     return out
@@ -499,14 +545,164 @@ def _mean_x(tr, run, hub):
 def score(tr, run, slot, hub):
     """How well a run fits a slot (None: not at all)."""
     s = _dot(_direction(tr, run), slot_vector(slot))
+    x = _mean_x(tr, run, hub)
     if slot["side"]:
-        x = _mean_x(tr, run, hub)
         if abs(x) < SIDE_MIN * tr.size or (x > 0) != (slot["side"] == "l"):
+            return None
+    elif abs(x) > MIDLINE * tr.size:
+        # A single chain (a spine, a neck, a tail) runs along the middle, not off one side,
+        # unless it points the chain's way and its mirror hangs beside it (a propulsion unit
+        # the rig predicted as a pair of legs).
+        if s < TWIN_SCORE or not _twin(tr, run, set(run), hub):
             return None
     if s < MIN_SCORE:
         return None
     ln = sum(tr.length(b) for b in run)
     return s * (0.6 + 0.4 * min(1.0, ln / max(0.25 * tr.size, 1e-9)))
+
+
+def _points(tr, run, n=8):
+    """n points spread along a run by length (heads and the last tail)."""
+    pts = [tr.head(b) for b in run] + [tr.tail(run[-1])]
+    seg = [_len(_sub(b, a)) for a, b in zip(pts, pts[1:])]
+    total = sum(seg) or 1.0
+    out, k, acc = [], 0, 0.0
+    for i in range(n):
+        s = total * i / (n - 1)
+        while k < len(seg) - 1 and acc + seg[k] < s:
+            acc += seg[k]
+            k += 1
+        t = 0.0 if seg[k] <= 1e-12 else min(1.0, max(0.0, (s - acc) / seg[k]))
+        a, b = pts[k], pts[k + 1]
+        out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t))
+    return out
+
+
+def _mirror_error(tr, r1, r2, plane_point, normal):
+    """Mean distance between run r1 reflected through the plane (point, unit normal) and run
+    r2, as a share of their mean length."""
+    p1, p2 = _points(tr, r1), _points(tr, r2)
+    err = 0.0
+    for a, b in zip(p1, p2):
+        d = _dot(_sub(a, plane_point), normal)
+        m = (a[0] - 2 * d * normal[0], a[1] - 2 * d * normal[1], a[2] - 2 * d * normal[2])
+        err += _len(_sub(m, b))
+    ln = (sum(tr.length(b) for b in r1) + sum(tr.length(b) for b in r2)) / 2.0
+    return err / len(p1) / max(ln, 1e-9)
+
+
+def mirrored_pairs(tr, owned=None, min_share=MIRROR_MIN_SHARE):
+    """[(run_a, run_b, across, bone)] runs hanging from one bone that mirror each other (a pair of
+    legs, of arms): both at least min_share of the body size long, lengths within
+    SIDE_TOLERANCE, run_a reflected through the plane between them lands on run_b within
+    MIRROR_TOLERANCE of their length. across: the horizontal line from run_b to run_a (their
+    centres); bone: the bone they hang from."""
+    owned = owned or set()
+    out = []
+    for p in tr.t:
+        kids = [c for c in tr.children[p] if c not in owned]
+        runs = [_run(tr, c, owned) for c in kids]
+        runs = [r for r in runs if sum(tr.length(b) for b in r) >= min_share * tr.size]
+        for i in range(len(runs)):
+            for j in range(i + 1, len(runs)):
+                a, b = runs[i], runs[j]
+                la, lb = sum(tr.length(x) for x in a), sum(tr.length(x) for x in b)
+                if abs(la - lb) / max(la, lb) > SIDE_TOLERANCE:
+                    continue
+                ca = [sum(q[k] for q in _points(tr, a)) / 8.0 for k in range(3)]
+                cb_ = [sum(q[k] for q in _points(tr, b)) / 8.0 for k in range(3)]
+                across = (ca[0] - cb_[0], ca[1] - cb_[1], 0.0)
+                if _len(across) < SIDE_MIN * tr.size:
+                    continue
+                normal = _unit(across)
+                mid = tuple((ca[k] + cb_[k]) / 2.0 for k in range(3))
+                if _mirror_error(tr, a, b, mid, normal) <= MIRROR_TOLERANCE:
+                    out.append((a, b, across, p))
+    return out
+
+
+def skeleton_facing(tree):
+    """Which way a predicted skeleton faces, from its mirrored pairs (legs and arms): their
+    summed across line is its left-right axis. A rig tool may predict a skeleton turned a
+    quarter turn from the order's front (the generated mesh came out facing glTF +-X); then
+    the across line lies front to back. Only quarter turns are made: when the across line is
+    more than 45 degrees from the side axis, the skeleton is turned so its across line lies
+    along the side and its feet (the down-pointing pairs' last bones) point to the front.
+
+    Returns {"turn_deg": 0, 90, -90 (a turn about the vertical, right-hand rule, that the
+    exporter applies), "across_deg" (the across line's angle from the side axis, 0 to 90),
+    "pairs" (how many mirrored pairs), "feet_deg" (where the feet point, degrees from the
+    front about the vertical, or None), "problems"}. A problem means the skeleton lies turned
+    and its front cannot be told."""
+    tr = Tree(tree)
+    pairs = mirrored_pairs(tr)
+    res = {"turn_deg": 0, "across_deg": None, "pairs": len(pairs), "feet_deg": None, "problems": []}
+    if not pairs:
+        return res
+    sx, sy = 0.0, 0.0
+    ref = None
+    for a, b, across, _ in pairs:
+        v = (across[0], across[1])
+        if ref is None:
+            ref = v
+        if v[0] * ref[0] + v[1] * ref[1] < 0:
+            v = (-v[0], -v[1])
+        sx, sy = sx + v[0], sy + v[1]
+    ang = abs(math.degrees(math.atan2(abs(sy), abs(sx))))
+    res["across_deg"] = round(ang, 2)
+    fx, fy = 0.0, 0.0
+    hips = set(tr.root_path())
+    for a, b, across, p in pairs:
+        if p not in hips:
+            continue  # legs hang from the root path (the hips), arms from the spine
+        for run in (a, b):
+            d = _direction(tr, run)
+            if d[2] < -0.5:  # a leg: where its last bone points
+                last = _sub(tr.tail(run[-1]), tr.head(run[-1]))
+                fx, fy = fx + last[0], fy + last[1]
+    if math.hypot(fx, fy) > 1e-9:
+        # degrees from the front (-Y) toward the left (+X)
+        res["feet_deg"] = round(math.degrees(math.atan2(fx, -fy)), 2)
+    if ang <= 45.0:
+        return res
+    if res["feet_deg"] is None or abs(abs(res["feet_deg"]) - 90.0) > FEET_LIMIT_DEG:
+        res["problems"].append("facing: the skeleton's left and right lie front to back (%.0f degrees from the "
+                               "side) and no feet tell its front" % ang)
+        return res
+    # Feet toward +X (feet_deg +90): turn -90 (about +Z) brings +X to -Y; toward -X: +90.
+    res["turn_deg"] = -90 if res["feet_deg"] > 0 else 90
+    return res
+
+
+def turned_tree(tree, deg):
+    """The tree turned about the vertical through the origin by deg (right-hand rule)."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+
+    def t(p):
+        return (p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2])
+    return {n: {"parent": b["parent"], "head": t(b["head"]), "tail": t(b["tail"])} for n, b in tree.items()}
+
+
+def _twin(tr, run, owned, hub):
+    """An unmapped run that mirrors `run` across the body's middle (x of the hub), hanging
+    from the same bone: the other half of a single chain the rig predicted as a pair (a
+    serpent's tail grown as two legs)."""
+    p = tr.parent(run[0])
+    if p is None:
+        return None
+    hx = tr.head(hub)[0]
+    best, best_e = None, MIRROR_TOLERANCE
+    for c in tr.children[p]:
+        if c in owned or c == run[0]:
+            continue
+        r2 = _run(tr, c, owned)
+        la, lb = sum(tr.length(b) for b in run), sum(tr.length(b) for b in r2)
+        if abs(la - lb) / max(la, lb, 1e-9) > SIDE_TOLERANCE:
+            continue
+        e = _mirror_error(tr, run, r2, (hx, 0.0, 0.0), (1.0, 0.0, 0.0))
+        if e <= best_e:
+            best, best_e = r2, e
+    return best
 
 
 def propose(tree, plan):
@@ -585,8 +781,78 @@ def propose(tree, plan):
             roles[role], roles[parent] = bones[-k:], bones[:-k]
             split[role] = parent
             notes.append("%s: no branch of its own; it takes the last %d bone(s) of %s" % (role, k, parent))
+        # A required single chain still missing takes the nearest remaining run of its parent
+        # by direction, if it is long enough to be a limb and runs along the middle or has a
+        # mirror twin (a tail the rig predicted as a pair of legs pointing down, a spine
+        # standing up where the plan says front).
+        for role, slot in members:
+            if role in roles or slot["side"] or slot["optional"]:
+                continue
+            want = slot_vector(slot)
+            best = None
+            for i, (run, via) in enumerate(cands):
+                if i in taken_c or set(run) & owned or set(via or []) & used:
+                    continue
+                r = continued(tr, run, want, owned) if role in parents else run
+                ln = sum(tr.length(b) for b in r)
+                if ln < FALLBACK_MIN_SHARE * tr.size:
+                    continue
+                if abs(_mean_x(tr, r, hub)) > MIDLINE * tr.size and not _twin(tr, r, owned | set(r), hub):
+                    continue
+                key = (_dot(_direction(tr, r), want), ln)
+                if best is None or key > best[0]:
+                    best = (key, i, r)
+            if best is None:
+                continue
+            (s, _), i, r = best
+            taken_c.add(i)
+            roles[role] = r
+            used.update(r)
+            owned.update(r)
+            notes.append("%s: no run points %s; it takes the nearest remaining run %s..%s (%.0f degrees off)" % (
+                role, slot["toward"], r[0], r[-1], math.degrees(math.acos(max(-1.0, min(1.0, s))))))
+    # A single chain whose mirror image hangs unmapped beside it (a tail or a propulsion unit
+    # the rig predicted as a pair of legs): the mirror run is its twin and moves with it.
+    twins = {}
+    slots = dict(slots)
+    for role, run in list(roles.items()):
+        if slots.get(role, {}).get("side") is not None:
+            continue
+        twin = _twin(tr, run, owned, hub)
+        if twin:
+            twins[role] = twin
+            owned.update(twin)
+            notes.append("%s: the mirror run %s..%s hangs beside it unmapped; it moves as its twin" % (
+                role, twin[0], twin[-1]))
     problems = validate(tree, plan, roles)
-    return document(tree, plan, roles, "proposed", False, problems, notes, split)
+    problems += validate_twins(tree, roles, twins)
+    return document(tree, plan, roles, "proposed", False, problems, notes, split, twins)
+
+
+def validate_twins(tree, roles, twins):
+    """Problems of a map's twins {role: [bones]}: a twin of a mapped single role, its bones a
+    parent-child chain, none of them in a role or in two twins."""
+    if not twins:
+        return []
+    if not isinstance(twins, dict):
+        return ["twins must be an object {role: [bone, ...]}"]
+    tr = Tree(tree)
+    problems, seen = [], set(b for bones in roles.values() for b in bones)
+    for r, bones in twins.items():
+        if r not in roles:
+            problems.append("twin of %s: the role is not mapped" % r)
+            continue
+        if not isinstance(bones, list) or not bones or not all(isinstance(b, str) and b in tree for b in bones):
+            problems.append("twin of %s must list bones of the rig from the base to the tip" % r)
+            continue
+        for a, b in zip(bones, bones[1:]):
+            if tr.parent(b) != a:
+                problems.append("twin of %s: %s must be a child of %s" % (r, b, a))
+        for b in bones:
+            if b in seen:
+                problems.append("twin of %s: bone %s already has a role or a twin" % (r, b))
+            seen.add(b)
+    return problems
 
 
 def validate(tree, plan, roles):
@@ -644,10 +910,12 @@ def validate(tree, plan, roles):
     return problems
 
 
-def document(tree, plan, roles, source, manual, problems, notes, split):
+def document(tree, plan, roles, source, manual, problems, notes, split, twins=None):
     tr = Tree(tree)
     valid = not problems
     mapped = set(b for bones in roles.values() for b in bones) if isinstance(roles, dict) else set()
+    if isinstance(twins, dict):
+        mapped.update(b for bones in twins.values() if isinstance(bones, list) for b in bones)
     path = tr.root_path()
     joints = joint_map(tree, plan, roles) if valid else {}
     notes = list(notes)
@@ -659,7 +927,8 @@ def document(tree, plan, roles, source, manual, problems, notes, split):
     return {"format": FORMAT, "version": 1, "source": source, "manual": manual, "valid": valid,
             "roles": dict(roles) if valid else None, "found": dict(roles) if isinstance(roles, dict) else roles,
             "root": path, "unmapped": [n for n in tree if n not in mapped and n not in path],
-            "joints": joints, "front": list(FRONT), "left": list(LEFT), "split": split, "notes": notes,
+            "joints": joints, "front": list(FRONT), "left": list(LEFT), "split": split,
+            "twins": dict(twins or {}) if valid else {}, "notes": notes,
             "problems": problems}
 
 
@@ -673,16 +942,31 @@ def load_map(path_or_map):
     return data
 
 
+def load_twins(path_or_map):
+    """The twins of a map document ({} for a bare {role: [bones]} map)."""
+    data = path_or_map
+    if isinstance(path_or_map, str):
+        with open(path_or_map, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    if isinstance(data, dict) and isinstance(data.get("roles"), (dict, type(None))):
+        return data.get("twins") or {}
+    return {}
+
+
+def _given(tree, plan, roles, twins, source):
+    problems = validate(tree, plan, roles) or validate_twins(tree, roles, twins)
+    return document(tree, plan, roles, source, True, problems, [], {}, twins)
+
+
 def choose(tree, plan, given=None, existing=None):
     """The map to use: `given` (the order's inputs.bone_map) wins, then `existing` (a
-    bone_map.json path) marked "manual": true, then the proposal. Always validated."""
+    bone_map.json path) marked "manual": true, then the proposal. Always validated. A given
+    or manual document may also name twins."""
     if given:
-        roles = load_map(given)
-        return document(tree, plan, roles, "order", True, validate(tree, plan, roles), [], {})
+        return _given(tree, plan, load_map(given), load_twins(given), "order")
     if existing and os.path.exists(existing):
         with open(existing, encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, dict) and data.get("manual") and data.get("source") != "order":
-            roles = load_map(data)
-            return document(tree, plan, roles, "manual", True, validate(tree, plan, roles), [], {})
+            return _given(tree, plan, load_map(data), load_twins(data), "manual")
     return propose(tree, plan)

@@ -13,8 +13,10 @@ Runs with a Python that imports bpy (Blender as a module):
 SPEC.json: {"body": the order's body (a plan or a template), "motions": the order's
 motions list}. Steps (formats in docs/conventions.md):
 1. The rig is turned so that its front (--front, the glTF axis the generated front points
-   along) faces glTF +Z, scaled to --height (or --length, front to back), stood on the
-   ground with its root over the origin.
+   along) faces glTF +Z, then a quarter turn more when its skeleton lies a quarter turn off
+   (creature_bones.skeleton_facing: its mirrored legs and arms front to back; the feet give
+   the front), scaled to --height (or --length, front to back), stood on the ground with its
+   root over the origin.
 2. The bone map: a map given with --bone-map wins, then <out>/bone_map.json marked
    "manual": true, then the proposal from the skeleton's tree and the body plan
    (creature_bones.py). An invalid map stops the export (exit code 3), its report in
@@ -24,7 +26,8 @@ motions list}. Steps (formats in docs/conventions.md):
    texture stops it (exit code 4). Item bones ("item", "item_l") at the tips of the roles
    the plan's "holds" names, with "item_ref" (the identity of item space) on "item".
 4. Every motions entry is made from its source (creature_motion.py: procedural kinds, or a
-   library clip in role space) and keyed, one animation per entry, named as the entry.
+   library clip in role space) and keyed, one animation per entry, named as the entry. A
+   role's twin bones (the map's "twins") turn as the role's bones at the same place.
 5. Writes <out>/<name>.glb, <out>/model.json, <out>/mesh_report.json and <out>/clips.json
    (every clip in role space: forge-creature-clips).
 6. With motions, the GLB is loaded again and every clip played on it:
@@ -116,6 +119,16 @@ print("SEAMS", merged, "duplicate vertices merged", flush=True)
 # ---- 1. frame and scale ----------------------------------------------------------------------
 turned = fb.turn_to_front([arm], a.front)
 bpy.context.view_layer.update()
+# A skeleton the rig tool predicted a quarter turn off (its left and right lying front to
+# back: the generated mesh faced glTF +-X) is turned so its feet point to the front.
+FACING = cb.skeleton_facing(cb.tree_from_armature(arm))
+if FACING["turn_deg"]:
+    _m = Matrix.Rotation(math.radians(FACING["turn_deg"]), 4, "Z")
+    for _o in (arm,):
+        if _o.parent is None:
+            _o.matrix_world = _m @ _o.matrix_world
+    bpy.context.view_layer.update()
+print("FACING", json.dumps(FACING), flush=True)
 coords = np.array([list(body.matrix_world @ v.co) for v in body.data.vertices])
 tree0 = cb.tree_from_armature(arm)
 path0 = cb.Tree(tree0).root_path()
@@ -138,12 +151,17 @@ bpy.context.view_layer.update()
 coords = np.array([list(body.matrix_world @ v.co) for v in body.data.vertices])
 LO, HI = coords.min(0), coords.max(0)
 H = float(HI[2] - LO[2])
-print("FRAME front %s turned %.1f scale %.4f height %.3f" % (a.front, turned, k, H), flush=True)
+print("FRAME front %s turned %.1f facing %d scale %.4f height %.3f" % (a.front, turned, FACING["turn_deg"], k, H),
+      flush=True)
 
 # ---- 2. the bone map -------------------------------------------------------------------------
 map_path = os.path.join(OUT, "bone_map.json")
 TREE = cb.tree_from_armature(arm)
 doc = cb.choose(TREE, PLAN, given=a.bone_map or None, existing=map_path)
+doc["facing"] = FACING
+if FACING["problems"] and doc["source"] == "proposed":
+    doc["problems"] = FACING["problems"] + doc["problems"]
+    doc["valid"], doc["roles"] = False, None
 if doc["source"] == "manual":
     fb.write_json(OUT, "bone_map_report.json", doc)
 else:
@@ -153,7 +171,8 @@ if not doc["valid"]:
         print("BONE MAP PROBLEM", p, flush=True)
     fb.fail(3, "invalid bone map (%s), see %s" % (doc["source"], map_path))
 ROLES = doc["roles"]
-print("BONE MAP", doc["source"], len(ROLES), "roles", flush=True)
+TWINS = doc.get("twins") or {}
+print("BONE MAP", doc["source"], len(ROLES), "roles,", len(TWINS), "twins", flush=True)
 
 # ---- 3. the mesh -----------------------------------------------------------------------------
 import bmesh  # noqa: E402
@@ -265,7 +284,7 @@ REST = {b.name: b.matrix_local.to_3x3().normalized() for b in arm.data.bones}
 KEY_SIDE = {}
 clips = []
 for entry in MOTIONS:
-    out = cm.make_clip(rig, PLAN, entry, LIBRARIES, DEFAULT_LIBRARY)
+    out = cm.with_twins(rig, cm.make_clip(rig, PLAN, entry, LIBRARIES, DEFAULT_LIBRARY), TWINS)
     out["holds"] = entry.get("holds")
     out["source"] = entry["source"]
     clips.append(out)
@@ -345,6 +364,8 @@ info = {"format": "forge-creature", "version": 1, "status": "pending review", "n
         "center_m": [round(float((LO[0] + HI[0]) / 2), 4), round(float((LO[2] + HI[2]) / 2), 4),
                      round(float(-(LO[1] + HI[1]) / 2), 4)],
         "plan": PLAN, "roles": ROLES, "root": doc["root"], "joints": doc.get("joints"),
+        "missing_roles": [r for r, _ in cb.plan_roles(PLAN) if r not in ROLES], "twins": TWINS,
+        "facing": FACING,
         "unmapped_bones": doc["unmapped"], "bone_map": {"source": doc["source"], "file": "bone_map.json"},
         "item_bones": dict(item_bones, reference="item_ref" if ref else None),
         "ends": {r: bones[-1] for r, bones in ROLES.items()},

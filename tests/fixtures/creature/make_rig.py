@@ -3,7 +3,9 @@ deliver one: an armature of a skeleton of tests/creature_skeletons.py (bones bon
 bone_1, ...), a mesh of tubes around its bones skinned to them (each vertex to its nearest
 bone and that bone's parent), UVs and a painted base-colour texture, facing glTF +Z.
 
-  <blender_python> make_rig.py --kind serpent|beast|insect|hover --out DIR  (DIR/<kind>.glb)
+  <blender_python> make_rig.py --kind serpent|beast|insect|hover|predicted|predicted_turned --out DIR
+      (DIR/<kind>.glb; predicted: the skeleton a rig tool predicted on a real night, turned:
+      the same lying a quarter turn off, its feet toward +X)
 """
 import argparse
 import math
@@ -20,12 +22,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))  # tests/
 import creature_skeletons as sk  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--kind", required=True, choices=("serpent", "beast", "insect", "hover"))
+ap.add_argument("--kind", required=True, choices=("serpent", "beast", "insect", "hover", "predicted", "predicted_turned"))
 ap.add_argument("--out", required=True)
 a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 os.makedirs(a.out, exist_ok=True)
 bpy.ops.wm.read_factory_settings(use_empty=True)
-tree, _ = getattr(sk, a.kind)().tree()
+MAKERS = {"predicted": lambda: sk.predicted_biped(), "predicted_turned": lambda: sk.predicted_biped(turn=90.0)}
+tree, _ = MAKERS.get(a.kind, getattr(sk, a.kind, None))().tree()
 
 arm_data = bpy.data.armatures.new("rig")
 arm = bpy.data.objects.new("rig", arm_data)

@@ -55,6 +55,9 @@ PIVOTS = ("cut", "center", "bottom", "top", "front", "back", "left", "right")
 ID = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 # Steps of the search for the narrowest section in a [low, high] range.
 NARROW_STEPS = 41
+# A waist (a section that stopped shrinking) is no wider than the narrowest section plus this
+# share of the range's spread; the cut goes at the waist nearest the parent.
+WAIST = 0.5
 
 
 # ---- the order's part list -----------------------------------------------------------------
@@ -249,17 +252,28 @@ def section(verts, faces, axis, level):
     return np.vstack(out) if out else np.zeros((0, 3))
 
 
-def narrowest(verts, axis, lo, hi, other_lo, other_hi, steps=NARROW_STEPS, faces=None):
+def narrowest(verts, axis, lo, hi, other_lo, other_hi, steps=NARROW_STEPS, faces=None, outside=0):
     """The level (model coordinate along `axis`, 0 to 2) between lo and hi where the object's
     cross-section has the smallest footprint inside the other two axes' bounds (the area of
     the section's bounding rectangle clipped to the bounds): with faces, the section of the
     triangles; without, a thin slab of vertices. A level where nothing crosses is a gap: the
-    best cut. Ties go to the level nearest the middle."""
+    best cut. Levels at either end of the range where nothing of the object lies inside the
+    bounds (below a turret's own cut, past a barrel's muzzle) are left out: a gap at an end of
+    the range is no waist.
+
+    outside (-1 or +1: the side of the edge away from the part, toward its parent's body;
+    0: unknown): the cut goes at the waist nearest the parent: walking from the parent's end
+    of the range, the first level whose section is no wider than both its neighbours (the
+    section has stopped shrinking) and no wider than the narrowest plus WAIST of the range's
+    spread. A turret's ring is found above the deck even when the turret's own top tapers
+    narrower, and a barrel is cut at its base where it leaves the turret's face, not
+    somewhere along it. The cut is put half a step inside the waist when the waist goes on
+    (not on a plane where a face of the parent's body may lie, a deck under a ring). Without
+    outside, or with no such level, the narrowest level; ties go to the level nearest the
+    middle."""
     others = [a for a in range(3) if a != axis]
     levels = np.linspace(lo, hi, steps)
     half = (hi - lo) / (steps - 1) * 0.75
-    mid = (lo + hi) / 2.0
-    best, best_key = mid, None
 
     def footprint(s):
         if len(s) == 0:
@@ -269,10 +283,30 @@ def narrowest(verts, axis, lo, hi, other_lo, other_hi, steps=NARROW_STEPS, faces
             a0, a1 = max(float(s[:, a].min()), other_lo[a]), min(float(s[:, a].max()), other_hi[a])
             area *= max(0.0, a1 - a0)
         return area
+    areas, crossed = [], []
     for z in levels:
         s = verts[np.abs(verts[:, axis] - z) <= half] if faces is None else section(verts, faces, axis, z)
-        area = footprint(s)
-        key = (round(area, 12), abs(z - mid))
+        areas.append(round(footprint(s), 12))
+        crossed.append(areas[-1] > 0)
+    # Levels beyond the object's own extent inside the bounds (nothing of it there) are left out.
+    if any(crossed):
+        first, last = crossed.index(True), len(crossed) - 1 - crossed[::-1].index(True)
+        levels, areas = levels[first:last + 1], areas[first:last + 1]
+    mid = (float(levels[0]) + float(levels[-1])) / 2.0
+    least, most = min(areas), max(areas)
+    if outside and most - least > 1e-12:
+        limit = least + WAIST * (most - least) + 1e-15
+        seq = list(range(len(areas))) if outside < 0 else list(range(len(areas) - 1, -1, -1))
+        for n, i in enumerate(seq):
+            prev = areas[seq[n - 1]] if n > 0 else math.inf
+            nxt = areas[seq[n + 1]] if n + 1 < len(seq) else math.inf
+            if areas[i] <= limit and areas[i] <= prev and areas[i] <= nxt:
+                if n + 1 < len(seq) and nxt <= limit and nxt <= areas[i] * (1.0 + WAIST) + 1e-15:
+                    return float((levels[i] + levels[seq[n + 1]]) / 2.0)
+                return float(levels[i])
+    best, best_key = mid, None
+    for z, area in zip(levels, areas):
+        key = (area, abs(z - mid))
         if best_key is None or key < best_key:
             best, best_key = float(z), key
     return best
@@ -305,7 +339,8 @@ def resolve_box(box, verts, dims, faces=None):
     for a, c, (r0, r1) in ranged:
         m, s = _MODEL_AXIS[a]
         z0, z1 = sorted((r0 * dims[m] * s, r1 * dims[m] * s))
-        level = narrowest(verts, m, z0, z1, lo, hi, faces=faces)
+        # The parent lies outside the edge: below a low model edge, above a high one.
+        level = narrowest(verts, m, z0, z1, lo, hi, faces=faces, outside=-1 if (c == 0) == (s > 0) else 1)
         if (c == 0) == (s > 0):
             lo[m] = level
         else:
@@ -317,6 +352,61 @@ def resolve_box(box, verts, dims, faces=None):
 def inside(points, lo, hi, eps=0.0):
     """Mask of the points inside a box (model coordinates)."""
     return np.all((points >= lo - eps) & (points <= hi + eps), axis=1)
+
+
+# ---- open edges ----------------------------------------------------------------------------
+
+def _point_segment_distance(pts, a, b, chunk=2048):
+    """For each point, its distance to the nearest of the segments (a[i], b[i])."""
+    out = np.full(len(pts), np.inf)
+    if len(a) == 0 or len(pts) == 0:
+        return out
+    ab = b - a
+    ab2 = np.maximum((ab * ab).sum(1), 1e-30)
+    for k in range(0, len(pts), chunk):
+        p = pts[k:k + chunk]
+        ap_ = p[:, None, :] - a[None, :, :]
+        t = np.clip((ap_ * ab[None]).sum(2) / ab2[None], 0.0, 1.0)
+        d = np.linalg.norm(ap_ - t[:, :, None] * ab[None], axis=2)
+        out[k:k + chunk] = d.min(1)
+    return out
+
+
+def edges_along(p, q, a, b, tol):
+    """Mask of the edges (p[i], q[i]) that lie along the segments (a, b): both ends and the
+    middle within tol of them. An open edge of a part that lies along an open edge of the
+    generated mesh before any cut (or a piece of one, split by a cut) is the source's own
+    hole, not the cut's."""
+    p, q = np.asarray(p, np.float64).reshape(-1, 3), np.asarray(q, np.float64).reshape(-1, 3)
+    if len(p) == 0:
+        return np.zeros(0, bool)
+    a, b = np.asarray(a, np.float64).reshape(-1, 3), np.asarray(b, np.float64).reshape(-1, 3)
+    if len(a) == 0:
+        return np.zeros(len(p), bool)
+    ok = np.ones(len(p), bool)
+    for pts in (p, q, (p + q) / 2.0):
+        ok &= _point_segment_distance(pts, a, b) <= tol
+    return ok
+
+
+def close_chains(ends):
+    """The joins that turn open chains of cut edges into loops, given the chains' free ends
+    [(x, y, z)]: the two nearest free ends are joined first (a chain's own two ends when its
+    gap is the smallest: a cut that crossed one hole of the source; two halves' ends when a
+    cut crossed two). Returns [(end_i, end_j)]."""
+    ends = np.asarray(ends, np.float64).reshape(-1, 3)
+    pairs = []
+    for i in range(len(ends)):
+        for j in range(i + 1, len(ends)):
+            pairs.append((float(np.linalg.norm(ends[i] - ends[j])), i, j))
+    pairs.sort()
+    used, joins = set(), []
+    for _, i, j in pairs:
+        if i in used or j in used:
+            continue
+        used.update((i, j))
+        joins.append((i, j))
+    return joins
 
 
 # ---- pivots --------------------------------------------------------------------------------

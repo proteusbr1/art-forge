@@ -556,7 +556,7 @@ along; default `+z`), `image_format`. `inputs`: `reference` (with `input_image`)
 |---|---|
 | `id` | the part's name, lower case (its node in the GLB) |
 | `parent` | the part it hangs from, listed before it; none for the root, which keeps everything the other parts do not take |
-| `find` | `{"box": [[side, forward, up], [side, forward, up]]}` or `{"boxes": [box, ...]}` (a union): corners in normalised object coordinates (side -0.5 right to 0.5 left, forward -0.5 back to 0.5 front, up 0 ground to 1 top, each divided by the object's extent); a coordinate is a number, `null` (no bound) or `[low, high]` (the narrowest cross-section of the parent between those values) |
+| `find` | `{"box": [[side, forward, up], [side, forward, up]]}` or `{"boxes": [box, ...]}` (a union): corners in normalised object coordinates (side -0.5 right to 0.5 left, forward -0.5 back to 0.5 front, up 0 ground to 1 top, each divided by the object's extent); a coordinate is a number, `null` (no bound) or `[low, high]` (the waist of the parent between those values nearest the parent's side: [conventions.md](conventions.md#articulated-parts)) |
 | `joint` | `kind`: `turn`, `hinge`, `spin` (continuous; its range, default [-180, 180], only sets the sheet's sweep), `slide` (metres) or `fixed` (no axis, no range; a part without a joint is fixed); `axis`: `side`, `forward`, `up`, with `-` for the other way (right-hand rule), or `[side, forward, up]`; `pivot`: `cut` (default: the centre of the largest cut, where the part meets its parent), `center`, `bottom`, `top`, `front`, `back`, `left`, `right` (of the part's box) or `[side, forward, up]`; `range`: `[low, high]` containing 0 (the rest pose) |
 
 A part takes its parent's geometry inside its region, so joints nest (a barrel elevating
@@ -564,13 +564,17 @@ on a turret turning on a hull). A thin box takes a surface (a door, a ramp, a ha
 nacelle) as a closed plate.
 
 Settings: `region_split` `min_share` (number 0-0.5: a part with less of the surface is
-flagged tiny; default 0.002) and `snap` (bool: square a footprint turned by up to 30
-degrees; default true); `layout_sheet` `front_height` (int 64-2048) and `strip_frames`
+flagged tiny; default 0.002), `snap` (bool: square a footprint turned by up to 30
+degrees; default true; a walker or any object whose protrusions are not boxy may want
+false) and `max_width` (number 0.1-10: a footprint wider than this share of its length
+front to back is flagged as facing sideways; default: not checked); `layout_sheet` `front_height` (int 64-2048) and `strip_frames`
 (int 1-32).
 
 `accept`: `mesh_flags` only. The mesh flags of the parts and the stage held responsible:
-`part <id> is empty` and `part <id> is tiny` (`unknown`: the region or the generated layout),
-`part <id> has <n> open edges after its cut was closed` (`parts`), and the material flags
+`part <id> is empty` and `part <id> is tiny` (`unknown`: the region or the generated layout;
+the flag says the order's box probably misses the part), `part <id> has <n> open edges where
+its cut was not closed` (`parts`; only the cut's own: the generated mesh's holes are
+reported, not flagged), `frame: ...` (`unknown`, with `max_width`), and the material flags
 as the humanoid's.
 
 A person may correct one variant's frame in `v<seed>_parts/frame.json` with
@@ -609,6 +613,7 @@ A plan, `{"chains": [...], "holds": {"right": role, "left": role}}`; a chain:
 | `toward` | `up`, `down`, `front`, `back` or `side` (a side chain needs pairs) |
 | `pairs` | 1 to 4: the chain on each side; roles `<id>_l<i>`, `<id>_r<i>`, index 0 the highest. A chain hanging from a paired chain is paired the same way |
 | `optional` | true: the map may go without it |
+| `min_pairs` | a paired chain's pairs the map needs (0 to `pairs`; default all): the pairs from this index on may be missing (a rig tool may predict two arms for a four-armed body); a chain hanging from a missing pair is optional too |
 | `joints` | 1 to 12: the joints (segments) of the chain |
 | `bends` | per joint: `front`, `back`, `up`, `down`, `out`, `in` or `none`: the way the joint's segment tip moves when it flexes |
 | `lengths` | per joint: relative lengths (default equal) |
@@ -641,6 +646,12 @@ Settings: `creature_export` `foot_slide_cm`, `reach_shortfall_cm`, `below_ground
 `stretch_p95`, `below_ground_cm`. An export stopped by an invalid bone map is held on the
 `rig`. A person corrects a variant's map in `v<seed>_export/bone_map.json` (`"manual":
 true`, `roles` as `{role: [bones base to tip]}`), as the humanoid's.
+
+The rig tools predict the skeleton they know for any body. The export turns a skeleton
+predicted a quarter turn off, lets a single chain that no run points along take the nearest
+remaining limb, moves the mirror run beside a single chain as its twin (a serpent's tail or a
+propulsion unit predicted as two legs) and lets `min_pairs` and `optional` chains go missing
+([conventions.md](conventions.md#creature)).
 
 The order check refuses: a missing `parts` or `body`, an invalid part list, plan, template
 or motion, a motion source not available yet, a library clip the library lacks, both

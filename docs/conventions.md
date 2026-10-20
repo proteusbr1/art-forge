@@ -579,7 +579,12 @@ material `interior`.
 
 `<out>/model.json` (`format` `forge-articulated`, `version` 1, `status` `pending review`):
 `name`, `front` ([0, 0, 1]), `axes`, `size_m` ([width, height, length]), `center_m`, `root`,
-`parts` (per part: `parent`, `node`, `triangles`, `cut_triangles`, `open_edges`, `share` of
+`parts` (per part: `parent`, `node`, `triangles`, `cut_triangles`, `open_edges` (open edges
+a cut left), `source_open_edges` (the generated mesh's own open edges in this part: along an
+open edge of the mesh before any cut), `bridged_edges` (straight edges on a cut plane that
+joined the ends of a section where the cut crossed one of the mesh's holes; they border that
+hole), `lone_edges` (single open cut edges touching no other: the edge of a sliver lying on
+the plane, not flagged), `islands` (separate pieces), `share` of
 the painted surface, `bounds_m` at rest, `origin_m` in model space, and `regions`: each box
 resolved, in model metres before the glTF turn, with the `narrowest` edges in normalised
 coordinates), `joints` (per moving or fixed part: `part`, `parent`, `kind`, `axis` (glTF,
@@ -598,9 +603,23 @@ With `"manual": true` it is read and kept as written (`front`, and `snap_deg` wh
 `<out>/mesh_report.json` (`forge-mesh-report`, `version` 2, `kind` `articulated`): as the
 humanoid's for the material (`materials`, read from the written GLB) plus `parts` (as in
 model.json), `triangles_in`, `triangles`, `triangle_budget`, `seam_vertices_merged`. Flags:
-`part <id> is empty: its region holds no geometry`, `part <id> is tiny: ...`, `part <id> has
-<n> open edges after its cut was closed`, the material slot flags. No UV layer or no
-base-colour texture stops the tool (exit code 4).
+`part <id> is empty: its region holds no geometry; ...`, `part <id> is tiny: <share> % of the
+surface in <n> piece(s) (under min_share ...): its region caught almost nothing; the order's
+box for it probably misses the part on this variant`, `part <id> has <n> open edges where its
+cut was not closed` (only the cut's: a generated mesh is not watertight, and its own open
+edges, the bridges along its holes and lone sliver edges are reported, not flagged), `frame:
+the object is <w> m wide and <l> m long (more than max_width ...): it may face sideways;
+correct its frame.json` (with the `max_width` setting), the material slot flags. No UV layer
+or no base-colour texture stops the tool (exit code 4).
+
+A `[low, high]` edge of a region resolves to the waist nearest the part's parent: walking
+from the parent's end of the range (below a low edge, above a high edge), the first level
+whose section (its bounding rectangle inside the box's other bounds) is no wider than both
+its neighbours and no wider than the narrowest plus half the range's spread, half a step
+inside when the waist goes on; levels at either end with nothing of the parent inside the
+bounds are left out. A turret's ring is found above the deck even when the turret tapers
+narrower at its top, and a barrel's edge `[low, high]` along forward cuts it where it leaves
+the turret's face.
 
 ## Creature
 
@@ -615,9 +634,31 @@ creature's left; lengths in body heights.
 `<out>/bone_map.json` (`format` `forge-creature-map`): `source` (`proposed`, `manual`,
 `order`), `manual`, `valid`, `problems`, `roles` (`{role: [bones base to tip]}` when valid),
 `found`, `root` (the root path: the skeleton's root down to the first branching bone),
-`joints` (per role with joints: `[{bone, joint, bend}]`), `unmapped`, `split` (a chain taken
-from the end of its parent), `notes`, `front`, `left`. The precedence and the manual rule
-are the humanoid's; an invalid map stops the export (exit code 3).
+`joints` (per role with joints: `[{bone, joint, bend}]`; a chain with fewer bones than the
+plan's joints gives them the joints in order), `unmapped`, `split` (a chain taken from the
+end of its parent), `twins` (`{role: [bones]}`: the mirror run of a single chain that hangs
+unmapped beside it, as a rig tool predicts a serpent's tail or a propulsion unit as a pair of
+legs; its bones turn as the role's bones at the same place along the chain), `facing` (the
+exporter's `creature_bones.skeleton_facing`: `turn_deg` 0, 90 or -90, `across_deg`, `pairs`,
+`feet_deg`, `problems`), `notes`, `front`, `left`. The precedence and the manual rule are the
+humanoid's (a manual or given document may carry `twins`); an invalid map stops the export
+(exit code 3), and so does a skeleton lying a quarter turn off whose feet do not tell its
+front (`facing: ...`, with a proposed map).
+
+The proposal also takes, for a required single chain no run points along, the nearest
+remaining run of its parent by direction, when it is a limb's length (0.12 of the skeleton's
+size) and runs along the middle or has a mirror twin; and a single chain must run along the
+middle (its mean distance from the hub across under 0.08 of the size) unless it points
+within about 45 degrees of its way and has a mirror twin, so a vestigial arm is not taken
+for a neck.
+
+The facing: a rig tool may predict the skeleton a quarter turn off (on the first real night
+two of four rigs of one beast). The runs that hang from one bone and mirror each other (each
+at least 0.2 of the size, lengths within the pair tolerance, one reflected onto the other
+within 0.15 of their length) give the body's left-right line; when it lies more than 45
+degrees from the side axis, the rig is turned a quarter turn so that the feet of the pairs
+hanging from the root path point to the front (feet within 45 degrees of the side axis are
+needed). Smaller turns are not made.
 
 Roles: a single chain is its id; a paired chain `<id>_l<i>` and `<id>_r<i>`, index 0 the
 highest (then the frontmost).
@@ -660,7 +701,8 @@ keyed at its frame times plus a closing key (the first frame again for a loop).
 
 `<out>/model.json` (`format` `forge-creature`, `version` 1, `status` `pending review`):
 `name`, `height`, `front`, `axes`, `size_m`, `center_m`, `plan` (the body plan used, a
-template expanded), `roles`, `root`, `joints`, `unmapped_bones`, `bone_map`, `item_bones`,
+template expanded), `roles`, `root`, `joints`, `missing_roles` (optional roles the map went
+without), `twins`, `facing`, `unmapped_bones`, `bone_map`, `item_bones`,
 `ends` (each role's tip bone), `animations` (per motion: `name`, `kind`, `source`,
 `frames`, `fps`, `loop`, `seconds`, `holds`, `stance`, `travel`, `params` (the effective
 settings, with the automatic ones: a gait's stride, lift, duty, phases, crouch; a

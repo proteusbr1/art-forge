@@ -296,6 +296,9 @@ ARTICULATED_OPTIONS = dict(_FRONT_STAGES, **{
                                          "(default 0.002)"},
                 "snap": {"type": "bool", "arg": "snap",
                          "meaning": "square a footprint that came out turned by up to 30 degrees (default true)"},
+                "max_width": {"type": "number", "min": 0.1, "max": 10.0, "arg": "max_width",
+                              "meaning": "the widest the footprint may be, as a share of its length front to back: a "
+                                         "wider one is flagged as facing sideways (default: not checked)"},
             }},
     },
     "review": {"layout_sheet": LAYOUT_SHEET},

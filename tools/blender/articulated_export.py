@@ -6,7 +6,8 @@ Runs with a Python that imports bpy (Blender as a module):
 
   python articulated_export.py --mesh PAINTED.glb --out DIR --parts PARTS.json [--name model]
       [--front +z|-z|+x|-x] [--height 2.0 | --length 6.0] [--tris 30000] [--snap 1|0]
-      [--min-share 0.002] [--metal-roughness MAP.png] [--image-format lossless|compact]
+      [--min-share 0.002] [--max-width 1.0] [--metal-roughness MAP.png]
+      [--image-format lossless|compact]
 
 Steps (formats in docs/conventions.md; the geometry in articulated_parts.py):
 1. The frame: the mesh is turned so that its front (--front, the glTF axis the generated
@@ -16,13 +17,18 @@ Steps (formats in docs/conventions.md; the geometry in articulated_parts.py):
    <out>/frame.json records it.
 2. The parts, parents first: each part takes the geometry of its parent inside its region
    (boxes in normalised object coordinates, [low, high] edges at the parent's narrowest
-   section), cut exactly along the boxes' planes; both sides of every cut are closed with
-   faces of a plain "interior" material.
+   section; the waist nearest the parent), cut exactly along the boxes' planes; both sides
+   of every cut are closed with faces of a plain "interior" material. The generated mesh is
+   not watertight: where a cut crosses one of its holes the section's open chain is bridged
+   on the plane before it is filled, and a loop the fill leaves gets a fan.
 3. Each part's origin is put at its pivot; the nodes are nested as the parts' parents.
 4. Writes <out>/<name>.glb (no animation: the game moves the parts), <out>/model.json
    (parts, joints in glTF axes) and <out>/mesh_report.json (per part: triangles, cut faces,
-   open edges, share of the surface; flags; the materials read back from the GLB).
-   No UV layer or no base-colour texture stops it (exit code 4).
+   open edges, share of the surface; flags; the materials read back from the GLB). Only the
+   open edges a cut left (not the generated mesh's own, compared with its open edges before
+   any cut, nor the bridges along its holes, nor a lone sliver edge) are flagged.
+   No UV layer or no base-colour texture stops it (exit code 4). --max-width flags a
+   footprint wider than that share of its length (the object may face sideways).
 """
 import argparse
 import json
@@ -51,6 +57,7 @@ ap_.add_argument("--length", type=float, default=0.0)
 ap_.add_argument("--tris", type=int, default=0, help="triangle budget (reported; the mesh stage reduced it)")
 ap_.add_argument("--snap", default="1", choices=("0", "1"))
 ap_.add_argument("--min-share", type=float, default=0.002)
+ap_.add_argument("--max-width", type=float, default=0.0, help="flag a footprint wider than this share of its length")
 ap_.add_argument("--metal-roughness", default="")
 ap_.add_argument("--image-format", default="lossless", choices=("lossless", "compact"))
 a = ap_.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
@@ -171,6 +178,50 @@ tris_in = sum(len(p.vertices) - 2 for p in body.data.polygons)
 area_total = sum(p.area for p in body.data.polygons) or 1.0
 
 
+def boundary_segments(me):
+    """(a, b) arrays of the open edges of a mesh (its own coordinates)."""
+    bm_ = bmesh.new()
+    bm_.from_mesh(me)
+    segs = [(tuple(e.verts[0].co), tuple(e.verts[1].co)) for e in bm_.edges if e.is_boundary]
+    bm_.free()
+    a_ = np.array([s[0] for s in segs], np.float64).reshape(-1, 3)
+    b_ = np.array([s[1] for s in segs], np.float64).reshape(-1, 3)
+    return a_, b_
+
+
+def islands_of(me):
+    """How many separate pieces (faces joined through shared vertices) a mesh has."""
+    parent = list(range(len(me.vertices)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    used = set()
+    for poly in me.polygons:
+        vs = list(poly.vertices)
+        used.update(vs)
+        r0 = find(vs[0])
+        for v in vs[1:]:
+            r = find(v)
+            if r != r0:
+                parent[r] = r0
+    return len(set(find(v) for v in used))
+
+
+# The generated mesh's own open edges before any cut (it is not watertight): a part's open
+# edge along one of them is the source's hole, not the cut's.
+SOURCE_OPEN = boundary_segments(body.data)
+BRIDGES = []
+print("SOURCE", len(SOURCE_OPEN[0]), "open edges before the cuts", flush=True)
+
+# A footprint wider than the order allows (max_width, a share of its length): the object may face sideways.
+if a.max_width > 0 and DIMS[0] > DIMS[1] * a.max_width:
+    report["problems"].append("frame: the object is %.2f m wide and %.2f m long (more than max_width %.2f times its "
+                              "length): it may face sideways; correct its frame.json" % (DIMS[0], DIMS[1], a.max_width))
+
+
 # ---- 2. the parts ------------------------------------------------------------------------------
 
 def planes_of(boxes):
@@ -187,22 +238,82 @@ def inside_any(c, boxes, eps):
     return any(all(lo_[i] - eps <= c[i] <= hi_[i] + eps for i in range(3)) for lo_, hi_ in boxes)
 
 
-def close_cuts(bm, planes, eps):
-    """Fill the open loops that lie on the cut planes; returns the new faces."""
-    edges = [e for e in bm.edges if e.is_boundary and any(
-        all(abs(v.co[axis] - val) <= eps for v in e.verts) for axis, val in planes)]
-    if not edges:
-        return []
-    res = bmesh.ops.holes_fill(bm, edges=edges, sides=0)
-    new_faces = list(res.get("faces", []))
-    if new_faces:
-        tri = bmesh.ops.triangulate(bm, faces=new_faces)
-        new_faces = list(tri.get("faces", new_faces))
+def fan_fill(bm, edges):
+    """Close the loops among open cut edges that the hole fill left (a loop that touches
+    itself, as a cut through a tangled part of a generated mesh gives) with a fan of
+    triangles around its centre. Returns the new faces."""
+    adj = {}
+    for e in edges:
+        for v in e.verts:
+            adj.setdefault(v, []).append(e)
+    done, out = set(), []
+    for e0 in edges:
+        if e0 in done:
+            continue
+        start = e0.verts[0]
+        loop, v, e, closed = [], start, e0, False
+        while True:
+            done.add(e)
+            loop.append(v)
+            v = e.other_vert(v)
+            if v is start:
+                closed = True
+                break
+            nxt = [x for x in adj.get(v, []) if x not in done]
+            if not nxt:
+                break
+            e = nxt[0]
+        if not closed or len(loop) < 3:
+            continue
+        c = bm.verts.new(tuple(sum((x.co for x in loop), Vector()) / len(loop)))
+        for a_, b_ in zip(loop, loop[1:] + loop[:1]):
+            try:
+                out.append(bm.faces.new((a_, b_, c)))
+            except ValueError:
+                pass
+    return out
+
+
+def close_cuts(bm, planes, eps, passes=3):
+    """Fill the open loops that lie on the cut planes; returns the new faces. Where a cut
+    crossed a hole of the generated mesh (which is not watertight), its section is an open
+    chain, not a loop: the nearest free ends on each plane are joined by straight edges on
+    the plane first (recorded in BRIDGES: they border the source's hole, which stays open).
+    Then the hole fill, then a fan for loops it left; a cut through a tangled part of the
+    surface may leave short chains, so the round is repeated up to `passes` times."""
+    new_faces = []
+    for _ in range(passes):
+        edges, seen = [], set()
+        for axis, val in planes:
+            on = [e for e in bm.edges if e.is_boundary and all(abs(v.co[axis] - val) <= eps for v in e.verts)]
+            degree = {}
+            for e in on:
+                for v in e.verts:
+                    degree[v] = degree.get(v, 0) + 1
+            free = [v for v, d in degree.items() if d == 1]
+            for i, j in ap.close_chains([tuple(v.co) for v in free]):
+                va, vb = free[i], free[j]
+                if bm.edges.get((va, vb)) is None:
+                    on.append(bm.edges.new((va, vb)))
+                    BRIDGES.append((tuple(va.co), tuple(vb.co)))
+            edges.extend(e for e in on if e not in seen)
+            seen.update(on)
+        if not edges:
+            break
+        res = bmesh.ops.holes_fill(bm, edges=edges, sides=0)
+        made = list(res.get("faces", []))
+        if made:
+            tri = bmesh.ops.triangulate(bm, faces=made)
+            made = list(tri.get("faces", made))
+        made += fan_fill(bm, [e for e in edges if e.is_valid and e.is_boundary])
+        new_faces += made
+        if not made:
+            break
+    new_faces = [f for f in new_faces if f.is_valid]
     for f in new_faces:
         f.material_index = INTERIOR
     bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
     return new_faces
-
 
 objects = {}
 caps = {}
@@ -278,24 +389,43 @@ for part in PARTS:
     me = ob.data
     tris = sum(len(p.vertices) - 2 for p in me.polygons)
     cut_tris = sum(len(p.vertices) - 2 for p in me.polygons if p.material_index == INTERIOR)
-    bm = bmesh.new()
-    bm.from_mesh(me)
-    open_edges = sum(1 for e in bm.edges if e.is_boundary)
-    bm.free()
+    # Open edges: the generated mesh's own (along its open edges before the cuts), those that
+    # border its holes where a cut crossed them (the bridges), and the rest: a cut left open.
+    oa, ob = boundary_segments(me)
+    tol = EPS * 20
+    src = ap.edges_along(oa, ob, SOURCE_OPEN[0], SOURCE_OPEN[1], tol)
+    brg = ap.edges_along(oa, ob, [s[0] for s in BRIDGES], [s[1] for s in BRIDGES], tol) & ~src
+    cut = ~src & ~brg
+    # A lone open edge (neither end touching another open cut edge) borders a sliver of a
+    # triangle lying on the cut plane: no hole to see, reported but not flagged.
+    ends = {}
+    for i in np.nonzero(cut)[0]:
+        for p_ in (oa[i], ob[i]):
+            key = tuple(np.round(p_ / tol).astype(np.int64))
+            ends[key] = ends.get(key, 0) + 1
+    lone = sum(1 for i in np.nonzero(cut)[0]
+               if all(ends[tuple(np.round(p_ / tol).astype(np.int64))] == 1 for p_ in (oa[i], ob[i])))
+    open_edges = int(cut.sum() - lone)
+    source_open = int(src.sum())
+    bridged = int(brg.sum())
+    islands = islands_of(me)
     share = sum(p.area for p in me.polygons if p.material_index != INTERIOR) / area_total
     joint = ap.joint_of(part) if part.get("parent") else None
     if joint is not None:
         pivots[pid] = ap.pivot_point(joint.get("pivot", "cut"), pverts, caps.get(pid, np.zeros((0, 3))), DIMS)
     if len(me.polygons) == 0:
-        report["problems"].append("part %s is empty: its region holds no geometry" % pid)
+        report["problems"].append("part %s is empty: its region holds no geometry; the order's box for it probably "
+                                  "misses the part on this variant" % pid)
     elif part.get("parent") and share < a.min_share:
-        report["problems"].append("part %s is tiny: %.2f %% of the surface (under min_share %.2f %%)" % (
-            pid, share * 100, a.min_share * 100))
+        report["problems"].append("part %s is tiny: %.2f %% of the surface in %d piece(s) (under min_share %.2f %%): "
+                                  "its region caught almost nothing; the order's box for it probably misses the part "
+                                  "on this variant" % (pid, share * 100, islands, a.min_share * 100))
     if open_edges:
-        report["problems"].append("part %s has %d open edges after its cut was closed" % (pid, open_edges))
+        report["problems"].append("part %s has %d open edges where its cut was not closed" % (pid, open_edges))
     lo_, hi_ = (pverts.min(0), pverts.max(0)) if len(pverts) else (np.zeros(3), np.zeros(3))
     part_info[pid] = dict(records.get(pid, {}), parent=part.get("parent"), node=pid, triangles=tris,
-                          cut_triangles=cut_tris, open_edges=open_edges, share=round(share, 5),
+                          cut_triangles=cut_tris, open_edges=open_edges, source_open_edges=source_open,
+                          bridged_edges=bridged, lone_edges=int(lone), islands=islands, share=round(share, 5),
                           bounds_m=[ap.to_gltf(lo_), ap.to_gltf(hi_)])
 for part in PARTS:
     pid = part["id"]

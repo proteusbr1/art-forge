@@ -1013,3 +1013,43 @@ def make_clip(rig, plan, entry, libraries=None, default_library=None):
         out["params"]["source"] = "procedural"
         return out
     raise ValueError("motion %s: source %s is not available yet" % (entry["name"], entry["source"]))
+
+
+def twin_pairs(rig, twins):
+    """[(twin bone, role bone)]: each bone of a role's twin (creature_bones: the mirror run of
+    a single chain the rig predicted as a pair) with the role's bone at the same place along
+    the chain, by length (the bone whose span holds the twin bone's middle)."""
+    out = []
+
+    def spans(bones):
+        lens = [float(np.linalg.norm(rig.tail[rig.index[b]] - rig.head[rig.index[b]])) for b in bones]
+        total = sum(lens) or 1.0
+        acc, rows = 0.0, []
+        for b, ln in zip(bones, lens):
+            rows.append((b, acc / total, (acc + ln) / total))
+            acc += ln
+        return rows
+    for role, tbones in sorted((twins or {}).items()):
+        lead = (rig.roles or {}).get(role) or []
+        if not lead or not tbones:
+            continue
+        lrows = spans(lead)
+        for b, u0, u1 in spans(tbones):
+            mid = (u0 + u1) / 2.0
+            match = next((lb for lb, a0, a1 in lrows if mid <= a1 + 1e-9), lrows[-1][0])
+            out.append((b, match))
+    return out
+
+
+def with_twins(rig, clip_out, twins):
+    """The clip with every twin bone turning as its role's bone at the same place (the same
+    rotation about its own head): the two halves of one chain move together."""
+    pairs = twin_pairs(rig, twins)
+    if not pairs:
+        return clip_out
+    for frame in clip_out["rotations"]:
+        for tb, lb in pairs:
+            if lb in frame:
+                frame[tb] = list(frame[lb])
+    clip_out.setdefault("params", {})["twins"] = {tb: lb for tb, lb in pairs}
+    return clip_out

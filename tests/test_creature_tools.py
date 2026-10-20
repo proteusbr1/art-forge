@@ -135,10 +135,16 @@ class Proposal(unittest.TestCase):
         self.assertIn(names["pelvis0"], doc["unmapped"])
 
     def test_missing_chain_and_manual_map(self):
-        tree, names, doc = mapped(sk.hover(), sk.SERPENT_PLAN)  # no tail on this skeleton
+        b = sk.hover()
+        b.bones = [x for x in b.bones if not x[0].startswith("base")]
+        b.bones.append(("base0", "root0", (0.0, 0.0, 0.75), (0.0, 0.0, 0.7)))  # too short to be a limb
+        tree, names, doc = mapped(b, sk.SERPENT_PLAN)  # no tail, nothing left to take
         self.assertFalse(doc["valid"])
         self.assertTrue(any("role tail is missing" in p for p in doc["problems"]), doc["problems"])
-        self.assertIsNone(doc["roles"])
+        tree, names, doc = mapped(sk.hover(), sk.SERPENT_PLAN)  # the base is the nearest run left
+        self.assertTrue(doc["valid"], doc["problems"])
+        self.assertEqual(doc["roles"]["tail"], [names["base0"], names["base1"]])
+        self.assertTrue(any(n.startswith("tail: no run points back") for n in doc["notes"]), doc["notes"])
         roles = dict(doc["found"])
         roles["tail"] = [names["base0"], names["base1"]]
         self.assertEqual(cb.validate(tree, sk.SERPENT_PLAN, roles), [])
@@ -149,6 +155,117 @@ class Proposal(unittest.TestCase):
         self.assertTrue(any("must be a child of" in p for p in cb.validate(tree, sk.SERPENT_PLAN, broken)))
         twice = dict(roles, neck=list(roles["spine"]))
         self.assertTrue(any("has two roles" in p for p in cb.validate(tree, sk.SERPENT_PLAN, twice)))
+
+    def test_four_arms_on_a_two_armed_rig_with_min_pairs(self):
+        # The night's four-armed insect: the rig predicted two arms only (every variant).
+        plan = {"chains": [dict(c) for c in sk.INSECT_PLAN["chains"]]}
+        tree, names, doc = mapped(sk.predicted_biped(), plan)
+        self.assertFalse(doc["valid"])
+        self.assertEqual(sorted(doc["problems"]), ["role arm_l1 is missing", "role arm_r1 is missing"])
+        plan["chains"][2]["min_pairs"] = 1
+        self.assertEqual(cb.check_plan(plan), [])
+        tree, names, doc = mapped(sk.predicted_biped(), plan, shuffle=4)
+        self.assertTrue(doc["valid"], doc["problems"])
+        self.assertEqual(doc["roles"]["arm_l0"], [names["arml%d" % i] for i in range(4)])
+        self.assertEqual(doc["roles"]["leg_r0"], [names["legr%d" % i] for i in range(4)])
+        self.assertNotIn("arm_l1", doc["roles"])
+        slots = dict(cb.plan_roles(plan))
+        self.assertFalse(slots["arm_l0"]["optional"])
+        self.assertTrue(slots["arm_r1"]["optional"])
+        # A chain hanging from an optional pair is optional too.
+        hands = {"chains": plan["chains"] + [{"id": "claw", "from": "arm", "toward": "side"}]}
+        self.assertTrue(dict(cb.plan_roles(hands))["claw_l1"]["optional"])
+        self.assertFalse(dict(cb.plan_roles(hands))["claw_l0"]["optional"])
+        self.assertIn("min_pairs must be", " ".join(cb.check_plan(
+            {"chains": [{"id": "arm", "toward": "side", "pairs": 1, "min_pairs": 2}]})))
+        self.assertIn("min_pairs needs pairs", " ".join(cb.check_plan(
+            {"chains": [{"id": "spine", "toward": "up", "min_pairs": 1}]})))
+
+    def test_a_tail_predicted_as_two_legs(self):
+        # The night's serpent: the rig predicted a biped, its legs standing in the serpent body.
+        tree, names, doc = mapped(sk.predicted_biped(), sk.SERPENT_PLAN, shuffle=2)
+        self.assertTrue(doc["valid"], doc["problems"])
+        legs = ([names["legl%d" % i] for i in range(4)], [names["legr%d" % i] for i in range(4)])
+        self.assertIn(doc["roles"]["tail"], legs)
+        other = legs[1] if doc["roles"]["tail"] == legs[0] else legs[0]
+        self.assertEqual(doc["twins"], {"tail": other})
+        self.assertNotIn(other[0], doc["unmapped"])
+        # The arms are arms, not a neck or a tail.
+        self.assertEqual(doc["roles"]["arm_l0"][0], names["arml0"])
+        self.assertTrue(set(doc["roles"]["neck"]) <= {names["neck0"], names["neck1"], names["spine2"]})
+        # Legs curled back along the ground point back: a tail by their own direction.
+        tree, names, doc = mapped(sk.predicted_biped(curl=True), sk.SERPENT_PLAN)
+        self.assertTrue(doc["valid"], doc["problems"])
+        self.assertFalse(any(n.startswith("tail: no run points") for n in doc["notes"]), doc["notes"])
+        self.assertEqual(len(doc["twins"]["tail"]), 6)
+        # The twin bones move as the tail's bones at the same place along the chain.
+        rig = cm.Rig(tree, doc["roles"], doc["root"], 2.0, doc["joints"])
+        clip = cm.with_twins(rig, cm.make_clip(rig, sk.SERPENT_PLAN, {"name": "walk", "source": "procedural",
+                                                                      "kind": "undulate", "frames": 8, "fps": 8,
+                                                                      "loop": True}), doc["twins"])
+        pairs = dict(cm.twin_pairs(rig, doc["twins"]))
+        self.assertEqual(len(pairs), 6)
+        for frame in clip["rotations"]:
+            for tb, lb in pairs.items():
+                self.assertEqual(frame[tb], frame[lb])
+        self.assertTrue(any(abs(frame[doc["twins"]["tail"][-1]][0]) < 0.9999 for frame in clip["rotations"]))
+
+    def test_a_propulsion_unit_predicted_as_two_legs(self):
+        # The night's hovering torso: the optional base is a leg pointing down, its mirror its twin.
+        tree, names, doc = mapped(sk.predicted_biped(), sk.HOVER_PLAN)
+        self.assertTrue(doc["valid"], doc["problems"])
+        self.assertIn(doc["roles"]["base"][0], (names["legl0"], names["legr0"]))
+        self.assertIn("base", doc["twins"])
+        # A plan whose single chain points the wrong way does not take an arm off one side.
+        plan = {"chains": [{"id": "spine", "from": "root", "toward": "up"},
+                           {"id": "neck", "from": "spine", "toward": "front", "optional": True}]}
+        tree, names, doc = mapped(sk.predicted_biped(), plan)
+        self.assertTrue(doc["valid"], doc["problems"])
+        arms = set(names["arm%s%d" % (s, i)] for s in "lr" for i in range(4))
+        self.assertFalse(arms & set(doc["roles"].get("neck") or []))
+        self.assertEqual(doc["twins"], {})
+
+    def test_a_skeleton_predicted_a_quarter_turn_off(self):
+        # The night's heavy beast: two of four rigs lay with their left and right front to back.
+        for turn, expect in ((90.0, -90), (-90.0, 90)):
+            b = sk.predicted_biped(turn=turn)
+            tree, names = b.tree()
+            face = cb.skeleton_facing(tree)
+            self.assertEqual(face["turn_deg"], expect, face)
+            self.assertGreater(face["across_deg"], 80)
+            self.assertEqual(face["problems"], [])
+            self.assertFalse(cb.propose(tree, sk.BIPED_BEAST_PLAN)["valid"])
+            doc = cb.propose(cb.turned_tree(tree, face["turn_deg"]), sk.BIPED_BEAST_PLAN)
+            self.assertTrue(doc["valid"], doc["problems"])
+            self.assertEqual(doc["roles"]["leg_l0"][0], names["legl0"])
+            arms = set(names["arm%s%d" % (s, i)] for s in "lr" for i in range(4))
+            self.assertFalse(arms & set(doc["roles"]["neck"]), doc["roles"])
+            turned = cb.turned_tree(tree, face["turn_deg"])
+            self.assertEqual(cb.skeleton_facing(turned)["turn_deg"], 0)
+        # Facing front already, or turned by less than 45 degrees: no turn.
+        for turn in (0.0, 30.0, -40.0, 180.0):
+            tree, _ = sk.predicted_biped(turn=turn).tree()
+            self.assertEqual(cb.skeleton_facing(tree)["turn_deg"], 0, turn)
+        # Turned with no feet to tell its front: a facing problem.
+        b = sk.predicted_biped(turn=90.0)
+        b.bones = [x for x in b.bones if not x[0].startswith("leg")]
+        b.bones.append(("stub", "hub", (0.0, 0.0, 1.1), (0.0, 0.0, 0.95)))  # the hub still branches
+        tree, _ = b.tree()
+        face = cb.skeleton_facing(tree)
+        self.assertEqual(face["turn_deg"], 0)
+        self.assertTrue(face["problems"] and face["problems"][0].startswith("facing: "), face)
+
+    def test_fewer_bones_than_joints_take_the_joints_in_order(self):
+        plan = {"chains": [{"id": "spine", "toward": "up"},
+                           {"id": "leg", "toward": "down", "pairs": 1, "joints": 3, "bends": ["front", "back", "none"]}]}
+        b = sk.Builder()
+        hips = b.chain(None, [(0, 0, 1.0), (0, 0, 1.05)], "hips")
+        b.chain(hips[-1], [(0, 0, 1.05), (0, 0, 1.5)], "spine")
+        b.chain(hips[0], [(0.1, 0, 1.0), (0.1, -0.05, 0.5), (0.1, 0, 0.0)], "legl")
+        b.chain(hips[0], sk.mirror([(0.1, 0, 1.0), (0.1, -0.05, 0.5), (0.1, 0, 0.0)]), "legr")
+        tree, names, doc = mapped(b, plan)
+        self.assertTrue(doc["valid"], doc["problems"])
+        self.assertEqual([(r["joint"], r["bend"]) for r in doc["joints"]["leg_l0"]], [(0, "front"), (1, "back")])
 
     def test_choose_precedence(self):
         import json

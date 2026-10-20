@@ -20,8 +20,11 @@ GLB, mesh and motion reports) and the Godot review sheet; the rig runners (SkinT
 The `articulated` and `creature` recipes (2026-10-19) are built the same way and tested
 against the fake server with stand-ins; their tools (the parts exporter, the creature
 exporter with its role map and procedural clips, the layout sheet) are smoke-tested on
-synthetic Blender fixtures only: none of them has run on a generated mesh or a predicted
-creature skeleton yet. The `held_item` recipe (2026-10-19) is built and tested the same way:
+synthetic Blender fixtures, and a first real night (2026-10-19) rejected every articulated
+variant and stopped 11 of 18 creature exports; the parts exporter and the creature exporter
+were then fixed and run on the CPU on copies of that night's 42 painted meshes and 18 rigs
+(design, section 7: articulated decisions 8 and 9, creature decisions 11 and 12); the fixed
+tools have not run in a factory night yet. The `held_item` recipe (2026-10-19) is built and tested the same way:
 its item tool, its hold (the humanoid exporter on a reference figure) and its review sheet
 are smoke-tested on a synthetic carbine and the synthetic humanoid only. The humanoid's
 `motions` list (2026-10-19) chooses its clips from motion libraries (a starter library ships

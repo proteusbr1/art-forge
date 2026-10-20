@@ -45,6 +45,11 @@ PARTS = [{"id": "hull"},
           "joint": {"kind": "turn", "axis": "up", "pivot": "cut", "range": [-180, 180]}},
          {"id": "barrel", "parent": "turret", "find": {"box": [[-0.08, 0.2, 0.6], [0.08, None, 0.95]]},
           "joint": {"kind": "hinge", "axis": "-side", "pivot": "back", "range": [-8, 20]}}]
+PARTS_WAIST = [{"id": "hull"},
+               {"id": "turret", "parent": "hull", "find": {"box": [[-0.45, None, [0.42, 0.78]], [0.45, None, None]]},
+                "joint": {"kind": "turn", "axis": "up", "pivot": "cut", "range": [-180, 180]}},
+               {"id": "barrel", "parent": "turret", "find": {"box": [[-0.16, [-0.1, 0.42], 0.45], [0.16, None, None]]},
+                "joint": {"kind": "hinge", "axis": "-side", "pivot": "cut", "range": [-8, 20]}}]
 P = "procedural"
 SERPENT_MOTIONS = [{"name": "idle_none", "source": P, "kind": "breathe", "frames": 20, "fps": 20},
                    {"name": "walk_none", "source": P, "kind": "undulate", "frames": 24, "settings": {"travel": 0.3}},
@@ -91,7 +96,8 @@ def fixtures():
             h.update(f.read())
     stamp = h.hexdigest()
     mark = os.path.join(CACHE, "stamp.txt")
-    names = ("painted_tank.glb", "serpent.glb", "beast.glb")
+    names = ("painted_tank.glb", "painted_tank_open.glb", "serpent.glb", "beast.glb", "predicted.glb",
+             "predicted_turned.glb")
     old = ""
     if os.path.exists(mark):
         with open(mark) as f:
@@ -100,7 +106,8 @@ def fixtures():
         return CACHE
     os.makedirs(CACHE, exist_ok=True)
     blender([TANK, "--out", CACHE])
-    for kind in ("serpent", "beast"):
+    blender([TANK, "--out", CACHE, "--open"])
+    for kind in ("serpent", "beast", "predicted", "predicted_turned"):
         blender([RIG, "--kind", kind, "--out", CACHE])
     with open(mark, "w") as f:
         f.write(stamp)
@@ -152,6 +159,31 @@ class Parts(unittest.TestCase):
         self.assertEqual((model["frame"]["source"], model["frame"]["front_given"]), ("manual", "-z"))
         self.assertTrue(load(files["frame"])["manual"])
 
+    def test_an_open_mesh_and_a_barrel_cut_at_the_turret_face(self):
+        # A generated mesh is not watertight: its own holes are not the cut's, and a cut that
+        # crosses one is still closed (its open chain bridged).
+        out = fresh("new_tools", "parts_open")
+        files = local_gpu.run_parts(os.path.join(fixtures(), "painted_tank_open.glb"), out, CONFIG, PARTS_WAIST,
+                                    name="tank", params={"length": 6.0})
+        report, model = load(files["mesh_report"]), load(files["model"])
+        self.assertEqual(report["flags"], [])
+        parts = model["parts"]
+        self.assertTrue(all(p["open_edges"] == 0 for p in parts.values()), parts)
+        self.assertGreater(parts["hull"]["source_open_edges"], 0)
+        self.assertGreater(parts["turret"]["bridged_edges"] + parts["hull"]["bridged_edges"], 0)
+        # The barrel is cut where it leaves the turret's front face (0.3 m ahead of the footprint's
+        # centre, scaled by 2.5), within a step of the search, not along its length, and its
+        # hinge is there.
+        barrel = next(j for j in model["joints"] if j["part"] == "barrel")
+        self.assertTrue(0.3 * 2.5 < barrel["pivot_m"][2] < 0.3 * 2.5 + 0.12, barrel)
+        self.assertGreater(parts["barrel"]["share"], 0.01)
+        # The width check: this hull is half as wide as long.
+        out = fresh("new_tools", "parts_wide")
+        files = local_gpu.run_parts(os.path.join(fixtures(), "painted_tank.glb"), out, CONFIG, PARTS, name="tank",
+                                    params={"length": 6.0}, max_width=0.4)
+        flags = load(files["mesh_report"])["flags"]
+        self.assertEqual(len(flags), 1)
+        self.assertTrue(flags[0].startswith("frame: the object is 3.00 m wide and 6.00 m long"), flags)
 
 @unittest.skipUnless(HAVE_BLENDER, "blender_python is not configured in forge.local.json")
 class Creature(unittest.TestCase):
@@ -186,6 +218,29 @@ class Creature(unittest.TestCase):
         self.assertLess(walk["foot_slide_cm"], 2.0)
         self.assertLess(walk["reach_shortfall_cm"], 1.0)
         self.assertEqual(motion["flags"], [])
+
+    def test_skeletons_a_rig_tool_predicted(self):
+        # The first real night's rigs: a humanoid template on a serpent (its tail grown as two
+        # legs) and on a beast whose rig lay a quarter turn off.
+        out = fresh("new_tools", "predicted")
+        files = local_gpu.run_creature_export(os.path.join(fixtures(), "predicted.glb"), out, CONFIG, sk.SERPENT_PLAN,
+                                              SERPENT_MOTIONS[:2], name="serpent", params={"height": 2.0})
+        model = load(files["model"])
+        self.assertIn("tail", model["roles"])
+        self.assertEqual(len(model["twins"]["tail"]), 4)
+        self.assertEqual(model["facing"]["turn_deg"], 0)
+        self.assertTrue(all(c["found"] for c in load(files["motion_report"])["clips"].values()))
+        _, names = sk.predicted_biped().tree()
+        out = fresh("new_tools", "predicted_turned")
+        motions = [{"name": "idle_none", "source": P, "kind": "breathe", "frames": 20, "fps": 20},
+                   {"name": "walk_none", "source": P, "kind": "gait", "frames": 16}]
+        files = local_gpu.run_creature_export(os.path.join(fixtures(), "predicted_turned.glb"), out, CONFIG,
+                                              sk.BIPED_BEAST_PLAN, motions, name="beast", params={"height": 2.2})
+        model, motion = load(files["model"]), load(files["motion_report"])
+        self.assertEqual(model["facing"]["turn_deg"], -90)
+        self.assertEqual(model["roles"]["leg_l0"][0], names["legl0"])
+        self.assertEqual(model["roles"]["leg_r0"][0], names["legr0"])
+        self.assertLess(motion["clips"]["walk_none"]["foot_slide_cm"], 2.0)
 
     def test_an_invalid_bone_map_stops_the_export(self):
         out = fresh("new_tools", "invalid")

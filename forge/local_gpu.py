@@ -884,7 +884,7 @@ def _params_cmd(params):
 
 @_gpu_locked("parts")
 def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughness=None, image_format=None,
-              min_share=None, snap=None, timeout=3600):
+              min_share=None, snap=None, max_width=None, timeout=3600):
     """The articulated parts (tools/blender/articulated_export.py in blender_python): the
     painted mesh turned to face +Z, scaled, cut into `parts` (the order's part list), each
     part a node with its origin at its pivot. params: height or length, tris, front. Returns
@@ -908,6 +908,9 @@ def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughne
     if snap is not None:
         cmd += ["--snap", "1" if snap else "0"]
         settings["snap"] = bool(snap)
+    if max_width is not None:
+        cmd += ["--max-width", str(max_width)]
+        settings["max_width"] = max_width
     inputs = [_input("mesh", mesh)]
     if metal_roughness:
         cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
@@ -932,7 +935,7 @@ def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughne
 
 def parts_runner(factory, job, out_dir):
     """The parts of a variant's painted mesh (args: name, parts, height, length, tris, front,
-    image_format, min_share, snap)."""
+    image_format, min_share, snap, max_width)."""
     args = job.get("args", {})
     ins = job["inputs"]
     mesh, _ = factory.resolve(ins["mesh"])
@@ -940,7 +943,7 @@ def parts_runner(factory, job, out_dir):
     params = {k: args[k] for k in ("height", "length", "tris", "front") if k in args}
     files = run_parts(mesh, out_dir, factory.config, args["parts"], name=args.get("name", "model"), params=params,
                       metal_roughness=mr, image_format=args.get("image_format"), min_share=args.get("min_share"),
-                      snap=args.get("snap"))
+                      snap=args.get("snap"), max_width=args.get("max_width"))
     rec = _step_record(out_dir, "parts")
     settings = rec.get("settings", {})
     return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
