@@ -65,8 +65,9 @@ format in [docs/order.md](docs/order.md) and the design in
   of both new recipes), and `item`, `hold` and `item_sheet` (held_item).
 - The iso_tile recipe: `forge/tile_jobs.py` (its expansion into jobs, the family's seam
   materials and set sheet, and its order check), `forge/tile_steps.py` (its local steps without
-  the card: the guide, a seam group's seamless cut and colour record, the border blend, the sprite with
-  its checks, the review and set sheets),
+  the card: the guide (a scattered floor's strewn guide), a seam group's seamless cut and colour record,
+  the border blend, the sprite with its checks (footprint, seam, painted light, busyness and its
+  calming, repetition, layout) and its overlapping outline, the review and set sheets),
   `tools/blender/iso_grid.py` (the grid's geometry, faces, projection and normals; no `bpy`) and
   `tools/blender/tile_render.py` (a meshed object fitted to its sprite's silhouette and rendered
   on the CPU; the runner `tile_render` of `forge/local_gpu.py`).

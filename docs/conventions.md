@@ -881,8 +881,11 @@ glows, `<name>_emissive.png` (the glowing texels' colour at full value, alpha th
 With a variant grid larger than one tile the names are `<name>_v<NN>`, NN = `(y % gy) * gx + (x %
 gx)`. Every frame is the canvas (`rect`, default the cell) at `scale` art pixels per grid pixel;
 its alpha is binary (floors and walls: each pixel belongs to the face whose quad holds its
-centre, so neighbours share no pixel) or smooth (objects, colours bled from the opaque pixels
-into the soft edge). A face's normals come from its albedo's relief, the fine detail plus the
+centre, then the outline is grown `overlap` grid pixels, 0.75 by default, about round, the new
+pixels taking the colour and normal of the nearest opaque ones, so neighbouring frames overlap
+by about one and a half grid pixels and a frame drawn smaller with filtering leaves no dark line
+between tiles; a face cut by its picture, a fence, is not grown) or smooth (objects, colours bled
+from the opaque pixels into the soft edge). A face's normals come from its albedo's relief, the fine detail plus the
 medium forms (planks, bricks, corrugation) at twice the weight, times `tile.relief`; in a seam
 group's band the relief is the material's own. An object's come from its silhouette's dome and
 its albedo's fine and medium detail. The frames of a block (an object over a variant grid larger
@@ -893,7 +896,8 @@ farther one (the same picture's pixels), and a frame drawn alone has no hole.
 `tile.json` (`forge-tile`): `name`, `kind`, `variant_grid`, `scale`, `anchor` (the canvas's
 top-left in grid pixels of the cell: [0, 0] for the cell), `size` (art pixels), `frames` (`index`,
 `at` [i, j], `file`, `albedo`, `normal`, `emissive` or null, `glow`), `grid` (the full grid),
-`measures`, `settings`, `form`. A face also writes `texture.png` (its final face texture).
+`overlap` (art pixels the outline was grown; 0 when it was not: a game that grows outlines itself
+should skip a piece with `overlap` above 0), `measures`, `settings`, `form`. A face also writes `texture.png` (its final face texture).
 
 `mesh_report.json` (`forge-tile-report`): `flags` (texts; [order.md](order.md#the-iso-tile-recipe)),
 `measures` (`overflow`: the largest share of a frame outside the original's silhouette, widened
@@ -908,8 +912,14 @@ object (`shading_painted` before it; a meshed object: against its paint, `shadin
 silhouette: `scale`, `move` in grid pixels, `iou_before`, `iou`); `ground_cut` (the share of an
 object's cut taken out as its own ground, with `tile.ground` `cut`); for a meshed object
 `render_fit`, `picture_on_mesh` (`iou`, `scale`, `move` of the picture laid on the render) and
-`delight` (the gain of each side of the box it looks like)) and `fit.excess` (each measure over
-its limit, summed: the ranking of acceptable variants).
+`delight` (the gain of each side of the box it looks like); `busy_picture` and `busy` (a
+repainted face of a seam group, or an object with `tile.match`: its fine detail's contrast over
+its floor material's, before and after it was calmed); `repeat` (a repainted face over more than
+one tile: the share of its forms its tiles have in common, 0 for unrelated tiles, 1 for
+identical ones); `layout` (a repainted face: the mean colour distance of its broad forms from
+its guide's, each without its mean colour); `overlap_px`) and `fit.excess` (each measure over
+its limit, summed: the ranking of acceptable variants; `repeat` counts for a scattered floor
+only).
 
 **A meshed object's render** (`v<seed>_render/`): `albedo.png` (the base colour, unlit, on
 the canvas at the scale), `normal.png` (the view normal, y up) and `fit.json`

@@ -95,6 +95,9 @@ MESH_FLAG_STAGES = (
     (r"^seam: ", "edges", "the edges stage joins the border to the seam group's material"),
     (r"^shading: ", "picture", "the picture painted light into the albedo"),
     (r"^render: ", "form", "the mesh's shape does not fit the original's silhouette"),
+    (r"^busy: ", "picture", "the picture's fine detail is louder than its floor's, even calmed"),
+    (r"^repeat: ", "picture", "the picture repeats one large shape per tile over its block"),
+    (r"^layout: ", "picture", "the picture left its guide's layout (painted a scene or an object)"),
 )
 # The stage held responsible for a conform flag (conform_report.json "flags"), by its text:
 # the conform follows the rig's joints and weights; the soles are the outfit's own shape.

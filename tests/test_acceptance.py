@@ -103,6 +103,9 @@ class ResponsibleStageTest(unittest.TestCase):
         ("seam: the texture's opposite edges differ 3.1 times more than neighbouring texels (over 2.5)", "edges"),
         ("shading: the albedo brightens by 41% across the face (painted light, over 35%)", "picture"),
         ("render: the mesh's silhouette overlaps the original's by 64% (under 72%)", "form"),
+        ("busy: the face's fine detail is 2.10 times its group material's (over 1.40)", "picture"),
+        ("repeat: 81% of the block's forms repeat from tile to tile (over 45%)", "picture"),
+        ("layout: the face's broad forms differ from its guide's by 0.21 (over 0.12)", "picture"),
         ("something new", "unknown"),
     )
 

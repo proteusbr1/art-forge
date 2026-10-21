@@ -839,7 +839,7 @@ Per variant `v<seed>` (default 3; the piece's guide is shared by its variants):
 
 | Kind | Jobs |
 |---|---|
-| `floor`, `west_wall`, `north_wall` | `guide` (the original's face taken out of the sprite into a flat texture, the seam group's material detail laid over it) -> `picture` (Qwen Image Edit 2511 repaints it) -> `blend` and `edges` (its border band replaced by the seam group's material, the ring repainted by Qwen Image 2.1 Turbo inpaint) -> `sprite` (put back on the exact face at the order's scale) |
+| `floor`, `west_wall`, `north_wall` | `guide` (the original's face taken out of the sprite into a flat texture, repeated over the variant grid or, with `tile.scatter`, strewn small over it; the seam group's material detail laid over it) -> `picture` (Qwen Image Edit 2511 repaints it) -> `blend` and `edges` (its border band replaced by the seam group's material, the ring repainted by Qwen Image 2.1 Turbo inpaint) -> `sprite` (put back on the exact face at the order's scale) |
 | `object`, form `picture` | `guide` (the original, or a block of it over the variant grid, upscaled onto grey) -> `picture` -> `sprite` (the picture's cut, BiRefNet's mask, fitted to the original's silhouette, its painted light evened, cut back into the grid's columns) |
 | `object`, form `mesh` | `guide` -> `picture` -> `cutout` -> `mesh` (TRELLIS.2) -> `paint` (Hunyuan3D Paint) -> `render` (Blender, CPU: the mesh turned, its height stretched a little, fitted to the original's silhouette and rendered by the grid's camera) -> `sprite` (the picture's colours laid on the render where they fit, their painted light evened side by side) |
 
@@ -901,6 +901,9 @@ Family keys:
 | `relief` | a face's relief multiplier for its normals (0 to 4, default 1): a corrugated roof 1.5 |
 | `ground` | `keep` (default) or `cut`: an object made from its picture whose original stands on its own ground (a tree drawn with its grass) has that ground cut away inside its floor diamonds (the pixels of the colour of the diamonds' front part, where nothing stands, and not darker than it: a shadow under a crown stays), so the map's floor shows there; the checks compare it with the original's cut the same way |
 | `glow` | the glowing colours (names or hue ranges, as "What glows"); default the piece's text's |
+| `scatter` | 0 (default) or 2 to 6: a floor or an object made from its picture that is many small shapes spread over the ground (a crop bed, a patch of scrub or stones). Its picture's text gets the style's `view_tile_scatter` sentence (default: many small separate clumps spread irregularly at an even density, no single large shape and no regular grid); a floor's guide is the original's tile shrunk that many times and strewn over the variant grid (`scatter` x `scatter` copies a tile at jittered places, mirrored at random, by a seed of the piece's), not the original repeated tile by tile, and its sprite flags `repeat` over `max_repeat` |
+| `trim` | true for an edge or trim piece (a roof's edge, a kerb, a strip along a wall): its picture's text gets the style's `view_tile_trim` sentence (default: only a flat piece of the surface, exactly as laid out, no whole building, object or scene), a face's `max_layout` is 0.12 and an object's `max_overflow` 0.04 |
+| `match` | an object made from its picture that maps strew among the floors of a seam group (wild flowers in a pasture): the name of that floor group, whose material the object's fine detail is calmed to (`max_busy`, `calm`) and whose material is made even when no face of the family uses it |
 | `name` | the frames' file name (default the piece id) |
 
 `params.scale` (1 to 32, default 4): art pixels per grid pixel. `params.tris` and
@@ -909,7 +912,8 @@ sprite at the cell's size, transparent outside the piece; `inputs.silhouette` (o
 image of the cell's size whose alpha widens the footprint the check allows (a game's collision
 volume seen by the camera). A style needs `view_tile_floor`, `view_tile_wall` and
 `view_tile_object` for the kinds the pictures use, and `material_top` or `material_front` and
-`material_negative` with seam groups.
+`material_negative` with seam groups; `view_tile_scatter` and `view_tile_trim` are optional
+(they replace the recipe's own sentences).
 
 `sprite` settings: `max_overflow` (default 0.04 for floors and walls, 0.08 for objects),
 `min_cover` (0.85 and 0.6; 0.75 for a face cut by its picture, a fence, whose thin rails lose a
@@ -925,7 +929,15 @@ of the albedo at the frame's scale, radius a quarter of a grid pixel, default 0.
 to 4 grid pixels to overlap the original's silhouette best, kept only when it gains 0.02 of
 overlap; or `none`), `delight` (0 to 1, default 0.7: the share of an object's painted light taken
 out, below), `mesh_albedo` (`picture`, default, or `paint`: a meshed object's colours) and
-`min_render_iou` (default 0.72). `guide` settings: `detail` (how much of the material's detail the
+`min_render_iou` (default 0.72), `overlap` (grid pixels a floor's or wall's binary outline is grown, the new
+pixels taking the nearest opaque colour and normal; default 0.75, 0 for objects and for faces cut
+by their picture), `max_busy` (default 1.4: the most fine detail a repainted face of a seam group
+keeps against its group's material, or an object with `tile.match` against that floor's, as a
+ratio of their detail contrast at a twenty-fourth of a tile), `calm` (default 0.5: the least
+factor the fine detail of a busier picture is scaled by to reach `max_busy`, its broad colours
+kept and a face's border band untouched; 1 only flags), `max_repeat` (default 0.45: a scattered
+floor's limit of `repeat`) and `max_layout` (default 0.22, 0.12 with `tile.trim`: a repainted
+face's limit of `layout`). `guide` settings: `detail` (how much of the material's detail the
 face guide gets, default 1) and `blur` (of the upscaled original, in its pixels, default 0.6).
 `picture` settings: as the humanoid's `qwen_edit_2511`.
 
@@ -939,6 +951,9 @@ the stage held responsible:
 | `seam: the texture's opposite edges differ <x> times more than neighbouring texels ...` (faces of a group) | `edges` |
 | `shading: the albedo brightens by <x>% ...` (painted light that the original's own slope lacks, what is left after `delight`) | `picture` |
 | `render: the mesh's silhouette overlaps the original's by <x>% ...` (under `min_render_iou`) | `form` |
+| `busy: the face's fine detail is <x> times its group material's ...` (or `the object's ... its floor's`; over `max_busy` after calming) | `picture` |
+| `repeat: <x>% of the block's forms repeat from tile to tile ...` (a scattered floor, over `max_repeat`) | `picture` |
+| `layout: the face's broad forms differ from its guide's by <x> ...` (over `max_layout`) | `picture` |
 
 Painted light is measured as the brightness slope (a plane fitted to the albedo's luminance, as
 a share of its mean) that the original's own slope does not have: a tree's darker trunk, a crop
@@ -952,6 +967,21 @@ A block's frames (a crop field, a run of hedge) each keep their tile's whole col
 diamond swept up the original's own height plus 0.1 level, even where a nearer tile's column
 overlaps it, so a frame drawn beside a tile of another kind has no hole.
 
+What the first real night taught (a farm's 66 pieces) is built in. A floor's or wall's frames
+overlap their neighbours (`overlap`): frames that only touched left a dark line around every
+tile once a game drew them smaller with filtering. A face over a variant grid repeated its
+original tile by tile in its guide, so a bed whose original draws one large plant per tile came
+back as a grid of giant plants: `tile.scatter` strews the original small instead and checks the
+block for repetition (`repeat`: the share of the tiles' blurred forms their mean tile holds,
+corrected so unrelated tiles give 0; such beds measured 0.7 to 0.98, a strewn guide about 0).
+Loud detail in one floor of a group (bright flowers in a pasture) made square patches where maps
+mix the group's floors: a repainted face's fine detail is measured against its group's material,
+an object's with `tile.match` against that floor's, and calmed to `max_busy` (`busy`). An edge
+piece painted as a whole building in its diamond passed the footprint check, which a face fills by
+construction: a repainted face's broad forms are compared with its guide's (`layout`; such a
+roof edge measured 0.18 to 0.23, the farm's other faces at most 0.17), and `tile.trim` words the
+picture's text for a strip and tightens the limit.
+
 The automatic pick among acceptable variants takes the smallest sum of each measure over its
 limit (`fit.excess`). The order check refuses: a missing or unknown `tile.kind`, unknown tile
 keys, a seam group the family lacks or of the other kind, a grid that differs from its group's
@@ -961,12 +991,14 @@ over a grid larger than one tile, `cutout` `picture` without the picture, a miss
 unreadable sprite (it must be the cell's size, with transparency), a family `grid`, `seams`
 (also an unknown `seamless` or a `saturation` out of 0 to 1), `seam_band`, `tile_texels` or
 `layout` that is invalid, `tile.clip` or `tile.ground` `cut` on a face or a meshed object, `tile.relief` out of 0 to 4,
+`tile.scatter` other than 0 or 2 to 6 or on a wall or a meshed object, `tile.trim` not true or false or without the
+picture, `tile.match` on a face or a meshed object or naming no floor group of the family,
 a piece id starting with `_`, and a style without the views the pieces use. Complete sample:
 [tests/fixtures/order_iso_tile.json](../tests/fixtures/order_iso_tile.json) (a paved floor and a
 lawn, a plank wall and its north twin, a low fence, a crate meshed and a bush; the tests write
 its sprites with `tests/iso_tile_synth.py`).
 
-Files, in `<out>/<family>/<piece>/`: `guide_guide.png` and `guide_layout.json`;
+Files, in `<out>/<family>/<piece>/`: `guide_guide.png` and `guide_layout.json` (with `scatter`);
 `v<seed>_picture_rgb.png` and `_mask.png`; `v<seed>_blend_image.png` and `_mask.png`;
 `v<seed>_edges_rgb.png`; `v<seed>_sprite/` (the frames, `texture.png` for a face, `tile.json`,
 `mesh_report.json`; [conventions.md](conventions.md#iso-tiles)); `review/sheet.png`;

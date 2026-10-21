@@ -681,6 +681,42 @@ left is a debris piece the edit drew elsewhere in its cell). Never ran:
 a night with the changed briefs and kinds (the hedges as objects, the trees' ground cut, the
 bales' and posts' new pictures).
 
+**After the farm's second night, in the game (2026-10-21).** The game drew the second night's
+picks on its maps and kept four of them out: the lessons are now the recipe's.
+
+- *Frames that only touched.* Floors and walls had binary alpha and no shared pixel; drawn
+  smaller with filtering, each frame's edge turned half transparent and the black behind the map
+  showed as a grid around every tile. The game grew the outlines itself. Now the sprite does:
+  `overlap` (0.75 grid pixel by default, about round, the nearest opaque colour and normal), not
+  for a face cut by its picture (a fence's rails would thicken) nor for objects; `tile.json`
+  says how far, so a game can stop growing its own.
+- *One large shape per tile.* A bed whose original draws one plant per tile was guided by that
+  tile repeated over a 4 x 4 block, and the edit painted a grid of 16 giant cabbages. A floor with
+  `tile.scatter` gets a guide of the original shrunk and strewn at jittered places instead, the
+  text asks for many small clumps, and the block is checked for repetition (`repeat`). Measured
+  on the night's pictures: those beds 0.69 to 0.98; strewn guides about 0. An object's block
+  keeps its guide (shrinking it would shorten its plants against the silhouette fit) and gets the
+  text only; its frames' columns share a profile by nature, so `repeat` is not measured there.
+- *Loud floors.* Bright flowers in one pasture piece made square patches where maps mix floors.
+  The picture's fine detail (the colours minus their blur at a twenty-fourth of a tile) is
+  compared with the group's material, or for an object strewn among floors (`tile.match`) with
+  that floor's material put on the diamond, and calmed to `max_busy` by scaling that detail by
+  at most half (`calm`); still over, it is flagged. On the night: the flowers 1.7 to 1.9 times
+  their pasture, calmed to 1.25; the cabbages 1.9 to 2.3; most other faces 0.6 to 1.3, a scorched
+  pasture and walls with a bright window up to 2.2.
+- *An edge painted as a building.* A roof edge with no seam group came back as a whole barn
+  seen from above, inside its diamond: a face fills its diamond by construction, so the
+  footprint check could not see it. A repainted face's broad forms (blurred at a twelfth of a
+  tile, without their mean colour) are now compared with its guide's (`layout`): that edge
+  measured 0.18 to 0.23, every other face of the night at most 0.17; the default limit is 0.22,
+  and `tile.trim` (edge and trim pieces) sets 0.12 and words the text for a strip.
+- Measured but not built: a check that a wall keeps a small detail of its original (a vent)
+  in place did not tell the night's lost vent from the kept ones; the order's brief names such
+  details instead.
+
+All of it was measured by re-running the new sprite step on the night's own pictures (no
+generation); the guide of a scattered floor is new and has not been through the edit yet.
+
 ### Limbless figures
 
 A shapeless figure that floats or crawls (a blob) needs no recipe of its own: the `figure`

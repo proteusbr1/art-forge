@@ -32,7 +32,7 @@ from .factory_util import seeds_for
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "blender")
 
 TILE_KEYS = ("kind", "seam", "grid", "height", "thickness", "rect", "cutout", "name", "glow", "dome", "alpha", "clip",
-             "relief", "ground")
+             "relief", "ground", "scatter", "trim", "match")
 GROUNDS = ("keep", "cut")
 CUTOUTS = ("original", "picture", "none")
 ALPHAS = ("binary", "smooth")
@@ -49,6 +49,14 @@ DEFAULT_BAND = 0.08
 # The views of the pictures (style keys), by the piece's kind.
 VIEWS = {"floor": "view_tile_floor", "west_wall": "view_tile_wall", "north_wall": "view_tile_wall",
          "object": "view_tile_object"}
+# The sentence a picture's text gets for a scattered piece (tile.scatter) and for an edge or trim
+# piece (tile.trim); the family's style may replace them (style keys view_tile_scatter and
+# view_tile_trim).
+SCATTER_TEXT = ("Many small separate clumps, as described, spread irregularly over the whole picture at an even "
+                "density, each only a small part of it, in natural colours; no single large shape and no regular "
+                "grid.")
+TRIM_TEXT = ("Only a flat piece of the surface fills the whole picture edge to edge, exactly as laid out in the "
+             "picture: no whole building, object or scene, no ground, sky or surroundings.")
 SET_ASSET = "_set"
 SEAM_PREFIX = "_seam_"
 EDIT_VALUES = {"$NEGATIVE$": "", "$STEPS$": 4, "$CFG$": 1.0, "$LORA$": 1.0}
@@ -100,7 +108,19 @@ def tile_spec(fam, a):
             "cutout": t.get("cutout", ("none" if kind == "floor" else "original") if face else "picture"), "name": t.get("name", a["id"]),
             "glow": t.get("glow"), "dome": t.get("dome", 0.0 if face else 0.6),
             "alpha": t.get("alpha", "binary" if face else "smooth"), "clip": bool(t.get("clip", False)),
-            "relief": t.get("relief", 1.0), "ground": t.get("ground", "keep")}
+            "relief": t.get("relief", 1.0), "ground": t.get("ground", "keep"), "scatter": t.get("scatter", 0),
+            "trim": bool(t.get("trim", False)), "match": t.get("match")}
+
+
+def tile_text(st, spec):
+    """The sentences a piece's picture text gets for its tile: scattered small shapes, an edge
+    or trim piece."""
+    out = []
+    if spec.get("scatter"):
+        out.append(st.get("view_tile_scatter") or SCATTER_TEXT)
+    if spec.get("trim"):
+        out.append(st.get("view_tile_trim") or TRIM_TEXT)
+    return " ".join(out)
 
 
 def frames_along(spec):
@@ -250,7 +270,7 @@ def recipe_iso_tile(fam, a, st):
     band = fam.get("seam_band", DEFAULT_BAND)
     view = a.get("view", fam.get("view", VIEWS.get(kind, "view_tile_object")))
     from .recipes import prompt_of
-    text = prompt_of(st, fam, a, view) if "picture" in opts else ""
+    text = " ".join(x for x in (prompt_of(st, fam, a, view), tile_text(st, spec)) if x) if "picture" in opts else ""
     size = texture_size(g, spec, texels) if face else picture_size(g, spec, texels)
     base_args = {"tile": spec, "grid": fam.get("grid") or {}, "size": size}
     jobs = []
@@ -261,6 +281,9 @@ def recipe_iso_tile(fam, a, st):
         guide_inputs["material"] = dict(material)
     guide = {"id": guide_id, "kind": "tile_guide", "group": "local", "stage": "guide", "inputs": guide_inputs,
              "args": dict(base_args)}
+    if spec["scatter"] and kind == "floor":
+        # The original's tile strewn small over the face (tile_steps.scatter_texture), by a seed of its own.
+        guide["args"]["scatter_seed"] = seeds_for(fid + "/" + aid + "/scatter", 1)[0]
     if "picture" in opts:
         jobs.append(guide)
     n = a.get("variants", fam.get("variants", DEFAULT_VARIANTS)) if "picture" in opts else 1
@@ -293,6 +316,9 @@ def recipe_iso_tile(fam, a, st):
                                                                  "$PROMPT$": text, "$SEED$": s})})
             texture = {"ref": pic, "role": "rgb"}
             sprite_inputs["mask"] = {"ref": pic, "role": "mask"}
+            if face:
+                # The guide the picture kept: its layout is checked against it (tile_steps "layout").
+                sprite_inputs["guide"] = {"ref": guide_id, "role": "guide"}
         else:
             texture = dict(material)
         if face:
@@ -344,8 +370,13 @@ def recipe_iso_tile(fam, a, st):
         else:
             sprite_inputs["texture"] = texture
             sprite_inputs["guide_layout"] = {"ref": guide_id, "role": "layout"}
+            if spec["match"]:
+                # The floor material whose busyness the object keeps (flowers among a pasture's tiles).
+                sprite_inputs["match"] = seamless_ref(fam, spec["match"])
         args = dict(base_args, scale=scale, band=band if material else None, form=opts.get("form", "picture") if not face else "face",
                     text=" ".join(x for x in (a["brief"], fam.get("style", ""), st.get("global", "")) if x))
+        if "match" in sprite_inputs:
+            args["match_span"] = seam_span((fam.get("seams") or {}).get(spec["match"], {}))
         sp = add("sprite", {"kind": "tile_sprite", "group": "local", "inputs": sprite_inputs, "args": args})
         entry = {"variant": v, "job": sp, "role": "tile", "chain": list(chain)}
         if reserve:
@@ -387,8 +418,9 @@ def family_jobs(fam, st):
     used = []
     for a in pieces:
         spec = tile_spec(fam, a)
-        if spec["kind"] != "object" and spec["seam"] and spec["seam"] not in used:
-            used.append(spec["seam"])
+        gid = spec["seam"] if spec["kind"] != "object" else spec["match"]
+        if gid and gid in seams and gid not in used:
+            used.append(gid)
     jobs = []
     for gid in used:
         jobs += seam_jobs(fam, gid, seams[gid], st, g, pieces)
@@ -541,6 +573,27 @@ def check_iso_tile(where, piece, problems, fam=None):
             problems.append("%s: tile.ground must be keep or cut" % where)
         elif t["ground"] == "cut" and (face or opts.get("form") == "mesh"):
             problems.append("%s: tile.ground cut is for objects made from their picture (form picture)" % where)
+    sc = t.get("scatter")
+    if sc is not None:
+        if not (_is_int(sc) and (sc == 0 or 2 <= sc <= 6)):
+            problems.append("%s: tile.scatter must be 0 or a whole number from 2 to 6 (how many times smaller the "
+                            "original's shapes are strewn)" % where)
+        elif sc and (kind in ("west_wall", "north_wall") or "picture" not in opts or opts.get("form") == "mesh"):
+            problems.append("%s: tile.scatter is for floors and objects made from their picture" % where)
+    if t.get("trim") is not None and not isinstance(t["trim"], bool):
+        problems.append("%s: tile.trim must be true or false" % where)
+    if t.get("trim") and "picture" not in opts:
+        problems.append("%s: tile.trim needs the picture stage" % where)
+    match = t.get("match")
+    if match is not None:
+        if face or opts.get("form") == "mesh":
+            problems.append("%s: tile.match is for objects made from their picture (a floor or wall keeps its own "
+                            "seam group's busyness)" % where)
+        elif match not in seams:
+            problems.append("%s: tile.match %r is no seam group of the family (groups: %s)" % (
+                where, match, ", ".join(sorted(seams)) or "none"))
+        elif seams[match].get("kind") != "floor":
+            problems.append("%s: tile.match %r is a wall group; it must name a floor group" % (where, match))
     if t.get("glow") is not None:
         from .tool_specs import glow_colours_problem
         p = glow_colours_problem(t["glow"])

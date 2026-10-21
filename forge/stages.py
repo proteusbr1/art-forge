@@ -470,6 +470,24 @@ TILE_SPRITE_SETTINGS = {
     "delight": {"type": "number", "min": 0.0, "max": 1.0, "arg": "delight",
                 "meaning": "how far the picture laid on a mesh has its sides' brightness evened (its painted light "
                            "taken out; the mesh's normals light it again) (default 0.7)"},
+    "overlap": {"type": "number", "min": 0.0, "max": 2.0, "arg": "overlap",
+                "meaning": "grid pixels a floor's or wall's frame is grown past its exact face (binary alpha), the "
+                           "new pixels taking the nearest opaque colour, so neighbouring frames drawn smaller overlap "
+                           "and no dark line shows between them (default 0.75 for floors and walls; 0 for objects and "
+                           "faces cut by their picture)"},
+    "max_busy": {"type": "number", "min": 0.5, "max": 5.0, "arg": "max_busy",
+                 "meaning": "busy flag and calming: the most fine detail a repainted face of a seam group (against its "
+                            "group's material) or an object with tile.match (against that floor) keeps, as a ratio of "
+                            "their detail contrast (default 1.4)"},
+    "calm": {"type": "number", "min": 0.0, "max": 1.0, "arg": "calm",
+             "meaning": "the least factor a busy picture's fine detail is scaled by to bring it to max_busy (default "
+                        "0.5; 1: never calmed, only flagged)"},
+    "max_repeat": {"type": "number", "min": 0.0, "max": 1.0, "arg": "max_repeat",
+                   "meaning": "repeat flag of a scattered floor (tile.scatter): the largest share of the block's forms "
+                              "that repeats from tile to tile (default 0.45)"},
+    "max_layout": {"type": "number", "min": 0.0, "max": 2.0, "arg": "max_layout",
+                   "meaning": "layout flag of a repainted face: the largest mean colour distance of its broad forms "
+                              "from its guide's (default 0.22; 0.12 with tile.trim)"},
 }
 ISO_TILE_OPTIONS = {
     "guide": {

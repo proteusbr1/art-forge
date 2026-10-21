@@ -39,12 +39,20 @@ DEFAULTS = {"max_overflow": None, "min_cover": None, "tolerance": 1.0, "max_seam
             "normal_strength": 1.0, "exposure": "original", "light_key": 0.55, "light_fill": 0.15,
             "light_ambient": 0.5, "cavity": 0.6, "base_ao": 0.18, "glow_strength": 1.0,
             "saturation": 0.5, "sharpen": 0.4, "fit": "silhouette", "min_render_iou": 0.72,
-            "mesh_albedo": "picture", "delight": 0.7}
-FACE_LIMITS = {"max_overflow": 0.04, "min_cover": 0.85, "max_shading": 0.35}
-# A face cut by its picture (a fence's rails) loses a little of its thin parts to the cut.
-CUT_FACE_LIMITS = {"min_cover": 0.75}
+            "mesh_albedo": "picture", "delight": 0.7, "overlap": None, "max_busy": 1.4, "calm": 0.5,
+            "max_repeat": 0.45, "max_layout": None}
+# A floor's or wall's frame is grown `overlap` grid pixels past its exact face (binary alpha), so
+# neighbouring frames drawn smaller with filtering overlap as hand-made tiles do and no dark line
+# shows between them.
+FACE_LIMITS = {"max_overflow": 0.04, "min_cover": 0.85, "max_shading": 0.35, "overlap": 0.75, "max_layout": 0.22}
+# A face cut by its picture (a fence's rails) loses a little of its thin parts to the cut, and is not
+# grown (its rails would thicken).
+CUT_FACE_LIMITS = {"min_cover": 0.75, "overlap": 0.0}
 # An object's picture has more light in it by nature (a canopy's darker underside): its limit is wider.
-OBJECT_LIMITS = {"max_overflow": 0.08, "min_cover": 0.6, "max_shading": 0.6}
+OBJECT_LIMITS = {"max_overflow": 0.08, "min_cover": 0.6, "max_shading": 0.6, "overlap": 0.0, "max_layout": 0.22}
+# An edge or trim piece (tile.trim) keeps its picture's layout closely, and an object one its place.
+TRIM_FACE_LIMITS = {"max_layout": 0.12}
+TRIM_OBJECT_LIMITS = {"max_overflow": 0.04}
 # The picture of an object fitted to the original's silhouette: the scales tried and the
 # largest move (grid pixels).
 FIT_SCALES = (0.8, 0.87, 0.93, 1.0, 1.07, 1.15, 1.25)
@@ -259,6 +267,8 @@ def _settings(job, spec):
     s.update(FACE_LIMITS if spec["kind"] != "object" else OBJECT_LIMITS)
     if spec["kind"] != "object" and spec.get("cutout") == "picture":
         s.update(CUT_FACE_LIMITS)
+    if spec.get("trim"):
+        s.update(TRIM_FACE_LIMITS if spec["kind"] != "object" else TRIM_OBJECT_LIMITS)
     s.update({k: v for k, v in (job.get("args") or {}).items() if k in DEFAULTS and v is not None})
     return s
 
@@ -312,7 +322,8 @@ def step_guide(factory, job, d, files):
         guide, layout = object_guide(g, spec, sprite, size, blur_px)
     else:
         material = read_rgba(_path(factory, job["inputs"]["material"]))[..., :3] if "material" in job["inputs"] else None
-        guide, layout = face_guide(g, spec, sprite, size, blur_px, material, float(args.get("detail", 1.0)))
+        guide, layout = face_guide(g, spec, sprite, size, blur_px, material, float(args.get("detail", 1.0)),
+                                   args.get("scatter_seed"))
     p = os.path.join(d, slug(job["id"]) + "_guide.png")
     save_rgba(p, guide)
     _record(factory, files, "guide", p)
@@ -321,28 +332,64 @@ def step_guide(factory, job, d, files):
     _record(factory, files, "layout", lp)
 
 
-def face_guide(g, spec, sprite, size, blur_px, material, detail):
-    """A face's guide: the original's face (one tile, repeated over the piece's variant grid),
-    upscaled and blurred, with the seam group's material detail over it, grey where the
-    original's face is transparent."""
+def face_guide(g, spec, sprite, size, blur_px, material, detail, scatter_seed=None):
+    """A face's guide: the original's face (one tile, repeated over the piece's variant grid,
+    or, for a scattered floor, strewn small over it), upscaled and blurred, with the seam
+    group's material detail over it, grey where the original's face is transparent."""
     tile = face_tile_size(size, spec)
     rgb, a = original_face(g, spec, sprite, tile)
     along = _along(spec)
-    rgb = np.tile(rgb, (along[1], along[0], 1))
+    k = int(spec.get("scatter") or 0) if spec["kind"] == "floor" else 0
+    if k:
+        rgb = scatter_texture(rgb, along, k, scatter_seed or 0)
+    else:
+        rgb = np.tile(rgb, (along[1], along[0], 1))
     a = np.tile(a, (along[1], along[0]))
     rgb = resize(rgb, size)
     a = resize(a, size)
     q = G.face_quad(g, spec["kind"], spec.get("thickness"))
     p00, du, dv = G._affine(g, q)
     texels_per_px = tile[0] / max(np.linalg.norm(du), 1e-6)
-    low = box_blur(rgb, max(blur_px * texels_per_px, 1), wrap=True)
+    low = box_blur(rgb, max(blur_px * texels_per_px / max(k, 1), 1), wrap=True)
     if material is not None and detail > 0:
         m = resize(material, size)
         low = low + detail * (m - box_blur(m, tile[0] / 10.0, wrap=True))
     cover = smoothstep(0.2, 0.6, a)[..., None] if spec["cutout"] != "none" else 1.0
     guide = np.clip(low * cover + GREY * (1 - cover), 0, 1)
     return guide, {"kind": spec["kind"], "size": list(size), "tile": tile, "along": along,
-                   "texels_per_pixel": round(float(texels_per_px), 3), "material": material is not None}
+                   "texels_per_pixel": round(float(texels_per_px), 3), "material": material is not None,
+                   "scatter": k}
+
+
+def scatter_texture(rgb, along, k, seed):
+    """A scattered floor's guide texture: the original's tile (rgb, one tile of texels) shrunk k
+    times and strewn over the piece's variant grid, k x k copies a tile at jittered places, each
+    mirrored at random and laid over the others with a soft round edge, on the tile's mean
+    colour. The original draws one large shape per tile (one cabbage), which a repainted block
+    repeats as a grid of giant shapes; strewn small, the picture paints many small ones and no
+    two tiles of the block alike. The texture wraps (a seam group's span)."""
+    th, tw = rgb.shape[:2]
+    H, W = th * along[1], tw * along[0]
+    rng = np.random.RandomState(int(seed) % (2 ** 32))
+    sw, sh = max(4, int(round(tw / float(k)))), max(4, int(round(th / float(k))))
+    small = resize(rgb, [sw, sh], Image.LANCZOS)
+    yy, xx = np.mgrid[0:sh, 0:sw]
+    rr = np.hypot((xx + 0.5) / sw - 0.5, (yy + 0.5) / sh - 0.5) * 2.0
+    weight = smoothstep(1.05, 0.7, rr)[..., None]
+    out = np.empty((H, W, 3))
+    out[...] = rgb.reshape(-1, 3).mean(0)
+    cells = [(cx, cy) for cy in range(along[1] * k) for cx in range(along[0] * k)]
+    for n in rng.permutation(len(cells)):
+        cx, cy = cells[n]
+        piece = small[:, ::-1] if rng.rand() < 0.5 else small
+        if rng.rand() < 0.5:
+            piece = piece[::-1]
+        ox = int(round((cx + 0.5 + rng.uniform(-0.4, 0.4)) * W / float(along[0] * k) - sw / 2.0))
+        oy = int(round((cy + 0.5 + rng.uniform(-0.4, 0.4)) * H / float(along[1] * k) - sh / 2.0))
+        ys, xs = (np.arange(sh) + oy) % H, (np.arange(sw) + ox) % W
+        cur = out[np.ix_(ys, xs)]
+        out[np.ix_(ys, xs)] = cur * (1 - weight) + piece * weight
+    return np.clip(out, 0, 1)
 
 
 def compose_block(g, spec, sprite):
@@ -646,6 +693,92 @@ def seam_ratio(tex, axis):
     return float(edge / max(inner, 1e-4))
 
 
+def detail_contrast(rgb, mask, r, wrap=False):
+    """How busy a picture is: the root mean square of its fine detail (the colours minus their
+    blur of radius r texels, the blur weighted by the mask so the outside never counts), over the
+    mask's pixels whose blur lies wholly inside it."""
+    w = mask.astype(np.float64)
+    cover = box_blur(w, r, wrap)
+    blur = box_blur(rgb * w[..., None], r, wrap) / np.maximum(cover[..., None], 1e-6)
+    inner = mask & (cover > 0.95)
+    if not inner.any():
+        inner = mask
+    if not inner.any():
+        return 0.0
+    return float(np.sqrt(((rgb - blur) ** 2).sum(-1)[inner].mean()))
+
+
+def calm_detail(rgb, mask, r, factor, weight=None, wrap=False):
+    """A picture's fine detail (as detail_contrast) scaled by `factor` inside the mask (times
+    `weight` of the way, per pixel), its broad colours kept."""
+    w = mask.astype(np.float64)
+    blur = box_blur(rgb * w[..., None], r, wrap) / np.maximum(box_blur(w, r, wrap)[..., None], 1e-6)
+    k = 1.0 - (1.0 - factor) * (np.ones(mask.shape) if weight is None else weight)
+    out = blur + (rgb - blur) * k[..., None]
+    return np.clip(np.where(mask[..., None], out, rgb), 0, 1)
+
+
+def calm(rgb, mask, r, reference, s, wrap=False, weight=None):
+    """A picture's busyness against its reference's (the detail_contrast ratio; a floor's seam
+    group material, or the floor material an object stands among), its detail calmed down to
+    `max_busy` (scaled by at most `calm`) when over it: (rgb, before, after)."""
+    ratio = detail_contrast(rgb, mask, r, wrap) / max(reference, 1e-4)
+    after, left = ratio, 1.0
+    for _ in range(2):  # the blur moves a little with the detail: a second, smaller step reaches the limit
+        if after <= s["max_busy"] or left <= s["calm"] + 1e-6:
+            break
+        k = max(s["calm"] / left, s["max_busy"] / after * 0.995)
+        rgb = calm_detail(rgb, mask, r, k, weight, wrap)
+        left *= k
+        after = detail_contrast(rgb, mask, r, wrap) / max(reference, 1e-4)
+    return rgb, ratio, after
+
+
+def tile_repeat(tex, along, r):
+    """How much of a face texture's forms repeat from tile to tile of its variant grid: the
+    share of its tiles' variance (blurred over r texels, without the mean colour) that their
+    mean tile holds, corrected so tiles with nothing in common give 0 and identical tiles 1.
+    One large shape per tile (a giant cabbage each) reads as a grid on the map."""
+    n = along[0] * along[1]
+    if n < 2:
+        return None
+    h, w = tex.shape[:2]
+    tw, th = w // along[0], h // along[1]
+    x = box_blur(tex, r, wrap=True)
+    tiles = np.stack([x[j * th:(j + 1) * th, i * tw:(i + 1) * tw] for j in range(along[1]) for i in range(along[0])])
+    tiles = tiles - tiles.mean(axis=(0, 1, 2), keepdims=True)
+    total = float((tiles ** 2).sum()) / n
+    if total < 1e-9:
+        return 1.0
+    share = float((tiles.mean(0) ** 2).sum()) / total
+    return (share - 1.0 / n) / (1.0 - 1.0 / n)
+
+
+def layout_difference(pic, guide, mask, r):
+    """How far a face's broad forms (blurred over r texels, each without its mean colour) are
+    from its guide's: their mean colour distance over the mask. A roof's edge painted as a
+    whole building, a field painted where a strip was, a frame or a scene added: far."""
+    if not mask.any():
+        return 0.0
+    a = box_blur(pic, r, wrap=True)
+    b = box_blur(guide, r, wrap=True)
+    a = a - a[mask].mean(0)
+    b = b - b[mask].mean(0)
+    return float(np.sqrt(((a - b) ** 2).sum(-1))[mask].mean())
+
+
+def dilate_round(mask, r):
+    """A boolean mask grown by r pixels, about round (square and cross steps in turn)."""
+    out = mask.copy()
+    for k in range(int(r)):
+        p = np.pad(out, 1)
+        if k % 2:
+            out = (p[1:-1, 1:-1] | p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:])
+        else:
+            out = dilate(out, 1)
+    return out
+
+
 def step_sprite(factory, job, d, files):
     """The frames of one variant at the order's scale, its report (`mesh_report.json`: flags and
     measures) and its record (`tile.json`), in `<slug>/`."""
@@ -724,19 +857,33 @@ def step_sprite(factory, job, d, files):
     hues = spec.get("glow") or glow_regions.colours_in_text(args.get("text", "")) or None
     records = []
     roles = {}
+    binary = spec.get("alpha", "binary") == "binary"
+    # A face's outline grown past its exact face (binary alpha), the new pixels taking the colour
+    # (and normal) of the nearest opaque ones: neighbouring frames overlap as hand-made tiles do.
+    grow = int(round(float(s["overlap"] or 0.0) * scale)) if binary else 0
+    measures["overlap_px"] = grow
     for fr in frames:
         name = frame_name(spec, fr["index"])
         alpha = fr["alpha"][..., 0]
-        if spec.get("alpha", "binary") == "binary":
+        if binary:
             alpha = (fr["centre"][..., 0] if "centre" in fr else alpha) >= 0.5
             alpha = alpha.astype(np.float64)
-        shaded = np.clip(fr["shaded"] * gain, 0, 1) * (alpha[..., None] > 0)
-        albedo = np.clip(fr["albedo"], 0, 1) * (alpha[..., None] > 0)
+        shaded = np.clip(fr["shaded"] * gain, 0, 1)
+        albedo = np.clip(fr["albedo"], 0, 1)
+        nv = fr["view_normal"]
+        if grow > 0 and alpha.max() > 0.5:
+            grown = dilate_round(alpha > 0.5, grow).astype(np.float64)
+            shaded, albedo = bleed(shaded, alpha, grow + 2), bleed(albedo, alpha, grow + 2)
+            nv = bleed(nv, alpha, grow + 2)
+            nv = nv / np.maximum(np.linalg.norm(nv, axis=-1, keepdims=True), 1e-9)
+            alpha = grown
+        shaded = shaded * (alpha[..., None] > 0)
+        albedo = albedo * (alpha[..., None] > 0)
         rec = {"index": fr["index"], "at": [fr["i"], fr["j"]], "file": name + ".png", "albedo": name + "_albedo.png",
                "normal": name + "_normal.png", "emissive": None}
         save_rgba(os.path.join(out, rec["file"]), shaded, alpha)
         save_rgba(os.path.join(out, rec["albedo"]), albedo, alpha)
-        save_rgba(os.path.join(out, rec["normal"]), G.encode_normal(g, fr["view_normal"]) / 255.0, alpha)
+        save_rgba(os.path.join(out, rec["normal"]), G.encode_normal(g, nv) / 255.0, alpha)
         if hues:
             weight, rep = glow_regions.detect(np.clip(np.round(albedo * 255), 0, 255).astype(np.uint8), hues,
                                               coverage=alpha > 0.5)
@@ -751,13 +898,14 @@ def step_sprite(factory, job, d, files):
                           ("_emissive", rec["emissive"])):
             if f:
                 roles[key + suffix] = os.path.join(out, f)
-    limits = {"overflow": s["max_overflow"], "seam": s["max_seam"], "shading": s["max_shading"]}
+    limits = {"overflow": s["max_overflow"], "seam": s["max_seam"], "shading": s["max_shading"], "busy": s["max_busy"],
+              "layout": s["max_layout"], "repeat": s["max_repeat"] if spec.get("scatter") else None}
     excess = sum(measures[k] / limits[k] for k in limits if k in measures and limits[k]) + \
         max(0.0, 1.0 - measures["cover"]) / max(1.0 - s["min_cover"], 0.05)
     x0, y0, cw, ch = G.canvas(g, spec.get("rect"))
     tile = {"format": "forge-tile", "name": spec["name"], "kind": spec["kind"], "variant_grid": list(spec["grid"]),
             "scale": scale, "anchor": [x0, y0], "size": [int(round(cw * scale)), int(round(ch * scale))],
-            "frames": records, "grid": {k: g[k] for k in G.GRID_KEYS if k in g}, "measures": measures,
+            "overlap": grow, "frames": records, "grid": {k: g[k] for k in G.GRID_KEYS if k in g}, "measures": measures,
             "settings": {k: s[k] for k in sorted(s)}, "form": args.get("form")}
     report = {"format": "forge-tile-report", "flags": flags, "measures": measures,
               "fit": {"excess": round(float(excess), 4)}}
@@ -862,6 +1010,15 @@ def face_frames(factory, job, g, spec, s, sprite, scale, out, files, group=None)
     tile = face_tile_size(size, spec)
     along = _along(spec)
     relief = float(spec.get("relief", 1.0))
+    picture = "guide" in ins  # a repainted face (not its group's material itself)
+    r_detail = tile[0] / 24.0
+    if picture and along[0] * along[1] > 1:
+        # One large shape per tile repeats as a grid over the block (gated for a scattered floor).
+        rep = tile_repeat(tex, along, r_detail)
+        measures["repeat"] = round(rep, 4)
+        if spec.get("scatter") and rep > s["max_repeat"]:
+            flags.append("repeat: %.0f%% of the block's forms repeat from tile to tile (over %.0f%%)" % (
+                100 * rep, 100 * s["max_repeat"]))
     b = None
     if material is not None:
         # The group's material owns the outer band exactly: every piece of the group joins there.
@@ -877,6 +1034,18 @@ def face_frames(factory, job, g, spec, s, sprite, scale, out, files, group=None)
         if group is not None:
             measures["_material"] = float(luminance(saturate(material, float(group.get("saturation_gain", 1.0))))
                                           .mean())
+        if picture:
+            # Busyness: a repainted face of a group keeps about its group material's fine detail
+            # (loud flowers in one floor make square patches where maps mix the group's floors); after the
+            # seam's measure, which compares the band's edges with the face's own detail.
+            bfull, _ = border_weight(spec, g, size, float(args.get("band") or 0.08))
+            inner = bfull < 0.5
+            tex, before, after = calm(tex, inner, r_detail, detail_contrast(material, inner, r_detail, True), s,
+                                      wrap=True, weight=1.0 - bfull)
+            measures["busy_picture"], measures["busy"] = round(before, 4), round(after, 4)
+            if after > s["max_busy"] + 1e-3:
+                flags.append("busy: the face's fine detail is %.2f times its group material's (over %.2f)" % (
+                    after, s["max_busy"]))
     save_rgba(os.path.join(out, "texture.png"), tex)
     _record(factory, files, "texture", os.path.join(out, "texture.png"))
     # The face's alpha: the original's face, the picture's own cut, or the whole face.
@@ -891,6 +1060,16 @@ def face_frames(factory, job, g, spec, s, sprite, scale, out, files, group=None)
         alpha = np.ones((size[1], size[0]))
     lum = luminance(tex)
     opaque = alpha > 0.5
+    if picture:
+        # Layout: the face's broad forms against its guide's (an edge painted as a whole building).
+        guide = resize(read_rgba(_path(factory, ins["guide"]))[..., :3], size)
+        inner = opaque if b is None else opaque & (border_weight(spec, g, size, float(args.get("band") or 0.08))[0]
+                                                   < 0.5)
+        lay = layout_difference(tex, guide, inner if inner.any() else opaque, tile[0] / 12.0)
+        measures["layout"] = round(lay, 4)
+        if lay > s["max_layout"]:
+            flags.append("layout: the face's broad forms differ from its guide's by %.2f (over %.2f)" % (
+                lay, s["max_layout"]))
     # Painted light: the face's brightness slope that the original's face does not have.
     orig_rgb, orig_a = original_face(g, spec, sprite, tile)
     orig_lum = resize(luminance(np.tile(orig_rgb, (along[1], along[0], 1))), size)
@@ -1147,6 +1326,15 @@ def planar_delight(rgb, mask, orig_rgb, orig_mask, scale, strength):
     return rgb, out
 
 
+def floor_contrast(g, material, span, scale, r):
+    """A floor material's busyness (detail_contrast) as the sprites show it: one tile of it put
+    on the floor diamond at the art scale."""
+    fsp = {"kind": "floor", "grid": [int(span[0]), int(span[1])], "thickness": None}
+    part = texture_part(fsp, material, 0, 0)
+    pr = G.project(g, "floor", {"rgb": part, "alpha": np.ones(part.shape[:2] + (1,))}, scale)
+    return detail_contrast(pr["rgb"], pr["alpha"][..., 0] > 0.5, r)
+
+
 def object_frames(factory, job, g, spec, s, sprite, scale, silhouette=None):
     """The frames of an object: its picture cut back into the grid's columns, or its render."""
     ins = job["inputs"]
@@ -1212,6 +1400,17 @@ def object_frames(factory, job, g, spec, s, sprite, scale, silhouette=None):
             # The cut kept to the original's silhouette, widened as the footprint check allows.
             allowed = dilate(orig_block[..., 3] > 0.5, s["tolerance"] * scale).astype(np.float64)
             a = np.minimum(a, smoothstep(0.5, 1.0, box_blur(allowed, max(scale / 3.0, 1))))
+        if "match" in ins:
+            # Busyness: an object strewn among a floor group's tiles (wild flowers in a pasture)
+            # keeps about that floor's fine detail, seen at the same scale.
+            mat = read_rgba(_path(factory, ins["match"]))[..., :3]
+            r = math.hypot(g["tile"][0] / 2.0, g["tile"][1] / 2.0) * scale / 24.0
+            ref = floor_contrast(g, mat, job["args"].get("match_span") or [1, 1], scale, r)
+            rgb, before, after = calm(rgb, a > 0.5, r, ref, s)
+            measures["busy_picture"], measures["busy"] = round(before, 4), round(after, 4)
+            if after > s["max_busy"] + 1e-3:
+                flags.append("busy: the object's fine detail is %.2f times its floor's (over %.2f)" % (
+                    after, s["max_busy"]))
         # Painted light, measured on the whole picture against the original's block (a crop
         # field's inner tiles show no side, the original's single sprite does): the slope the
         # original lacks, then `delight` of it taken out by a planar ramp.
