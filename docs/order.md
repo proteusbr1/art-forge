@@ -840,14 +840,31 @@ Per variant `v<seed>` (default 3; the piece's guide is shared by its variants):
 | Kind | Jobs |
 |---|---|
 | `floor`, `west_wall`, `north_wall` | `guide` (the original's face taken out of the sprite into a flat texture, the seam group's material detail laid over it) -> `picture` (Qwen Image Edit 2511 repaints it) -> `blend` and `edges` (its border band replaced by the seam group's material, the ring repainted by Qwen Image 2.1 Turbo inpaint) -> `sprite` (put back on the exact face at the order's scale) |
-| `object`, form `picture` | `guide` (the original, or a block of it over the variant grid, upscaled onto grey) -> `picture` -> `sprite` (the picture's cut, BiRefNet's mask, cut back into the grid's columns) |
-| `object`, form `mesh` | `guide` -> `picture` -> `cutout` -> `mesh` (TRELLIS.2) -> `paint` (Hunyuan3D Paint) -> `render` (Blender, CPU: the mesh fitted to the original's silhouette and rendered by the grid's camera) -> `sprite` |
+| `object`, form `picture` | `guide` (the original, or a block of it over the variant grid, upscaled onto grey) -> `picture` -> `sprite` (the picture's cut, BiRefNet's mask, fitted to the original's silhouette, its painted light evened, cut back into the grid's columns) |
+| `object`, form `mesh` | `guide` -> `picture` -> `cutout` -> `mesh` (TRELLIS.2) -> `paint` (Hunyuan3D Paint) -> `render` (Blender, CPU: the mesh turned, its height stretched a little, fitted to the original's silhouette and rendered by the grid's camera) -> `sprite` (the picture's colours laid on the render where they fit, their painted light evened side by side) |
 
 then `review` (one sheet of the piece's variants) and `final` (the decision, as the other
 recipes': `accept` `mesh_flags`, `reserve`). Per family: one seamless material per seam group a
 piece uses (`<family>/_seam_<group>/`: Qwen Image 2.1 Turbo at the group texture's size, N
-seeds, the pick, rolled by half, the cross repainted, rolled back) and the set sheet
-`<family>/_set/sheet` over every piece's decision.
+seeds, the pick by the `tile_material` score, then made seamless: by default `seamless` `cut`,
+a local step that also writes the group's colour record; or `inpaint`: rolled by half, the cross
+repainted, rolled back) and the set sheet `<family>/_set/sheet` over every piece's decision.
+
+The seam group's material: the pick (`tile_material`) scores each seed's detail where it will be
+seen, the texture shrunk to the frame's scale (a tile edge at `scale` art pixels per grid pixel)
+and to a map's (2 per grid pixel), so a pattern finer than a few texels there (a corrugation of
+hairlines, which averages to a flat grey) loses to a broader one; times the evenness of its
+light and its saturation. The `cut` seamless step wraps the texture along x (a wall's group, end
+to end) or x and y (a floor's): the texture is cut at the length (its last 10% plus up to 6%
+searched) whose continuation matches its start best, which keeps a periodic pattern's ridges,
+courses or planks in phase, the start replaced by that continuation left of the cheapest seam
+through the overlap (feathered over 6 texels), and the result stretched back to the group's
+size (at most about 1.2 times). Its colour record (`_seam_<group>_colour.json`) holds the
+saturation gain every piece of the group takes (the material's mean saturation brought the
+group's `saturation` share, default 0.5, of the way to its pieces' original faces', only up, at
+most 1.5 times) and the originals' mean brightness per kind (of the pieces that skip the picture,
+the material itself, when there are any), from which each face of that kind takes the same
+exposure: their shaded borders join as their albedo does.
 
 | Stage | Default | Other options | Skippable |
 |---|---|---|---|
@@ -863,8 +880,8 @@ Family keys:
 | Key | Meaning |
 |---|---|
 | `grid` | the grid (all optional): `cell` [w, h] of a sprite (default [32, 40]), `tile` [w, h] of the floor diamond (default [32, 16]), `level` (pixels per level, default 24), `floor_top` (the diamond's top corner in the cell, default [16, 24]), `elevation` (degrees; default from the diamond: 30), `wall_aspect` (a level's height in tile edges; default from the camera: about 1.22), `wall_thickness` (tile edges, 0 to 0.5, default 0), `normal_y` (`up`: green up, as OpenGL and Godot; or `down`) |
-| `seams` | `{group: {kind, brief, span, variants, view}}`: the seam groups. `kind` `floor` or `wall`; `brief` the material that owns the border of every face of the group; `span` the tiles one texture covers (a floor's [x, y] or a number, a wall's number along it, 1 to 8); `variants` the material's seeds (default 4); `view` a `style` key (default `material_top` for floors, `material_front` for walls) |
-| `seam_band` | the border band the group's material owns, a share of a tile (0.02 to 0.25, default 0.08) |
+| `seams` | `{group: {kind, brief, span, variants, view, seamless, saturation}}`: the seam groups. `kind` `floor` or `wall`; `brief` the material that owns the border of every face of the group; `span` the tiles one texture covers (a floor's [x, y] or a number, a wall's number along it, 1 to 8); `variants` the material's seeds (default 4); `view` a `style` key (default `material_top` for floors, `material_front` for walls); `seamless` `cut` (default) or `inpaint` (above); `saturation` the share of the way to the originals' saturation (0 to 1, default 0.5) |
+| `seam_band` | the border band the group's material owns, a share of a tile (0.02 to 0.25, default 0.08): a floor's four edges, a wall's two ends only (its top and foot keep the picture, and its top cap is drawn from that top band) |
 | `tile_texels` | texels per tile edge of the face textures (64 to 1024, default 384; a texture is at most about 1.7 MP) |
 | `layout` | the game's map layout for the set sheet (a file, relative to the order; [conventions.md](conventions.md#iso-tiles)); without it the sheet lays out a test arrangement |
 
@@ -880,6 +897,9 @@ Family keys:
 | `cutout` | `none` (the whole face, default of floors), `original` (the original face's alpha with its narrow gaps closed, default of walls) or `picture` (the picture's own cut: a fence; default of objects) |
 | `alpha` | `binary` (default of floors and walls: neighbours share no pixel) or `smooth` (default of objects) |
 | `dome` | an object's roundness for its normals (0 to 2; default 0.6) |
+| `clip` | an object made from its picture: its cut kept inside the original's silhouette widened by the sprite's `tolerance` (true or false, default false): debris, rubble and thin posts whose place the game's volume fixes |
+| `relief` | a face's relief multiplier for its normals (0 to 4, default 1): a corrugated roof 1.5 |
+| `ground` | `keep` (default) or `cut`: an object made from its picture whose original stands on its own ground (a tree drawn with its grass) has that ground cut away inside its floor diamonds (the pixels of the colour of the diamonds' front part, where nothing stands, and not darker than it: a shadow under a crown stays), so the map's floor shows there; the checks compare it with the original's cut the same way |
 | `glow` | the glowing colours (names or hue ranges, as "What glows"); default the piece's text's |
 | `name` | the frames' file name (default the piece id) |
 
@@ -892,11 +912,20 @@ volume seen by the camera). A style needs `view_tile_floor`, `view_tile_wall` an
 `material_negative` with seam groups.
 
 `sprite` settings: `max_overflow` (default 0.04 for floors and walls, 0.08 for objects),
-`min_cover` (0.85 and 0.6), `tolerance` (grid pixels, default 1), `max_seam` (default 2.5),
+`min_cover` (0.85 and 0.6; 0.75 for a face cut by its picture, a fence, whose thin rails lose a
+little to the cut), `tolerance` (grid pixels, default 1), `max_seam` (default 2.5),
 `max_shading` (0.35 and 0.6), `normal_strength` (default 1), `exposure` (`original`, default:
-the shaded frames' mean brightness brought to the original's, 0.6 to 1.6 times; or `none`),
-`light_key`, `light_fill`, `light_ambient` (0.55, 0.15, 0.5), `cavity` (0.6), `base_ao` (0.18)
-and `glow_strength` (1). `guide` settings: `detail` (how much of the material's detail the
+the shaded frames' mean brightness brought to the original's, 0.6 to 1.6 times, a seam group's
+face by its group's colour record; or `none`), `light_key`, `light_fill`, `light_ambient`
+(0.55, 0.15, 0.5), `cavity` (0.6), `base_ao` (0.18), `glow_strength` (1), `saturation` (0 to 1,
+default 0.5: the albedo's mean saturation brought that share of the way to the original's, only
+up, at most 1.5 times; a seam group's faces take their group's gain), `sharpen` (an unsharp mask
+of the albedo at the frame's scale, radius a quarter of a grid pixel, default 0.4), `fit`
+(`silhouette`, default: an object's picture scaled 0.8 to 1.25 times about its foot and moved up
+to 4 grid pixels to overlap the original's silhouette best, kept only when it gains 0.02 of
+overlap; or `none`), `delight` (0 to 1, default 0.7: the share of an object's painted light taken
+out, below), `mesh_albedo` (`picture`, default, or `paint`: a meshed object's colours) and
+`min_render_iou` (default 0.72). `guide` settings: `detail` (how much of the material's detail the
 face guide gets, default 1) and `blur` (of the upscaled original, in its pixels, default 0.6).
 `picture` settings: as the humanoid's `qwen_edit_2511`.
 
@@ -908,7 +937,20 @@ the stage held responsible:
 | `footprint: <x>% of the sprite lies outside the original's silhouette ...` (widened by `tolerance`, with `inputs.silhouette`) | `picture` |
 | `footprint: the sprite covers <x>% of the original's silhouette ...` | `picture` |
 | `seam: the texture's opposite edges differ <x> times more than neighbouring texels ...` (faces of a group) | `edges` |
-| `shading: the albedo brightens by <x>% ...` (painted light) | `picture` |
+| `shading: the albedo brightens by <x>% ...` (painted light that the original's own slope lacks, what is left after `delight`) | `picture` |
+| `render: the mesh's silhouette overlaps the original's by <x>% ...` (under `min_render_iou`) | `form` |
+
+Painted light is measured as the brightness slope (a plane fitted to the albedo's luminance, as
+a share of its mean) that the original's own slope does not have: a tree's darker trunk, a crop
+field's shaded foot or a yellow flashing along one edge are in the original too. An object made
+from its picture has it measured on the whole picture (a block's too) against the original's
+block, and `delight` of it divided out by that plane's ramp (`shading_painted` before,
+`shading` after, `shading_original` the original's own); a meshed object's picture has each
+side of the box it looks like (up, the +X side, the +Y side, by the render's normals) brought
+`delight` of the way to the whole's mean brightness, and the mesh's normals light it again.
+A block's frames (a crop field, a run of hedge) each keep their tile's whole column, the floor
+diamond swept up the original's own height plus 0.1 level, even where a nearer tile's column
+overlaps it, so a frame drawn beside a tile of another kind has no hole.
 
 The automatic pick among acceptable variants takes the smallest sum of each measure over its
 limit (`fit.excess`). The order check refuses: a missing or unknown `tile.kind`, unknown tile
@@ -916,9 +958,10 @@ keys, a seam group the family lacks or of the other kind, a grid that differs fr
 span, a west wall's grid not [1, n] (a north wall's not [n, 1]), an object without its picture,
 a floor or wall that skips the picture without a seam group, form `mesh` on a floor or wall or
 over a grid larger than one tile, `cutout` `picture` without the picture, a missing or
-unreadable sprite (it must be the cell's size, with transparency), a family `grid`, `seams`,
-`seam_band`, `tile_texels` or `layout` that is invalid, a piece id starting with `_`, and a
-style without the views the pieces use. Complete sample:
+unreadable sprite (it must be the cell's size, with transparency), a family `grid`, `seams`
+(also an unknown `seamless` or a `saturation` out of 0 to 1), `seam_band`, `tile_texels` or
+`layout` that is invalid, `tile.clip` or `tile.ground` `cut` on a face or a meshed object, `tile.relief` out of 0 to 4,
+a piece id starting with `_`, and a style without the views the pieces use. Complete sample:
 [tests/fixtures/order_iso_tile.json](../tests/fixtures/order_iso_tile.json) (a paved floor and a
 lawn, a plank wall and its north twin, a low fence, a crate meshed and a bush; the tests write
 its sprites with `tests/iso_tile_synth.py`).
@@ -927,11 +970,13 @@ Files, in `<out>/<family>/<piece>/`: `guide_guide.png` and `guide_layout.json`;
 `v<seed>_picture_rgb.png` and `_mask.png`; `v<seed>_blend_image.png` and `_mask.png`;
 `v<seed>_edges_rgb.png`; `v<seed>_sprite/` (the frames, `texture.png` for a face, `tile.json`,
 `mesh_report.json`; [conventions.md](conventions.md#iso-tiles)); `review/sheet.png`;
-`pick_final.json` and `final/`. The set sheet: `<out>/<family>/_set/sheet/set_sheet.png` and
-`set_sheet.json`.
+`pick_final.json` and `final/`. A seam group, in `<out>/<family>/_seam_<group>/`: the seeds'
+`raw_s<seed>_rgb.png`, `pick_pick.json`, `_seam_<group>.png` (the seamless material),
+`_seam_<group>_tile2x2.png` and `_seam_<group>_colour.json` (with `seamless` `cut`). The set
+sheet: `<out>/<family>/_set/sheet/set_sheet.png` and `set_sheet.json`.
 
-Estimates: the sprite, the guide, the blend, the review and the set sheet are local steps; the
-render counts as `local_gpu` (60 s).
+Estimates: the sprite, the guide, the blend, the seamless cut, the review and the set sheet are
+local steps; the render counts as `local_gpu` (60 s).
 
 ## Raw jobs (`tasks`)
 

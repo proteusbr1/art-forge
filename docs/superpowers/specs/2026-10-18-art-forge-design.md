@@ -603,6 +603,84 @@ picture, inpaint, material or mesh of a real night; the edit's behaviour on an u
 sprite (does it keep the layout, does it paint light); the limits on generated pictures; the
 mesh form on generated meshes.
 
+**After the first real night (2026-10-21).** A game's first pilot (66 pieces of a farm, 3
+variants each) picked 44 pieces; its reviewer found the floors and plank and brick walls better
+than the originals, but the hedges flat boxes, the corrugated roof a flat grey, and the trees,
+crops and most objects unpicked. The causes, read from its reports and pictures:
+
+- The crop fields (objects over a 4 x 4 block) had their frames emptied by the cut: each pixel
+  went to the front-most tile whose column, swept up a fixed two levels, held it, so the front
+  tile took the farther tiles' floors and the back frame was empty; every frame was then
+  checked against the single original sprite (cover 0, overflow 1). Their pictures were good.
+- The painted-light measure took a tree's darker trunk and a crop's shaded foot (in the
+  originals too) for painted light: 70 to 170% against a 60% limit.
+- Small objects (posts, rubble, debris) were drawn larger, fatter or elsewhere in their cell than
+  the original (overflow 30 to 85%): real failures, of the edit.
+- Fences lost a little of their thin rails to the cut (cover 80 to 83% against 85%).
+- The roof: the material pick favoured the finest detail, a corrugation of hairlines (about 35
+  ridges a tile) that averages to grey at the sprites' scale, and the least saturated seed; the
+  inpainted cross broke the ridges. The hedges: a clipped hedge drawn as a flat wall face, its
+  relief taken from leaf-sized detail (gone at the frame's scale), its top band (the cap)
+  overwritten by the material's border band, which walls had on all four edges.
+- The meshes: a bale's spiky straw meshed into shards and painted a flat orange; the fit's
+  uniform scale left them small; the stairs were fine.
+- Every face of a seam group had its own exposure, so the shaded borders of a group did not
+  join as their albedo did.
+
+Decisions, each with its reason:
+
+10. **A block's frames keep their columns.** Each frame of a block holds its tile's floor diamond
+    swept up the original's own height (plus 0.1 level), overlapping where a nearer column covers
+    a farther one; the leftover tips go to the back-most tile below them. Reason: a frame drawn
+    beside a tile of another kind must not have a hole, and the overlap is the same picture's
+    pixels, so drawing back to front still gives the picture. A block's footprint and painted
+    light are measured on the whole picture against the original's block.
+11. **Painted light is what the original lacks, and is taken out.** The measure is the slope of
+    the new albedo minus the original's own; for an object made from its picture `delight` (0.7)
+    of it is divided out by the plane's ramp, and the flag gates what is left. A picture laid on a
+    mesh has each side of the box it looks like evened instead, and its slope is measured against
+    the paint's. Reason: the originals' own shading is content (a trunk, a shaded foot), and a
+    planar correction keeps the picture's detail and local form while the game's light comes
+    from the normals.
+12. **An object's picture is fitted to the original's silhouette** (scale 0.8 to 1.25 about its
+    foot, up to 4 grid pixels of move, kept only when it gains 0.02 of overlap), and an order may
+    `clip` it to the original's silhouette (debris, thin posts) and `cut` its own `ground` (a tree
+    drawn on its grass, which otherwise lies as a lighter patch on the map's floor). Reason: the
+    edit draws an object a little off; small pieces whose place the game's volume fixes need it
+    exact.
+13. **A seam group's material is chosen and wrapped for its pattern.** The pick scores detail at
+    the frame's and a map's scale (`tile_material`); the default seamless step is local: the
+    texture is cut at the length whose continuation matches its start (a pattern's phase) through
+    a min-error seam, and stretched back (at most about 1.2 times); the inpainted cross stays an
+    option. A wall's material owns only its ends. Reason: a corrugation or courses survive only in
+    phase, and an inpainted band breaks them; a wall's top is its cap and its crown.
+14. **A group shares its colour.** The seamless step writes the group's saturation gain (toward its
+    originals', at most 1.4 times) and its originals' brightness per kind; every face of the group
+    and kind takes the same exposure. Objects get their own gain. The albedo is sharpened at the
+    frame's scale. Reason: a gain of its own per face would break the joins; the originals' rich
+    palette, brought part of the way, is closer to the game's look than the edit's muted one.
+15. **Normals carry medium forms.** A face's relief adds the medium band (planks, bricks, a
+    corrugation) to the fine one, an object's its clumps and stones, and `tile.relief` scales a
+    face's. Reason: leaf-sized detail averages away at the frame's scale; the forms that read are
+    a few texels to a tenth of a tile.
+16. **The mesh form fits and keeps the picture.** The render's fit also stretches the height
+    (0.8 to 1.25); the sprite lays the picture's own colours on the render where they fit (its
+    cut fitted to the render's silhouette, at least 0.7 of overlap), the paint elsewhere; a render
+    whose silhouette overlaps the original's by less than 0.72 is flagged (`render:`). Reason:
+    the paint loses the picture's detail, and a shard mesh must not pass.
+
+Verified on 2026-10-21, without the GPU: unit tests of each change on synthetic data (a field
+block's frames each cover their tile, the block redrawn; painted light against the original and
+its planar delight; the silhouette fit; a wall's band at its ends only; a stripe pattern wrapped
+in phase and noise wrapped seamless; the pick preferring broad ridges to hairlines; the colour
+gains and the group record; a tree's ground cut; a mesh picture's sides evened), the recipe's
+expansion and checks; and the local steps re-run on the first pilot's generated pictures,
+materials and painted meshes (the meshes rendered again in Blender on the CPU), which picks 61 of
+the 62 pieces it can re-run (the four hedge runs changed kind and need new pictures; the one
+left is a debris piece the edit drew elsewhere in its cell). Never ran:
+a night with the changed briefs and kinds (the hedges as objects, the trees' ground cut, the
+bales' and posts' new pictures).
+
 ### Limbless figures
 
 A shapeless figure that floats or crawls (a blob) needs no recipe of its own: the `figure`
@@ -706,9 +784,9 @@ recipe before spending a night on a full art list.
 6. `held_item` (built 2026-10-19): its first real night (2026-10-20) showed how the mesh
    generators orient a side view (section 7, held-item decisions 11 to 13); next, a night
    with the changed item stage, and what reference values the fit measures should have.
-7. `iso_tile` (built 2026-10-20): its first real night, which will say whether the edit keeps
-   an upscaled sprite's layout and lights it flat, what limits the footprint and light checks
-   should have, and how the mesh form fits generated meshes to a sprite's silhouette.
+7. `iso_tile` (built 2026-10-20): its first real night (2026-10-21) led to decisions 10 to 16
+   of its part of section 7; next, a second night, which will say whether hedges drawn as
+   objects keep their leafy volume and whether the new briefs fit the small objects.
 8. Publishing the research behind the stage defaults (which model won each stage, steps,
    pitfalls) as documentation.
 

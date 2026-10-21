@@ -23,6 +23,7 @@ seam group (`seams`), shared by the floors and walls that join, and one set shee
 sheet`): a small map composed from the game's layout (`layout`) or a test arrangement.
 """
 
+import math
 import os
 
 from . import acceptance, stages
@@ -30,10 +31,16 @@ from .factory_util import seeds_for
 
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "blender")
 
-TILE_KEYS = ("kind", "seam", "grid", "height", "thickness", "rect", "cutout", "name", "glow", "dome", "alpha")
+TILE_KEYS = ("kind", "seam", "grid", "height", "thickness", "rect", "cutout", "name", "glow", "dome", "alpha", "clip",
+             "relief", "ground")
+GROUNDS = ("keep", "cut")
 CUTOUTS = ("original", "picture", "none")
 ALPHAS = ("binary", "smooth")
-SEAM_KEYS = ("kind", "brief", "span", "variants", "view", "note")
+SEAM_KEYS = ("kind", "brief", "span", "variants", "view", "note", "seamless", "saturation")
+# How a seam group's picked texture is made seamless: "cut" (local: wrapped at the length whose
+# continuation matches its start, through a min-error seam; patterns keep their phase) or
+# "inpaint" (rolled by half and the cross repainted by Qwen Image 2.1 Turbo inpaint).
+SEAMLESS = ("cut", "inpaint")
 SEAM_KINDS = ("floor", "wall")
 DEFAULT_SCALE = 4
 DEFAULT_VARIANTS = 3
@@ -92,7 +99,8 @@ def tile_spec(fam, a):
             "thickness": t.get("thickness"), "rect": t.get("rect"),
             "cutout": t.get("cutout", ("none" if kind == "floor" else "original") if face else "picture"), "name": t.get("name", a["id"]),
             "glow": t.get("glow"), "dome": t.get("dome", 0.0 if face else 0.6),
-            "alpha": t.get("alpha", "binary" if face else "smooth")}
+            "alpha": t.get("alpha", "binary" if face else "smooth"), "clip": bool(t.get("clip", False)),
+            "relief": t.get("relief", 1.0), "ground": t.get("ground", "keep")}
 
 
 def frames_along(spec):
@@ -120,11 +128,12 @@ def material_text(st, fam, seam):
     return " ".join(p.strip() for p in parts if p and p.strip())
 
 
-def seam_jobs(fam, gid, seam, st, g):
+def seam_jobs(fam, gid, seam, st, g, pieces=None):
     """The seamless material of a seam group: Qwen Image 2.1 Turbo at the size of the group's
-    texture (N seeds) -> pick -> rolled by half -> the cross repainted (inpaint) -> rolled back
-    (the `material` recipe's chain without its 2K repaint: the texture is already at the size
-    the sprites need)."""
+    texture (N seeds) -> pick (by its detail at the sprites' scales) -> made seamless: "cut"
+    (default; local, tile_steps.step_seamless, which also writes the group's colour record from
+    its pieces' originals) or "inpaint" (rolled by half, the cross repainted, rolled back: the
+    `material` recipe's chain without its 2K repaint)."""
     fid = fam["id"]
     asset = SEAM_PREFIX + gid
     text = material_text(st, fam, seam)
@@ -144,7 +153,26 @@ def seam_jobs(fam, gid, seam, st, g):
                      "values": {"$PROMPT$": text, "$NEGATIVE$": neg, "$WIDTH$": w, "$HEIGHT$": h, "$SEED$": s},
                      "roles": {"12": "rgb"}})
     pick = base + "/pick"
-    jobs.append({"id": pick, "kind": "pick", "group": "local", "from": ids, "role": "rgb", "metric": "material"})
+    scale = max([(a.get("params") or {}).get("scale", DEFAULT_SCALE) for a in pieces or []] or [DEFAULT_SCALE])
+    edge = math.hypot(g["tile"][0] / 2.0, g["tile"][1] / 2.0)  # a tile edge on screen, grid pixels
+    jobs.append({"id": pick, "kind": "pick", "group": "local", "from": ids, "role": "rgb", "metric": "tile_material",
+                 "metric_args": {"texels_per_tile": texels, "frame_px_per_tile": round(edge * scale, 3),
+                                 "map_px_per_tile": round(edge * 2, 3)}})
+    if seam.get("seamless", "cut") == "cut":
+        members = [a for a in pieces or [] if tile_spec(fam, a)["seam"] == gid]
+        info = []
+        inputs = {"material": {"ref": pick, "role": "rgb"}}
+        for k, a in enumerate(members):
+            sp = tile_spec(fam, a)
+            info.append({"id": a["id"], "kind": sp["kind"], "thickness": sp["thickness"],
+                         "material": "picture" not in stages.chosen_options("iso_tile", a)})
+            inputs["sprite_%02d" % k] = {"file": (a.get("inputs") or {}).get("sprite")}
+        jobs.append({"id": base + "/seamless", "kind": "tile_seamless", "group": "local", "inputs": inputs,
+                     "args": {"axes": "xy" if kind == "floor" else "x", "size": [w, h], "pieces": info,
+                              "grid": fam.get("grid") or {}, "saturation": seam.get("saturation", 0.5)}})
+        for j in jobs:
+            j["family"], j["asset"] = fid, asset
+        return jobs
     s0 = seeds_for(base, 1)[0]
     roll = base + "/rolled"
     jobs.append({"id": roll, "kind": "roll", "group": "local", "input": {"ref": pick, "role": "rgb"}, "axes": "xy"})
@@ -162,6 +190,14 @@ def seam_jobs(fam, gid, seam, st, g):
 
 def seamless_ref(fam, gid):
     return {"ref": "%s/%s%s/seamless" % (fam["id"], SEAM_PREFIX, gid), "role": "rgb"}
+
+
+def group_colour_ref(fam, gid):
+    """The seam group's colour record (made by the "cut" seamless step), or None."""
+    seam = (fam.get("seams") or {}).get(gid) or {}
+    if seam.get("seamless", "cut") != "cut":
+        return None
+    return {"ref": "%s/%s%s/seamless" % (fam["id"], SEAM_PREFIX, gid), "role": "colour"}
 
 
 def reserve_of(a):
@@ -262,6 +298,9 @@ def recipe_iso_tile(fam, a, st):
         if face:
             if material:
                 sprite_inputs["material"] = dict(material)
+                colour = group_colour_ref(fam, seam)
+                if colour:
+                    sprite_inputs["group_colour"] = colour
             if material and "picture" in opts and "edges" in opts:
                 blend = add("edges", {"kind": "tile_blend", "group": "local", "step": "blend",
                                       "inputs": {"picture": texture, "material": dict(material)},
@@ -299,7 +338,9 @@ def recipe_iso_tile(fam, a, st):
             sprite_inputs["render"] = {"ref": render, "role": "albedo"}
             sprite_inputs["render_normal"] = {"ref": render, "role": "normal"}
             sprite_inputs["render_fit"] = {"ref": render, "role": "fit"}
-            sprite_inputs.pop("mask", None)
+            # The picture's own colours are laid on the render where they fit (tile_steps).
+            sprite_inputs["texture"] = texture
+            sprite_inputs["guide_layout"] = {"ref": guide_id, "role": "layout"}
         else:
             sprite_inputs["texture"] = texture
             sprite_inputs["guide_layout"] = {"ref": guide_id, "role": "layout"}
@@ -350,7 +391,7 @@ def family_jobs(fam, st):
             used.append(spec["seam"])
     jobs = []
     for gid in used:
-        jobs += seam_jobs(fam, gid, seams[gid], st, g)
+        jobs += seam_jobs(fam, gid, seams[gid], st, g, pieces)
     finals = ["%s/%s/final" % (fam["id"], a["id"]) for a in pieces]
     sheet = {"id": "%s/%s/sheet" % (fam["id"], SET_ASSET), "kind": "tile_sheet", "group": "local",
              "partial": True, "even_if_none": True, "from": finals,
@@ -401,6 +442,11 @@ def check_family(fam, problems):
             problems.append("%s: span must be a whole number of tiles from 1 to 8 (a floor group: or [x, y])" % where)
         if "variants" in seam and not (_is_int(seam["variants"]) and seam["variants"] >= 1):
             problems.append("%s: variants must be a whole number of at least 1" % where)
+        if "seamless" in seam and seam["seamless"] not in SEAMLESS:
+            problems.append("%s: seamless must be one of %s" % (where, ", ".join(SEAMLESS)))
+        if "saturation" in seam and not (_num(seam["saturation"]) and 0 <= seam["saturation"] <= 1):
+            problems.append("%s: saturation must be a number from 0 to 1 (the share of the way to the originals' "
+                            "saturation)" % where)
     band = fam.get("seam_band")
     if band is not None and not (_num(band) and 0.02 <= band <= 0.25):
         problems.append("family %s: seam_band must be a number from 0.02 to 0.25 (a share of a tile)" % fid)
@@ -483,6 +529,18 @@ def check_iso_tile(where, piece, problems, fam=None):
         problems.append("%s: tile.name must be a file name without slashes" % where)
     if t.get("dome") is not None and not (_num(t["dome"]) and 0 <= t["dome"] <= 2):
         problems.append("%s: tile.dome must be a number from 0 to 2" % where)
+    if t.get("relief") is not None and not (_num(t["relief"]) and 0 <= t["relief"] <= 4):
+        problems.append("%s: tile.relief must be a number from 0 to 4" % where)
+    if t.get("clip") is not None:
+        if not isinstance(t["clip"], bool):
+            problems.append("%s: tile.clip must be true or false" % where)
+        elif t["clip"] and (face or opts.get("form") == "mesh"):
+            problems.append("%s: tile.clip is for objects made from their picture (form picture)" % where)
+    if t.get("ground") is not None:
+        if t["ground"] not in GROUNDS:
+            problems.append("%s: tile.ground must be keep or cut" % where)
+        elif t["ground"] == "cut" and (face or opts.get("form") == "mesh"):
+            problems.append("%s: tile.ground cut is for objects made from their picture (form picture)" % where)
     if t.get("glow") is not None:
         from .tool_specs import glow_colours_problem
         p = glow_colours_problem(t["glow"])

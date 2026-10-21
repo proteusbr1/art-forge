@@ -873,15 +873,22 @@ texture to its Y = 0 tile.
 **Frames** (`v<seed>_sprite/`, copied to `final/`): per frame of the variant grid,
 `<name>.png` (shaded: the albedo lit from its normals by the order's light, the key from the
 upper left in front, the fill from the right, relative to a flat floor, times the relief's
-hollows and a wall's darker foot, then brought to the original's mean brightness), `<name>_albedo.png`
-(unlit), `<name>_normal.png` (the sprite's view: x right, y up (`normal_y` `up`, green up, as
+hollows and a wall's darker foot, then brought to the original's mean brightness; a seam group's
+face to its group's), `<name>_albedo.png` (unlit; its saturation brought part of the way to the
+original's and sharpened at the frame's scale), `<name>_normal.png` (the sprite's view: x right, y up (`normal_y` `up`, green up, as
 OpenGL and Godot; `down` flips it), z toward the viewer, as (n + 1) / 2) and, when anything
 glows, `<name>_emissive.png` (the glowing texels' colour at full value, alpha their weight).
 With a variant grid larger than one tile the names are `<name>_v<NN>`, NN = `(y % gy) * gx + (x %
 gx)`. Every frame is the canvas (`rect`, default the cell) at `scale` art pixels per grid pixel;
 its alpha is binary (floors and walls: each pixel belongs to the face whose quad holds its
 centre, so neighbours share no pixel) or smooth (objects, colours bled from the opaque pixels
-into the soft edge).
+into the soft edge). A face's normals come from its albedo's relief, the fine detail plus the
+medium forms (planks, bricks, corrugation) at twice the weight, times `tile.relief`; in a seam
+group's band the relief is the material's own. An object's come from its silhouette's dome and
+its albedo's fine and medium detail. The frames of a block (an object over a variant grid larger
+than one tile) each hold their tile's whole column, the floor diamond swept up the original's own
+height plus 0.1 level, so neighbouring frames overlap where a nearer tile's column covers a
+farther one (the same picture's pixels), and a frame drawn alone has no hole.
 
 `tile.json` (`forge-tile`): `name`, `kind`, `variant_grid`, `scale`, `anchor` (the canvas's
 top-left in grid pixels of the cell: [0, 0] for the cell), `size` (art pixels), `frames` (`index`,
@@ -889,21 +896,35 @@ top-left in grid pixels of the cell: [0, 0] for the cell), `size` (art pixels), 
 `measures`, `settings`, `form`. A face also writes `texture.png` (its final face texture).
 
 `mesh_report.json` (`forge-tile-report`): `flags` (texts; [order.md](order.md#the-iso-tile-recipe)),
-`measures` (`overflow`: the largest share of a frame outside the original's silhouette, widened;
-`cover`: the least share of the original's silhouette a frame covers; `seam`: how many times
-more a face texture's opposite edges differ than neighbouring texels, the worse axis;
-`border_difference`: the outermost texel column's mean difference from the group's material;
-`shading`: the albedo's brightness slope across a face or object, as a share of its mean;
-`exposure_gain`; `render_fit` for a meshed object) and `fit.excess` (each measure over its
-limit, summed: the ranking of acceptable variants).
+`measures` (`overflow`: the largest share of a frame outside the original's silhouette, widened
+(an object made from its picture: of the whole picture against the original's block); `cover`:
+the least share of the original's silhouette a frame covers (likewise); `seam`: how many times
+more a face texture's opposite edges differ than neighbouring texels, the worse axis (a wall:
+end to end only); `border_difference`: the outermost texel column's mean difference from the
+group's material; `shading`: the albedo's brightness slope across a face or object that the
+original's own lacks (`shading_original`), as a share of its mean, after `delight` for an
+object (`shading_painted` before it; a meshed object: against its paint, `shading_paint`);
+`exposure_gain`; `saturation_gain`; `fit` (an object's picture fitted to the original's
+silhouette: `scale`, `move` in grid pixels, `iou_before`, `iou`); `ground_cut` (the share of an
+object's cut taken out as its own ground, with `tile.ground` `cut`); for a meshed object
+`render_fit`, `picture_on_mesh` (`iou`, `scale`, `move` of the picture laid on the render) and
+`delight` (the gain of each side of the box it looks like)) and `fit.excess` (each measure over
+its limit, summed: the ranking of acceptable variants).
 
 **A meshed object's render** (`v<seed>_render/`): `albedo.png` (the base colour, unlit, on
 the canvas at the scale), `normal.png` (the view normal, y up) and `fit.json`
-(`forge-tile-render`: `fit` with `heading_deg` of eight, `size`, `move` [X, Y] on the floor,
-`iou`, `cover` and `overflow` of its silhouette against the original's at four samples per grid
-pixel; `rect`, `scale`, `samples`). The mesh is turned by each heading, scaled so its
-silhouette's box fits in the original's, its bottom centre placed on the original's; the best
-overlap wins. Cycles renders on the CPU, emission only (no light), a box pixel filter.
+(`forge-tile-render`: `fit` with `heading_deg` of eight, `stretch` (its height over its
+footprint: 0.8, 0.9, 1, 1.12 or 1.25), `size`, `move` [X, Y] on the floor, `iou`, `cover` and
+`overflow` of its silhouette against the original's at four samples per grid pixel; `rect`,
+`scale`, `samples`). The mesh is turned by each heading and stretched by each factor, scaled so
+its silhouette's box fits in the original's, its bottom centre placed on the original's; the
+best overlap wins. Cycles renders on the CPU, emission only (no light), a box pixel filter.
+
+**A seam group's material** (`<family>/_seam_<group>/`, `seamless` `cut`): `_seam_<group>.png`
+(the seamless texture at the group's size), `_seam_<group>_tile2x2.png` (a preview) and
+`_seam_<group>_colour.json` (`forge-tile-group-colour`: `saturation_gain`,
+`original_luminance` {kind: the originals' mean brightness}, `wrap` {axis: `length`, `stretch`,
+`cut_cost`} and `seam` {axis: the seam ratio of the result}).
 
 **The map layout** (a family's `layout`, `forge-tile-layout`): `{"format": "forge-tile-layout",
 "maps": [{"name", "size", "tiles": [{"at": [x, y, z], "floor": piece, "west_wall": piece,

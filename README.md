@@ -49,8 +49,11 @@ the exact face, their borders owned by a shared seamless material per seam group
 pictures cut back into the grid, or meshes rendered by the grid's camera in Blender on the
 CPU), with albedo, normal, shaded and emissive frames, footprint, seam and painted-light
 checks, and a set sheet of the game's map blocks; it is tested on synthetic tiles, against the
-fake server with a stand-in render, and its render on the CPU on a synthetic box; no picture of
-it has been generated yet. The humanoid and creature exporters light what glows (2026-10-20): the colours a piece's
+fake server with a stand-in render, and its render on the CPU on a synthetic box. After its first
+real night (2026-10-21) a block's frames keep their columns, painted light is measured against the
+original's own and evened, objects are fitted to the original's silhouette (or clipped to it, or
+cut from their own ground), seam materials are picked for their detail at the sprites' scale and
+wrapped in phase locally, a group shares its colour, and meshed objects wear their picture. The humanoid and creature exporters light what glows (2026-10-20): the colours a piece's
 text names as glowing (visors, cores, energy seams, veins, thrusters) found on the painted
 texture and written into the GLB's emissive slot and the regions mask
 ([order.md](docs/order.md), "What glows"); `python -m forge.glow` does the same to a model

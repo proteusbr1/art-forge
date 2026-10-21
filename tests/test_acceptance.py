@@ -102,6 +102,7 @@ class ResponsibleStageTest(unittest.TestCase):
         ("footprint: 7.2% of the sprite lies outside the original's silhouette (over 4.0%)", "picture"),
         ("seam: the texture's opposite edges differ 3.1 times more than neighbouring texels (over 2.5)", "edges"),
         ("shading: the albedo brightens by 41% across the face (painted light, over 35%)", "picture"),
+        ("render: the mesh's silhouette overlaps the original's by 64% (under 72%)", "form"),
         ("something new", "unknown"),
     )
 

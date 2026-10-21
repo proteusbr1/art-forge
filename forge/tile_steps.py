@@ -28,7 +28,7 @@ if TOOLS not in sys.path:
 import glow_regions  # noqa: E402
 import iso_grid as G  # noqa: E402
 
-KINDS = ("tile_guide", "tile_blend", "tile_sprite", "tile_review", "tile_sheet")
+KINDS = ("tile_guide", "tile_blend", "tile_sprite", "tile_review", "tile_sheet", "tile_seamless")
 CODE = [os.path.abspath(__file__), os.path.join(TOOLS, "iso_grid.py"), os.path.join(TOOLS, "glow_regions.py")]
 GREY = 0.55
 LAYOUT_FORMAT = "forge-tile-layout"
@@ -37,10 +37,24 @@ PARTS = ("floor", "west_wall", "north_wall", "object")
 # and an object's footprint limits differ.
 DEFAULTS = {"max_overflow": None, "min_cover": None, "tolerance": 1.0, "max_seam": 2.5, "max_shading": 0.35,
             "normal_strength": 1.0, "exposure": "original", "light_key": 0.55, "light_fill": 0.15,
-            "light_ambient": 0.5, "cavity": 0.6, "base_ao": 0.18, "glow_strength": 1.0}
+            "light_ambient": 0.5, "cavity": 0.6, "base_ao": 0.18, "glow_strength": 1.0,
+            "saturation": 0.5, "sharpen": 0.4, "fit": "silhouette", "min_render_iou": 0.72,
+            "mesh_albedo": "picture", "delight": 0.7}
 FACE_LIMITS = {"max_overflow": 0.04, "min_cover": 0.85, "max_shading": 0.35}
+# A face cut by its picture (a fence's rails) loses a little of its thin parts to the cut.
+CUT_FACE_LIMITS = {"min_cover": 0.75}
 # An object's picture has more light in it by nature (a canopy's darker underside): its limit is wider.
 OBJECT_LIMITS = {"max_overflow": 0.08, "min_cover": 0.6, "max_shading": 0.6}
+# The picture of an object fitted to the original's silhouette: the scales tried and the
+# largest move (grid pixels).
+FIT_SCALES = (0.8, 0.87, 0.93, 1.0, 1.07, 1.15, 1.25)
+FIT_MOVE = 4.0
+# The saturation gain's ceiling (the albedo's colours brought toward the original's).
+MAX_SATURATION_GAIN = 1.4
+# The levels an object's columns rise above the original's own top (a picture a little taller).
+COLUMN_MARGIN = 0.1
+# The texels a seamless material's cut is feathered over.
+FEATHER = 6
 # The shaded sprite's lights in the sprite's view (x right, y up, z toward the viewer): the key
 # from the upper left and in front, the fill from the right.
 KEY_LIGHT = np.array([-0.55, 0.62, 0.56])
@@ -227,7 +241,7 @@ def run_local(factory, job, d, files):
         if isinstance(ref, dict) and ("ref" in ref or "file" in ref) and (ref.get("file") is not None or "ref" in ref):
             inputs.append(dict(factory.input_record(ref), name=name))
     fn = {"tile_guide": step_guide, "tile_blend": step_blend, "tile_sprite": step_sprite,
-          "tile_review": step_review, "tile_sheet": step_sheet}[kind]
+          "tile_review": step_review, "tile_sheet": step_sheet, "tile_seamless": step_seamless}[kind]
     fn(factory, job, d, files)
     return inputs
 
@@ -243,6 +257,8 @@ def _record(factory, files, role, path):
 def _settings(job, spec):
     s = dict(DEFAULTS)
     s.update(FACE_LIMITS if spec["kind"] != "object" else OBJECT_LIMITS)
+    if spec["kind"] != "object" and spec.get("cutout") == "picture":
+        s.update(CUT_FACE_LIMITS)
     s.update({k: v for k, v in (job.get("args") or {}).items() if k in DEFAULTS and v is not None})
     return s
 
@@ -364,18 +380,140 @@ def object_guide(g, spec, sprite, size, blur_px):
                    "offset": [ox, oy], "grid": list(spec["grid"])}
 
 
+# ---- a seam group's seamless material
+
+def _min_cut(cost):
+    """Per row of a cost array (H, B), the column of the cheapest top-to-bottom path that
+    moves at most one column per row: (columns (H,), mean cost along it)."""
+    h, b = cost.shape
+    acc = cost.copy()
+    back = np.zeros((h, b), int)
+    idx = np.arange(b)
+    for y in range(1, h):
+        prev = acc[y - 1]
+        left = np.concatenate([[np.inf], prev[:-1]])
+        right = np.concatenate([prev[1:], [np.inf]])
+        stack = np.stack([left, prev, right])
+        k = np.argmin(stack, axis=0)
+        acc[y] += stack[k, idx]
+        back[y] = idx + k - 1
+    path = np.zeros(h, int)
+    path[-1] = int(np.argmin(acc[-1]))
+    for y in range(h - 1, 0, -1):
+        path[y - 1] = back[y, path[y]]
+    return path, float(acc[-1, path[-1]]) / h
+
+
+def wrap_axis(tex, band=0.1, search=0.06, step=2):
+    """A texture made to wrap along its columns (its right edge flowing into its left) without a
+    painted cross: the texture is cut at a length L (its last `band` + up to `search` of its
+    width searched for the L whose continuation, the columns from L on, matches its first columns
+    best: a periodic pattern's phase), the first columns replaced by that continuation left of the
+    cheapest seam through the overlap (a feathered min-error cut), and the result stretched back
+    to the full width. A pattern (corrugation, courses, planks) keeps its ridges in phase; a
+    natural texture gets an irregular seam instead of a blended band. Returns (tex, info)."""
+    h, n = tex.shape[:2]
+    b = max(4, int(round(band * n)))
+    best = None
+    lo = max(b, int(round(n - b - search * n)))
+    for L in range(n - b, lo - 1, -step):
+        cost = ((tex[:, L:L + b] - tex[:, 0:b]) ** 2).sum(-1)
+        cost[:, -(FEATHER + 2):] = 1e3  # the seam stays off the overlap's far end (the feather reaches past it)
+        path, c = _min_cut(cost)
+        if best is None or c < best[1]:
+            best = (L, c, path)
+    L, c, path = best
+    out = tex[:, :L].copy()
+    cols = np.arange(b)[None, :]
+    # Left of the seam: the continuation (so column 0 follows column L - 1); right of it: the
+    # original. Feathered over FEATHER texels (a pattern in phase blends without cancelling).
+    w = np.clip((path[:, None] - cols) / float(FEATHER) + 1.0, 0.0, 1.0)[..., None]
+    out[:, :b] = tex[:, L:L + b] * w + tex[:, :b] * (1 - w)
+    out = resize(out, [n, h], Image.LANCZOS)
+    return np.clip(out, 0, 1), {"length": int(L), "stretch": round(n / float(L), 4), "cut_cost": round(c, 5)}
+
+
+def make_seamless(tex, axes):
+    """A texture wrapped along x (a wall's material, end to end) or along x and y (a floor's)."""
+    info = {}
+    out, info["x"] = wrap_axis(tex)
+    if axes == "xy":
+        t, info["y"] = wrap_axis(np.transpose(out, (1, 0, 2)))
+        out = np.transpose(t, (1, 0, 2))
+    return out, info
+
+
+def group_colour(g, pieces, sprites, material, share):
+    """A seam group's colour record: the saturation gain its pieces share (the material's mean
+    saturation brought `share` of the way to the group's originals', only up) and the originals'
+    mean brightness per kind (of the pieces that are the material itself, when there are any:
+    the exposure every piece of that kind takes, so their shaded borders join)."""
+    chromas, lums = [], {}
+    for p, spr in zip(pieces, sprites):
+        spec = {"kind": p["kind"], "thickness": p.get("thickness")}
+        w = 64
+        hgt = 64 if p["kind"] == "floor" else int(round(64 * g["wall_aspect"]))
+        rgb, a = original_face(g, spec, spr, [w, hgt])
+        m = a > 0.5
+        if not m.any():
+            continue
+        chromas.append(saturation(rgb)[m])
+        lums.setdefault(p["kind"], []).append((bool(p.get("material")), float(luminance(rgb)[m].mean())))
+    ratio = 1.0
+    if chromas:
+        ratio = float(np.concatenate(chromas).mean()) / max(float(saturation(material).mean()), 1e-3)
+    gain = float(np.clip(1.0 + share * (ratio - 1.0), 1.0, MAX_SATURATION_GAIN)) if share > 0 else 1.0
+    target = {}
+    for kind, vals in lums.items():
+        own = [v for is_mat, v in vals if is_mat] or [v for _, v in vals]
+        target[kind] = round(float(np.mean(own)), 5)
+    return {"format": "forge-tile-group-colour", "saturation_gain": round(gain, 4), "original_luminance": target}
+
+
+def step_seamless(factory, job, d, files):
+    """A seam group's seamless material from its picked texture (wrap_axis per axis, no
+    inpaint), a 2 x 2 preview and the group's colour record (`colour`)."""
+    args = job["args"]
+    g = G.grid_of(args.get("grid"))
+    tex = read_rgba(_path(factory, job["inputs"]["material"]))[..., :3]
+    size = args.get("size") or [tex.shape[1], tex.shape[0]]
+    tex = resize(tex, size)
+    out, info = make_seamless(tex, args.get("axes", "xy"))
+    p = save_rgba(os.path.join(d, "%s.png" % job["asset"]), out)
+    _record(factory, files, "rgb", p)
+    pv = os.path.join(d, "%s_tile2x2.png" % job["asset"])
+    prev = np.tile(out, (2, 2, 1))
+    Image.fromarray(np.clip(np.round(prev * 255), 0, 255).astype(np.uint8)).resize(
+        (1536, int(round(1536 * prev.shape[0] / float(prev.shape[1])))), Image.LANCZOS).save(pv)
+    _record(factory, files, "preview", pv)
+    pieces = args.get("pieces") or []
+    sprites = [read_rgba(_path(factory, job["inputs"]["sprite_%02d" % k])) for k in range(len(pieces))]
+    colour = group_colour(g, pieces, sprites, out, float(args.get("saturation", 0.5)))
+    colour["wrap"] = info
+    colour["seam"] = {"x": round(seam_ratio(out, 1), 3)}
+    if args.get("axes", "xy") == "xy":
+        colour["seam"]["y"] = round(seam_ratio(out, 0), 3)
+    cp = os.path.join(d, "%s_colour.json" % job["asset"])
+    write_json(cp, colour)
+    _record(factory, files, "colour", cp)
+
+
 # ---- the border blend of a face
 
 def border_weight(spec, g, size, band):
     """(H, W) weight of the seam group's material at a face texture's border: 1 within 0.4 of
-    the band (a share of a tile edge) from an edge, 0 past the band."""
+    the band (a share of a tile edge) from an edge, 0 past the band. A floor joins its
+    neighbours on all four edges; a wall only at its ends (left and right): its top and foot
+    keep the picture (a window near the top, the hedge's crown, the cap drawn from the top band)."""
     w, h = size
     along = _along(spec)
     u = (np.arange(w) + 0.5) / w
     v = (np.arange(h) + 0.5) / h
     du = np.minimum(u, 1 - u) * along[0]
-    tall = along[1] if spec["kind"] == "floor" else g["wall_aspect"]
-    dv = np.minimum(v, 1 - v) * tall
+    if spec["kind"] == "floor":
+        dv = np.minimum(v, 1 - v) * along[1]
+    else:
+        dv = np.full(h, np.inf)
     dist = np.minimum(du[None, :], dv[:, None])
     return smoothstep(band, band * 0.4, dist), dist
 
@@ -466,17 +604,34 @@ def footprint(new_alpha, orig_alpha, extra_alpha, scale, tolerance):
     return overflow, cover
 
 
-def light_slope(lum, mask):
-    """How much the brightness rises across a region, as a share of its mean: a plane fitted
-    to the luminance over the region (x and y from -0.5 to 0.5 across its box)."""
+def light_vector(lum, mask):
+    """How the brightness rises across a region, as a share of its mean: the slopes [x, y] of
+    a plane fitted to the luminance over the region (x and y from -0.5 to 0.5 across its box)."""
     ys, xs = np.nonzero(mask)
     if len(xs) < 16:
-        return 0.0
+        return np.zeros(2)
     x = (xs - xs.min()) / max(xs.max() - xs.min(), 1) - 0.5
     y = (ys - ys.min()) / max(ys.max() - ys.min(), 1) - 0.5
     a = np.stack([np.ones_like(x), x, y], axis=1)
     coef, *_ = np.linalg.lstsq(a, lum[ys, xs], rcond=None)
-    return float(math.hypot(coef[1], coef[2]) / max(coef[0], 1e-3))
+    return np.array([coef[1], coef[2]]) / max(coef[0], 1e-3)
+
+
+def light_slope(lum, mask):
+    """The size of light_vector: how much the brightness rises across a region."""
+    return float(np.linalg.norm(light_vector(lum, mask)))
+
+
+def painted_light(lum, mask, orig_lum, orig_mask):
+    """(painted, original): the brightness slope of a new albedo that the original's own does
+    not have (the size of their difference), and the original's slope. A tree's darker trunk, a
+    crop's shaded foot or a yellow flashing along one edge are in the original too and are not
+    painted light; a sun the picture added is."""
+    new = light_vector(lum, mask)
+    if orig_lum is None or orig_mask is None or int(orig_mask.sum()) < 16:
+        return float(np.linalg.norm(new)), None
+    old = light_vector(orig_lum, orig_mask)
+    return float(np.linalg.norm(new - old)), float(np.linalg.norm(old))
 
 
 def seam_ratio(tex, axis):
@@ -507,36 +662,63 @@ def step_sprite(factory, job, d, files):
     sprite = read_rgba(_path(factory, ins["sprite"]))
     silhouette = read_rgba(_path(factory, ins["silhouette"])) if "silhouette" in ins else None
     scale = int(args.get("scale", 4))
+    group = None
+    if "group_colour" in ins:
+        with open(_path(factory, ins["group_colour"]), encoding="utf-8") as f:
+            group = json.load(f)
     if spec["kind"] != "object":
-        frames, measures, flags = face_frames(factory, job, g, spec, s, sprite, scale, out, files)
+        frames, measures, flags = face_frames(factory, job, g, spec, s, sprite, scale, out, files, group)
     else:
-        frames, measures, flags = object_frames(factory, job, g, spec, s, sprite, scale)
-    # Footprint: every frame against the original in its canvas.
+        frames, measures, flags = object_frames(factory, job, g, spec, s, sprite, scale, silhouette)
+    material_lum = measures.pop("_material", None)
+    original_lum = measures.pop("_original_lum", None)
+    # Footprint: every frame against the original in its canvas (a block of objects: the whole
+    # picture against the original's block, measured by object_frames).
     over, cover = [], []
+    orig = original_in_canvas(g, sprite, spec.get("rect"), scale)
+    extra = original_in_canvas(g, silhouette, spec.get("rect"), scale)[..., 3] if silhouette is not None else None
     for fr in frames:
-        orig = original_in_canvas(g, sprite, spec.get("rect"), scale)
-        extra = original_in_canvas(g, silhouette, spec.get("rect"), scale)[..., 3] if silhouette is not None else None
         o, c = footprint(fr["alpha"][..., 0], orig[..., 3], extra, scale, s["tolerance"])
         over.append(o)
         cover.append(c)
         fr["original_lum"] = luminance(orig[..., :3])[orig[..., 3] > 0.5]
-    measures["overflow"] = round(max(over), 4)
-    measures["cover"] = round(min(cover), 4)
+    if "overflow" not in measures:
+        measures["overflow"] = round(max(over), 4)
+        measures["cover"] = round(min(cover), 4)
     if measures["overflow"] > s["max_overflow"]:
         flags.append("footprint: %.1f%% of the sprite lies outside the original's silhouette (over %.1f%%)" % (
             100 * measures["overflow"], 100 * s["max_overflow"]))
     if measures["cover"] < s["min_cover"]:
         flags.append("footprint: the sprite covers %.0f%% of the original's silhouette (under %.0f%%)" % (
             100 * measures["cover"], 100 * s["min_cover"]))
-    # The shaded frames: the albedo lit from the normals; one exposure for the piece.
+    # Colour: the albedo's saturation brought part of the way toward the original's (a seam
+    # group's pieces share their group's gain, so their borders still join), then its detail
+    # sharpened at the frame's own scale.
+    if group is not None:
+        sat_gain = float(group.get("saturation_gain", 1.0))
+    elif spec["kind"] != "object" and "material" in ins:
+        sat_gain = 1.0  # a face of a group without the group's colour: a gain of its own would break the join
+    else:
+        sat_gain = saturation_gain([fr["albedo"] for fr in frames], [fr["alpha"][..., 0] for fr in frames],
+                                   orig[..., :3], orig[..., 3], s["saturation"])
+    measures["saturation_gain"] = round(sat_gain, 4)
+    for fr in frames:
+        fr["albedo"] = sharpen(saturate(fr["albedo"], sat_gain), fr["alpha"][..., 0], scale, s["sharpen"])
+    # The shaded frames: the albedo lit from the normals; one exposure for the piece (a seam
+    # group's faces of one kind: the group's, from its material and its pieces' originals).
     for fr in frames:
         fr["shaded"] = fr["albedo"] * (view_light(g, fr["view_normal"], s) * fr["shade"])[..., None]
     gain = 1.0
     if s["exposure"] == "original":
-        orig_lum = np.concatenate([fr["original_lum"] for fr in frames])
-        new = np.concatenate([luminance(fr["shaded"])[fr["alpha"][..., 0] > 0.5] for fr in frames])
-        if len(orig_lum) and len(new):
-            gain = float(np.clip(orig_lum.mean() / max(new.mean(), 1e-3), 0.6, 1.6))
+        group_gain = group_exposure(g, spec, s, group, material_lum)
+        if group_gain is not None:
+            gain = group_gain
+        else:
+            orig_lum = original_lum if original_lum is not None else np.concatenate(
+                [fr["original_lum"] for fr in frames])
+            new = np.concatenate([luminance(fr["shaded"])[fr["alpha"][..., 0] > 0.5] for fr in frames])
+            if len(orig_lum) and len(new):
+                gain = float(np.clip(orig_lum.mean() / max(new.mean(), 1e-3), 0.6, 1.6))
     measures["exposure_gain"] = round(gain, 4)
     # What glows: the colours the piece names (tile.glow, else its text's glowing colours).
     hues = spec.get("glow") or glow_regions.colours_in_text(args.get("text", "")) or None
@@ -586,7 +768,89 @@ def step_sprite(factory, job, d, files):
             os.path.join(out, "mesh_report.json"))
 
 
-def face_frames(factory, job, g, spec, s, sprite, scale, out, files):
+# ---- colour
+
+def chroma(rgb):
+    """Per pixel: the spread of its channels (0 for a grey)."""
+    return rgb[..., :3].max(-1) - rgb[..., :3].min(-1)
+
+
+def saturation(rgb):
+    """Per pixel: its saturation (the spread of its channels over the largest; 0 for a grey),
+    which does not change with the brightness (a darker original is not a duller one)."""
+    return chroma(rgb) / np.maximum(rgb[..., :3].max(-1), 0.04)
+
+
+def saturation_gain(albedos, alphas, orig_rgb, orig_alpha, share):
+    """How much the albedo's colours are strengthened: `share` of the way from its mean
+    saturation to the original's, only up, at most MAX_SATURATION_GAIN times (painterly realism
+    toward the original's rich palette, not its flat colours)."""
+    new = np.concatenate([saturation(a)[m > 0.5] for a, m in zip(albedos, alphas)]) if albedos else np.zeros(0)
+    old = saturation(orig_rgb)[orig_alpha > 0.5]
+    if not len(new) or not len(old) or share <= 0:
+        return 1.0
+    ratio = float(old.mean()) / max(float(new.mean()), 1e-3)
+    return float(np.clip(1.0 + share * (ratio - 1.0), 1.0, MAX_SATURATION_GAIN))
+
+
+def saturate(rgb, gain):
+    """Colours spread from their own grey by `gain` (their brightness kept)."""
+    if abs(gain - 1.0) < 1e-6:
+        return rgb
+    lum = luminance(rgb)[..., None]
+    return np.clip(lum + (rgb[..., :3] - lum) * gain, 0.0, 1.0)
+
+
+def sharpen(rgb, alpha, scale, amount):
+    """An unsharp mask at the frame's own scale (radius a quarter of a grid pixel, at least one
+    art pixel), weighted by the coverage so the background never bleeds in."""
+    if amount <= 0:
+        return rgb
+    r = max(1.0, scale / 4.0)
+    w = (alpha > 0.05).astype(np.float64)
+    blur = box_blur(rgb * w[..., None], r) / np.maximum(box_blur(w, r)[..., None], 1e-6)
+    return np.clip(rgb + amount * (rgb - blur) * w[..., None], 0.0, 1.0)
+
+
+def face_light(g, spec, s):
+    """The mean light of a flat face of this kind (relative to a flat floor) times a wall's
+    mean foot darkening: the shaded sprite's mean brightness over its albedo's."""
+    n = G.to_view(g, np.array(G.face_quad(g, spec["kind"], spec.get("thickness"))["normal"], float))
+    light = float(view_light(g, n, s))
+    if spec["kind"] != "floor":
+        v = (np.arange(64) + 0.5) / 64
+        light *= float((1 - s["base_ao"] * smoothstep(0.7, 1.0, v)).mean())
+    return light
+
+
+def group_exposure(g, spec, s, group, material_lum):
+    """A seam group's face exposure: the group's originals of this side (floor or wall) against
+    the group's material lit as this face, so every piece of the group and kind gets the same
+    and their shaded borders join; None without the group's colour record."""
+    if group is None or material_lum is None:
+        return None
+    side = "floor" if spec["kind"] == "floor" else "wall"
+    target = (group.get("original_luminance") or {}).get(side)
+    if not target:
+        return None
+    lit = material_lum * face_light(g, spec, s)
+    return float(np.clip(target / max(lit, 1e-3), 0.6, 1.6))
+
+
+# ---- faces
+
+def relief_height(lum, tile_px, strength=1.0):
+    """A face's relief from its albedo (-1 to 1): the fine detail (a grain, a leaf) plus the
+    medium forms (a plank, a brick, a corrugation, a clump of leaves) at twice the weight, so a
+    pattern larger than a few texels still reads in the normal map at the frame's scale."""
+    fine = lum - box_blur(lum, tile_px / 24.0, wrap=True)
+    medium = box_blur(lum, tile_px / 48.0, wrap=True) - box_blur(lum, tile_px / 8.0, wrap=True)
+    fine = fine / max(3 * fine.std(), 1e-4)
+    medium = medium / max(3 * medium.std(), 1e-4)
+    return np.clip((fine + 2.0 * medium) / 3.0 * 1.5, -1, 1) * strength
+
+
+def face_frames(factory, job, g, spec, s, sprite, scale, out, files, group=None):
     """The frames of a floor or wall: (frames, measures, flags)."""
     args = job["args"]
     ins = job["inputs"]
@@ -595,21 +859,27 @@ def face_frames(factory, job, g, spec, s, sprite, scale, out, files):
     size = [material.shape[1], material.shape[0]] if material is not None else list(args["size"])
     tex = resize(tex, size)
     measures, flags = {}, []
+    tile = face_tile_size(size, spec)
+    along = _along(spec)
+    relief = float(spec.get("relief", 1.0))
+    b = None
     if material is not None:
         # The group's material owns the outer band exactly: every piece of the group joins there.
         b, _ = border_weight(spec, g, size, float(args.get("band") or 0.08) * 0.45)
         tex = tex * (1 - b[..., None]) + material * b[..., None]
         measures["border_difference"] = round(float(np.abs(tex[:, :1] - material[:, :1]).mean()), 5)
-        ratio = max(seam_ratio(tex, 1), seam_ratio(tex, 0))
+        # A floor joins on both axes; a wall only end to end.
+        ratio = seam_ratio(tex, 1) if spec["kind"] != "floor" else max(seam_ratio(tex, 1), seam_ratio(tex, 0))
         measures["seam"] = round(ratio, 3)
         if ratio > s["max_seam"]:
             flags.append("seam: the texture's opposite edges differ %.1f times more than neighbouring texels "
                          "(over %.1f)" % (ratio, s["max_seam"]))
+        if group is not None:
+            measures["_material"] = float(luminance(saturate(material, float(group.get("saturation_gain", 1.0))))
+                                          .mean())
     save_rgba(os.path.join(out, "texture.png"), tex)
     _record(factory, files, "texture", os.path.join(out, "texture.png"))
     # The face's alpha: the original's face, the picture's own cut, or the whole face.
-    tile = face_tile_size(size, spec)
-    along = _along(spec)
     if spec["cutout"] == "original":
         _, a = original_face(g, spec, sprite, tile)
         q = G.face_quad(g, spec["kind"], spec.get("thickness"))
@@ -621,14 +891,24 @@ def face_frames(factory, job, g, spec, s, sprite, scale, out, files):
         alpha = np.ones((size[1], size[0]))
     lum = luminance(tex)
     opaque = alpha > 0.5
-    slope = light_slope(box_blur(lum, size[0] / 12.0, wrap=True), opaque)
+    # Painted light: the face's brightness slope that the original's face does not have.
+    orig_rgb, orig_a = original_face(g, spec, sprite, tile)
+    orig_lum = resize(luminance(np.tile(orig_rgb, (along[1], along[0], 1))), size)
+    orig_mask = resize(np.tile(orig_a, (along[1], along[0])), size) > 0.5
+    blur_r = size[0] / 12.0
+    slope, slope0 = painted_light(box_blur(lum, blur_r, wrap=True), opaque,
+                                  box_blur(orig_lum, blur_r, wrap=True), orig_mask & opaque)
     measures["shading"] = round(slope, 4)
+    if slope0 is not None:
+        measures["shading_original"] = round(slope0, 4)
     if slope > s["max_shading"]:
         flags.append("shading: the albedo brightens by %.0f%% across the face (painted light, over %.0f%%)" % (
             100 * slope, 100 * s["max_shading"]))
-    # Relief from the albedo's detail: normals, hollows (cavity) and a wall's darker foot.
-    detail = lum - box_blur(lum, tile[0] / 24.0, wrap=True)
-    height = np.clip(detail / max(3 * detail.std(), 1e-4), -1, 1)
+    # Relief from the albedo's detail: normals, hollows (cavity) and a wall's darker foot. In a
+    # group's band the relief is the material's own, so the borders' light joins too.
+    height = relief_height(lum, tile[0], relief)
+    if b is not None:
+        height = height * (1 - b) + relief_height(luminance(material), tile[0], relief) * b
     normals = G.detail_normals(g, spec["kind"], height, RELIEF * s["normal_strength"], tile[0],
                                spec.get("thickness"))
     hollow = np.clip(box_blur(height, tile[0] / 64.0, wrap=True) - height, 0, 1)
@@ -651,9 +931,224 @@ def face_frames(factory, job, g, spec, s, sprite, scale, out, files):
     return frames, measures, flags
 
 
-def object_frames(factory, job, g, spec, s, sprite, scale):
+# ---- objects
+
+def picture_block(factory, ins, scale):
+    """An object's picture and its cut on the block's canvas at the art scale, placed as the
+    guide's layout says: (rgb, alpha, (x0, y0) of the canvas in grid pixels)."""
+    with open(_path(factory, ins["guide_layout"]), encoding="utf-8") as f:
+        lay = json.load(f)
+    pic = Image.open(_path(factory, ins["texture"])).convert("RGB")
+    mask = Image.open(_path(factory, ins["mask"])).convert("L")
+    if mask.size != pic.size:
+        mask = mask.resize(pic.size, Image.BICUBIC)
+    sx = pic.size[0] / float(lay["size"][0])
+    sy = pic.size[1] / float(lay["size"][1])
+    bx0, by0, bx1, by1 = lay["canvas"]
+    f, (ox, oy) = lay["f"], lay["offset"]
+    box = (ox * sx, oy * sy, (ox + (bx1 - bx0) * f) * sx, (oy + (by1 - by0) * f) * sy)
+    size = (int(round((bx1 - bx0) * scale)), int(round((by1 - by0) * scale)))
+    rgb = np.asarray(pic.resize(size, Image.LANCZOS, box=box)).astype(np.float64) / 255.0
+    a = np.asarray(mask.resize(size, Image.LANCZOS, box=box)).astype(np.float64) / 255.0
+    return rgb, np.clip(a, 0, 1), (bx0, by0)
+
+
+def _bottom_centre(mask):
+    ys, xs = np.nonzero(mask)
+    return np.array([(xs.min() + xs.max() + 1) / 2.0, ys.max() + 1.0])
+
+
+def _shifted(mask, dx, dy):
+    """A boolean mask moved by whole pixels (zeros come in)."""
+    out = np.zeros_like(mask)
+    h, w = mask.shape
+    ys0, ys1 = max(dy, 0), min(h, h + dy)
+    xs0, xs1 = max(dx, 0), min(w, w + dx)
+    if ys1 > ys0 and xs1 > xs0:
+        out[ys0:ys1, xs0:xs1] = mask[ys0 - dy:ys1 - dy, xs0 - dx:xs1 - dx]
+    return out
+
+
+def affine_about(arr, s, centre, move):
+    """An array (H, W) or (H, W, C) scaled by s about `centre` and moved by `move` (pixels),
+    bilinear, zeros outside."""
+    if arr.ndim == 3:
+        return np.stack([affine_about(arr[..., c], s, centre, move) for c in range(arr.shape[2])], axis=-1)
+    cx, cy = centre
+    tx, ty = move
+    im = Image.fromarray(arr.astype(np.float32), "F")
+    coef = (1.0 / s, 0.0, cx - (cx + tx) / s, 0.0, 1.0 / s, cy - (cy + ty) / s)
+    return np.asarray(im.transform(im.size, Image.AFFINE, coef, resample=Image.BILINEAR)).astype(np.float64)
+
+
+def fit_silhouette(alpha, target, scale, scales=FIT_SCALES, max_move=FIT_MOVE, k=2):
+    """The scale (about the cut's bottom centre) and move (grid pixels) that make a picture's
+    cut overlap the original's silhouette best, searched at k pixels per grid pixel (the edit
+    draws an object a little larger, smaller or off its place): {"scale", "move",
+    "iou_before", "iou", "centre"}; the identity unless it gains at least 0.02 of overlap."""
+    h, w = alpha.shape
+    lw, lh = max(1, int(round(w * k / float(scale)))), max(1, int(round(h * k / float(scale))))
+    a = resize(alpha, (lw, lh), Image.BOX) > 0.5
+    t = resize(target.astype(np.float64), (lw, lh), Image.BOX) > 0.5
+    none = {"scale": 1.0, "move": [0.0, 0.0], "iou_before": 0.0, "iou": 0.0, "centre": [0.0, 0.0]}
+    if not a.any() or not t.any():
+        return none
+
+    def iou(m):
+        return float((m & t).sum()) / max(float((m | t).sum()), 1.0)
+    base = iou(a)
+    best = dict(none, iou_before=round(base, 4), iou=round(base, 4))
+    ca, ct = _bottom_centre(a), _bottom_centre(t)
+    lim = int(round(max_move * k))
+    for sc in scales:
+        m = affine_about(a.astype(np.float64), sc, ca, (0.0, 0.0)) > 0.5
+        if not m.any():
+            continue
+        t0 = np.round(ct - _bottom_centre(m)).astype(int)
+        for dy in range(-2 * k, 2 * k + 1):
+            for dx in range(-2 * k, 2 * k + 1):
+                mx, my = int(np.clip(t0[0] + dx, -lim, lim)), int(np.clip(t0[1] + dy, -lim, lim))
+                v = iou(_shifted(m, mx, my))
+                if v > best["iou"] + 1e-9:
+                    best = {"scale": sc, "move": [mx / float(k), my / float(k)], "iou_before": round(base, 4),
+                            "iou": round(v, 4), "centre": [float(ca[0] / k), float(ca[1] / k)]}
+    if best["iou"] < base + 0.02:
+        return dict(none, iou_before=round(base, 4), iou=round(base, 4))
+    return best
+
+
+def apply_fit(arrs, fit, scale):
+    """Arrays at the art scale moved as fit_silhouette() says."""
+    if fit["scale"] == 1.0 and fit["move"] == [0.0, 0.0]:
+        return arrs
+    c = (fit["centre"][0] * scale, fit["centre"][1] * scale)
+    mv = (fit["move"][0] * scale, fit["move"][1] * scale)
+    return [affine_about(x, fit["scale"], c, mv) for x in arrs]
+
+
+def original_top(g, sprite):
+    """Levels the original object rises above its floor diamond's top corner (what the columns
+    of a block are swept up by)."""
+    ys = np.nonzero(sprite[..., 3] > 0.5)[0]
+    if not len(ys):
+        return 1.0
+    return max(0.0, (g["floor_top"][1] - float(ys.min())) / g["level"])
+
+
+def object_normals(lum, opaque, scale, dome, strength):
+    """An object's view normals from its silhouette's dome and its albedo's detail: the fine
+    grain and the medium forms (a clump of leaves, a stone, a plank) at about twice the weight:
+    (normals, the fine height used for the hollows)."""
+    fine = lum - box_blur(lum, 2 * scale)
+    medium = box_blur(lum, scale) - box_blur(lum, 6 * scale)
+    nf = max(3 * fine[opaque].std(), 1e-4) if opaque.any() else 1.0
+    nm = max(3 * medium[opaque].std(), 1e-4) if opaque.any() else 1.0
+    h = np.clip(fine / nf, -1, 1) * opaque
+    hm = np.clip(medium / nm, -1, 1) * opaque
+    radius = 4 * scale
+    dome_h = np.sqrt(np.clip(inner_distance(opaque, radius) / radius, 0, 1)) * dome
+    hh = dome_h * radius + (h * 0.6 + hm * 1.6) * scale * strength
+    gx = (np.roll(hh, -1, 1) - np.roll(hh, 1, 1)) / 2.0
+    gy = (np.roll(hh, -1, 0) - np.roll(hh, 1, 0)) / 2.0
+    nv = np.stack([-gx, gy, np.ones_like(gx)], axis=-1)
+    return nv / np.linalg.norm(nv, axis=-1, keepdims=True), h
+
+
+def delight(rgb, alpha, nv, g, strength):
+    """A picture laid on a mesh with its painted light taken out: the pixels grouped by the
+    side of a box they face (up, the +X side, the +Y side), each group's mean brightness brought
+    `strength` of the way to the whole's; the mesh's normals give the light back. Returns (rgb,
+    {group: gain})."""
+    if strength <= 0:
+        return rgb, {}
+    names = ("up", "x_side", "y_side")
+    dirs = [G.to_view(g, np.array(v, float)) for v in ((0, 0, 1), (1, 0, 0), (0, 1, 0))]
+    which = np.argmax(np.stack([nv @ d for d in dirs], axis=-1), axis=-1)
+    opaque = alpha > 0.5
+    if opaque.sum() < 32:
+        return rgb, {}
+    lum = luminance(rgb)
+    whole = float(lum[opaque].mean())
+    gain_map = np.ones(lum.shape)
+    gains = {}
+    for k, n in enumerate(names):
+        m = opaque & (which == k)
+        if m.sum() < 0.05 * opaque.sum():
+            continue
+        gk = float(np.clip((whole / max(float(lum[m].mean()), 1e-3)) ** strength, 0.6, 1.6))
+        gains[n] = round(gk, 3)
+        gain_map[which == k] = gk
+    w = opaque.astype(np.float64)
+    smooth = box_blur(gain_map * w, 1) / np.maximum(box_blur(w, 1), 1e-6)
+    return np.clip(rgb * smooth[..., None], 0, 1), gains
+
+
+def ground_cut(g, spec, rgb, alpha, origin, scale):
+    """An object's own ground taken out of its cut: inside the floor diamonds of its tiles, the
+    pixels whose colour is the ground's (the median and spread of the diamonds' front part, where
+    nothing stands) and not darker than it (a shadow under a crown stays, as a contact shadow).
+    Returns (alpha, the share of the opaque pixels removed)."""
+    h, w = alpha.shape
+    bx0, by0 = origin
+    rect = [bx0, by0, w / float(scale), h / float(scale)]
+    o, ex, ey, ez = G.screen_axes(g)
+    ys = by0 + (np.arange(h) + 0.5) / scale
+    diamond = np.zeros((h, w), bool)
+    front = np.zeros((h, w), bool)
+    th = g["tile"][1]
+    for _, i, j in frames_of(spec):
+        d = G.column_mask(g, (i, j), rect, scale, 0.0)
+        base = o + i * ex + j * ey
+        diamond |= d
+        front |= d & ((ys - base[1]) > 0.7 * th)[:, None]
+    opaque = alpha > 0.5
+    sample = rgb[front & opaque]
+    if len(sample) < 32:
+        return alpha, 0.0
+    med = np.median(sample, axis=0)
+    spread = np.median(np.abs(sample - med), axis=0) * 1.4826 + 0.03
+    dist = (np.abs(rgb - med) / (2.5 * spread)).max(-1)
+    lum = luminance(rgb)
+    ground = diamond & (dist < 1.0) & (lum > 0.8 * float(luminance(med[None, :])[0]))
+    soft = smoothstep(0.3, 0.7, box_blur(ground.astype(np.float64), max(scale / 4.0, 1)))
+    out = alpha * (1 - soft * diamond)
+    n = float(opaque.sum())
+    return out, (float((opaque & (out <= 0.5)).sum()) / n if n else 0.0)
+
+
+def _ramp(v, mask):
+    """The plane 1 + v . (x, y) over a region's box (x and y from -0.5 to 0.5), on the whole
+    array."""
+    ys, xs = np.nonzero(mask)
+    h, w = mask.shape
+    x = (np.arange(w) - xs.min()) / max(xs.max() - xs.min(), 1) - 0.5
+    y = (np.arange(h) - ys.min()) / max(ys.max() - ys.min(), 1) - 0.5
+    return 1.0 + v[0] * x[None, :] + v[1] * y[:, None]
+
+
+def planar_delight(rgb, mask, orig_rgb, orig_mask, scale, strength):
+    """A picture's painted light (its brightness slope that the original's does not have,
+    painted_light) measured, and `strength` of it taken out by dividing by the ramp of the
+    difference (the picture's detail and local form kept): (rgb, {"shading_painted", "shading",
+    "shading_original"}); "shading" is what is left."""
+    lum = box_blur(luminance(rgb), scale)
+    olum = box_blur(luminance(orig_rgb), scale)
+    v, v0 = painted_light(lum, mask, olum, orig_mask)
+    out = {"shading_painted": round(v, 4), "shading": round(v, 4)}
+    if v0 is not None:
+        out["shading_original"] = round(v0, 4)
+    if strength <= 0 or v0 is None or mask.sum() < 16:
+        return rgb, out
+    diff = light_vector(lum, mask) - light_vector(olum, orig_mask)
+    ramp = np.clip(_ramp(diff, mask), 0.4, 2.5)
+    rgb = np.clip(rgb / (ramp ** strength)[..., None], 0, 1)
+    v2, _ = painted_light(box_blur(luminance(rgb), scale), mask, olum, orig_mask)
+    out["shading"] = round(v2, 4)
+    return rgb, out
+
+
+def object_frames(factory, job, g, spec, s, sprite, scale, silhouette=None):
     """The frames of an object: its picture cut back into the grid's columns, or its render."""
-    args = job["args"]
     ins = job["inputs"]
     measures, flags = {}, []
     if "render" in ins:
@@ -664,85 +1159,132 @@ def object_frames(factory, job, g, spec, s, sprite, scale):
         render, nrm = resize(render, size), resize(nrm, size)
         with open(_path(factory, ins["render_fit"]), encoding="utf-8") as f:
             measures["render_fit"] = json.load(f).get("fit")
+        rfit = measures["render_fit"] or {}
+        if rfit.get("iou") is not None and rfit["iou"] < s["min_render_iou"]:
+            flags.append("render: the mesh's silhouette overlaps the original's by %.0f%% (under %.0f%%)" % (
+                100 * rfit["iou"], 100 * s["min_render_iou"]))
         nv = G.decode_normal({"normal_y": "up"}, np.clip(np.round(nrm[..., :3] * 255), 0, 255))
-        blocks = [{"index": 0, "i": 0, "j": 0, "albedo": render[..., :3], "alpha": render[..., 3:4], "normal": nv}]
+        ra = render[..., 3]
+        albedo = render[..., :3]
+        paint = albedo.copy()
+        if s["mesh_albedo"] == "picture" and all(k in ins for k in ("texture", "mask", "guide_layout")):
+            # The picture's own colours on the mesh (the paint loses its detail): its cut fitted
+            # to the render's silhouette, the paint kept where the picture does not reach.
+            prgb, pa, _ = picture_block(factory, ins, scale)
+            if pa.shape == ra.shape:
+                pa = smoothstep(0.3, 0.7, pa)
+                pf = fit_silhouette(pa, ra > 0.5, scale)
+                prgb, pa = apply_fit([bleed(prgb, pa), pa], pf, scale)
+                on = (pa > 0.5) & (ra > 0.5)
+                iou = float(on.sum()) / max(float(((pa > 0.5) | (ra > 0.5)).sum()), 1.0)
+                measures["picture_on_mesh"] = {"iou": round(iou, 4), "scale": pf["scale"], "move": pf["move"]}
+                if iou >= 0.7:
+                    use = smoothstep(0.5, 0.9, pa)[..., None] * (ra[..., None] > 0)
+                    albedo = bleed(prgb, pa) * use + albedo * (1 - use)
+                    albedo, gains = delight(albedo, ra, nv, g, s["delight"])
+                    measures["delight"] = gains
+        # Painted light: the slope the albedo has that the paint's own (unlit) albedo lacks,
+        # `delight` of it taken out by a planar ramp (after the sides were evened).
+        albedo, light = planar_delight(albedo, ra > 0.5, paint, ra > 0.5, scale, s["delight"])
+        measures.update({k.replace("_original", "_paint"): v for k, v in light.items()})
+        blocks = [{"index": 0, "i": 0, "j": 0, "albedo": albedo, "alpha": render[..., 3:4], "normal": nv}]
     else:
-        with open(_path(factory, ins["guide_layout"]), encoding="utf-8") as f:
-            lay = json.load(f)
-        pic = Image.open(_path(factory, ins["texture"])).convert("RGB")
-        mask = Image.open(_path(factory, ins["mask"])).convert("L")
-        if mask.size != pic.size:
-            mask = mask.resize(pic.size, Image.BICUBIC)
-        sx = pic.size[0] / float(lay["size"][0])
-        sy = pic.size[1] / float(lay["size"][1])
-        bx0, by0, bx1, by1 = lay["canvas"]
-        f, (ox, oy) = lay["f"], lay["offset"]
-        box = (ox * sx, oy * sy, (ox + (bx1 - bx0) * f) * sx, (oy + (by1 - by0) * f) * sy)
-        size = (int(round((bx1 - bx0) * scale)), int(round((by1 - by0) * scale)))
-        rgb = np.asarray(pic.resize(size, Image.LANCZOS, box=box)).astype(np.float64) / 255.0
-        a = np.asarray(mask.resize(size, Image.LANCZOS, box=box)).astype(np.float64) / 255.0
+        rgb, a, (bx0, by0) = picture_block(factory, ins, scale)
+        block, _ = compose_block(g, spec, sprite)
+        size = [rgb.shape[1], rgb.shape[0]]
+        orig_block = resize(block, size, Image.NEAREST)  # the original's block at the art scale
         if spec["cutout"] == "original":
-            block, _ = compose_block(g, spec, sprite)
-            a = smoothstep(0.35, 0.65, resize(block[..., 3], list(size), Image.BILINEAR))
+            a = smoothstep(0.35, 0.65, resize(block[..., 3], size, Image.BILINEAR))
         a = smoothstep(0.3, 0.7, a)
-        blocks = cut_block(g, spec, bleed(rgb, a), a, (bx0, by0), scale)
+        rgb = bleed(rgb, a)
+        if s["fit"] == "silhouette" and spec["cutout"] != "original":
+            fit = fit_silhouette(a, orig_block[..., 3] > 0.5, scale)
+            rgb, a = apply_fit([rgb, a], fit, scale)
+            measures["fit"] = {k: fit[k] for k in ("scale", "move", "iou_before", "iou")}
+        if spec.get("ground") == "cut":
+            # The object's own ground (the grass a tree's picture stands on) cut away inside the
+            # floor diamonds, so the map's floor shows there; the original's too, for the checks.
+            a, share = ground_cut(g, spec, rgb, a, (bx0, by0), scale)
+            measures["ground_cut"] = round(share, 4)
+            oa, _ = ground_cut(g, spec, orig_block[..., :3], orig_block[..., 3], (bx0, by0), scale)
+            orig_block = np.concatenate([orig_block[..., :3], (oa > 0.5)[..., None].astype(np.float64)], axis=-1)
+        if spec.get("clip"):
+            # The cut kept to the original's silhouette, widened as the footprint check allows.
+            allowed = dilate(orig_block[..., 3] > 0.5, s["tolerance"] * scale).astype(np.float64)
+            a = np.minimum(a, smoothstep(0.5, 1.0, box_blur(allowed, max(scale / 3.0, 1))))
+        # Painted light, measured on the whole picture against the original's block (a crop
+        # field's inner tiles show no side, the original's single sprite does): the slope the
+        # original lacks, then `delight` of it taken out by a planar ramp.
+        rgb, light = planar_delight(rgb, a > 0.5, orig_block[..., :3], orig_block[..., 3] > 0.5, scale,
+                                    s["delight"])
+        measures.update(light)
+        # The footprint, on the whole picture against the original's block (a block's frames
+        # overlap, and a back tile's frame holds the tips above the block's back edge).
+        extra = None
+        if silhouette is not None:
+            sb, _ = compose_block(g, spec, silhouette)
+            extra = resize(sb[..., 3], size, Image.NEAREST)
+        o, c = footprint(a, orig_block[..., 3], extra, scale, s["tolerance"])
+        measures["overflow"], measures["cover"] = round(o, 4), round(c, 4)
+        measures["_original_lum"] = luminance(orig_block[..., :3])[orig_block[..., 3] > 0.5]
+        tall = original_top(g, sprite) + COLUMN_MARGIN
+        blocks = cut_block(g, spec, rgb, a, (bx0, by0), scale, tall)
     frames = []
     for b in blocks:
         alpha = b["alpha"][..., 0]
         opaque = alpha > 0.5
         lum = luminance(b["albedo"])
-        detail = lum - box_blur(lum, 2 * scale)
-        h = np.clip(detail / max(3 * detail[opaque].std() if opaque.any() else 1, 1e-4), -1, 1) * opaque
+        nv, h = object_normals(lum, opaque, scale, float(spec.get("dome", 0.6)), s["normal_strength"])
         if "normal" in b:
             nv = b["normal"]
-        else:
-            radius = 4 * scale
-            dome = np.sqrt(np.clip(inner_distance(opaque, radius) / radius, 0, 1)) * float(spec.get("dome", 0.6))
-            hh = dome * radius + h * scale * 0.6 * s["normal_strength"]
-            gx = (np.roll(hh, -1, 1) - np.roll(hh, 1, 1)) / 2.0
-            gy = (np.roll(hh, -1, 0) - np.roll(hh, 1, 0)) / 2.0
-            nv = np.stack([-gx, gy, np.ones_like(gx)], axis=-1)
-            nv = nv / np.linalg.norm(nv, axis=-1, keepdims=True)
         hollow = np.clip(box_blur(h, scale) - h, 0, 1)
         b.update(view_normal=nv, shade=1 - s["cavity"] * 0.5 * hollow)
         frames.append(b)
-    slope = max(light_slope(box_blur(luminance(fr["albedo"]), scale), fr["alpha"][..., 0] > 0.5) for fr in frames)
-    measures["shading"] = round(slope, 4)
-    if slope > s["max_shading"]:
+    worst = measures["shading"]
+    if worst > s["max_shading"]:
         flags.append("shading: the albedo brightens by %.0f%% toward one side of the object (painted light, over "
-                     "%.0f%%)" % (100 * slope, 100 * s["max_shading"]))
+                     "%.0f%%)" % (100 * worst, 100 * s["max_shading"]))
     return frames, measures, flags
 
 
-def cut_block(g, spec, rgb, alpha, origin, scale):
+def cut_block(g, spec, rgb, alpha, origin, scale, tall=None):
     """A block picture (the variant grid's tiles drawn as one picture, canvas origin in tile
-    (0, 0)'s cell) cut back into its frames: each pixel goes to the front-most tile whose column
-    holds it (else the front-most whose canvas does), so drawing the frames back to front gives
-    the picture again."""
+    (0, 0)'s cell) cut back into its frames. Each frame keeps its tile's whole column (its floor
+    diamond swept up `tall` levels, the original's own height: what stands on that tile), even
+    where a nearer tile's column overlaps it, so a frame drawn alone (at the block's edge, beside
+    a tile of another kind) has no hole; a pixel in no column (a tip above the block's back edge)
+    goes to the back-most tile whose column, swept without limit, holds it, else to the
+    front-most whose canvas does. Drawing the frames back to front gives the picture again."""
     rx, ry, rw, rh = G.canvas(g, spec.get("rect"))
     bh, bw = alpha.shape
     bx0, by0 = origin
     block_rect = [bx0, by0, bw / float(scale), bh / float(scale)]
-    tall = (g["floor_top"][1] - ry) / g["level"] + 1.0
+    if tall is None:
+        tall = (g["floor_top"][1] - ry) / g["level"] + 1.0
     order = sorted(frames_of(spec), key=lambda t: (t[1] + t[2], t[1]))
-    owner = -np.ones((bh, bw), int)
-    inside = {}
+    inside, cols = {}, {}
     for index, i, j in order:
         sx, sy = G.screen_position(g, (i, j, 0))
         px0, py0 = int(round((sx + rx - bx0) * scale)), int(round((sy + ry - by0) * scale))
         canvas = np.zeros((bh, bw), bool)
         canvas[max(py0, 0):py0 + int(round(rh * scale)), max(px0, 0):px0 + int(round(rw * scale))] = True
         inside[index] = (canvas, px0, py0)
-        col = G.column_mask(g, (i, j), block_rect, scale, tall)
-        owner[col & canvas] = index
+        cols[index] = G.column_mask(g, (i, j), block_rect, scale, tall) & canvas
+    in_any = np.zeros((bh, bw), bool)
+    for c in cols.values():
+        in_any |= c
+    rest = (~in_any) & (alpha > 0)
+    owner = -np.ones((bh, bw), int)
+    for index, i, j in reversed(order):  # front to back: the back-most column is written last
+        up = G.column_mask(g, (i, j), block_rect, scale, 1000.0) & inside[index][0]
+        owner[rest & up] = index
     for index, i, j in order:
-        canvas = inside[index][0]
-        owner[(owner < 0) & canvas & (alpha > 0)] = index
+        owner[(owner < 0) & rest & inside[index][0]] = index
     out = []
     w, h = int(round(rw * scale)), int(round(rh * scale))
     for index, i, j in frames_of(spec):
         _, px0, py0 = inside[index]
-        mine = (owner == index)
+        mine = cols[index] | (owner == index)
         fr_rgb = np.zeros((h, w, 3))
         fr_a = np.zeros((h, w, 1))
         ys0, xs0 = max(py0, 0), max(px0, 0)

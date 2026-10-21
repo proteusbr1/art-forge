@@ -83,7 +83,31 @@ def score_image(path):
                                                                  "contrast": round(contrast, 3)}
 
 
-METRICS = {"object": score_object, "material": score_material, "image": score_image}
+def score_tile_material(path, texels_per_tile=384, frame_px_per_tile=143.0, map_px_per_tile=36.0):
+    """A seam group's material for tile sprites: its detail where it will be seen, at the
+    frame's scale and at a map's (a pattern finer than a few texels there, a corrugation of
+    hairlines, averages to a flat grey and scores low), times the evenness of its light and its
+    saturation, as score_material."""
+    x = load_rgba(path)[..., :3]
+    lum = x @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    n = lum.shape[0]
+    even = float(blur(lum, n / 8).std())
+    details = {}
+    for name, px in (("frame", frame_px_per_tile), ("map", map_px_per_tile)):
+        f = min(1.0, float(px) / float(texels_per_tile))
+        im = Image.fromarray(np.clip(lum * 255, 0, 255).astype(np.uint8))
+        small = im.resize((max(8, int(round(im.width * f))), max(8, int(round(im.height * f)))), Image.BOX)
+        a = np.asarray(small).astype(np.float32) / 255
+        details[name] = float(np.abs(a - blur(a, 1)).mean())
+    detail = float(np.sqrt(max(details["frame"], 0.0) * max(details["map"], 0.0)))
+    sat = float((x.max(-1) - x.min(-1)).mean())
+    s = detail * 100 * max(0.1, 1 - 5 * even) * (0.7 + sat)
+    return float(s), {"detail_frame": round(details["frame"], 4), "detail_map": round(details["map"], 4),
+                      "uneven_light": round(even, 4), "saturation": round(sat, 3)}
+
+
+METRICS = {"object": score_object, "material": score_material, "image": score_image,
+           "tile_material": score_tile_material}
 
 
 def cross_mask(h, w, band, feather, axes="xy"):

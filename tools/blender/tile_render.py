@@ -1,9 +1,9 @@
 """An iso_tile object's mesh rendered as its sprite (run by blender_python; the iso_tile
 recipe's form "mesh", forge/local_gpu.py run_tile_render).
 
-The painted mesh is turned about the vertical (eight headings), scaled and moved on the floor
-so that its silhouette, seen by the grid's orthographic camera, fits the game's original sprite
-best (the overlap of the silhouettes); then Cycles renders it on the CPU into the sprite's
+The painted mesh is turned about the vertical (eight headings), its height stretched a little
+(0.8 to 1.25), scaled and moved on the floor so that its silhouette, seen by the grid's
+orthographic camera, fits the game's original sprite best (the overlap of the silhouettes); then Cycles renders it on the CPU into the sprite's
 canvas at the art scale: the albedo (the base colour, unlit) and the normal in the sprite's
 view (x right, y up, z toward the viewer, as (n + 1) / 2), both with the coverage as alpha.
 
@@ -11,7 +11,7 @@ view (x right, y up, z toward the viewer, as (n + 1) / 2), both with the coverag
 
 spec.json: {"tile": the piece's tile object (forge/tile_jobs.py tile_spec), "grid": the
 family's grid, "scale": art pixels per grid pixel, "samples": Cycles samples (default 32)}.
-Writes DIR/albedo.png, DIR/normal.png and DIR/fit.json (heading, size, place and overlap).
+Writes DIR/albedo.png, DIR/normal.png and DIR/fit.json (heading, stretch, size, place and overlap).
 The map's axes: X along the grid's x (to the lower right on screen), Y along its y (to the
 lower left), Z up; one tile edge is one unit. A glTF mesh imported by Blender (x, y, z) lies
 at map (x, -y, z): the map's frame is left-handed, so its y runs south.
@@ -33,6 +33,9 @@ import iso_grid as G  # noqa: E402
 
 HEADINGS = 8
 FIT_SUPERSAMPLE = 4
+# The mesh's height over its footprint stretched by these factors (a generated bale or post a
+# little squatter or taller than the original's): the best overlap wins.
+STRETCHES = (0.8, 0.9, 1.0, 1.12, 1.25)
 
 
 def args_of(argv):
@@ -108,8 +111,9 @@ def box(mask):
 
 
 def fit(g, pts, tris, sprite, rect):
-    """The heading, size and place whose silhouette overlaps the original's best: the mesh
-    scaled so its silhouette's box fits in the original's, its bottom centre on the original's."""
+    """The heading, height stretch, size and place whose silhouette overlaps the original's
+    best: the mesh turned, its height stretched (STRETCHES), scaled so its silhouette's box fits
+    in the original's, its bottom centre on the original's."""
     target = original_mask(sprite, rect)
     tb = box(target)
     if tb is None:
@@ -119,10 +123,11 @@ def fit(g, pts, tris, sprite, rect):
     best = None
     base = pts - np.array([(pts[:, 0].max() + pts[:, 0].min()) / 2, (pts[:, 1].max() + pts[:, 1].min()) / 2,
                            pts[:, 2].min()])
-    for i in range(HEADINGS):
-        a = 2 * math.pi * i / HEADINGS
+    for i in range(HEADINGS * len(STRETCHES)):
+        a = 2 * math.pi * (i // len(STRETCHES)) / HEADINGS
+        stretch = STRETCHES[i % len(STRETCHES)]
         c, s = math.cos(a), math.sin(a)
-        rot = base @ np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+        rot = base @ np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]]) * np.array([1.0, 1.0, stretch])
         p = project(g, rot)
         w, h = p[:, 0].max() - p[:, 0].min(), p[:, 1].max() - p[:, 1].min()
         k = FIT_SUPERSAMPLE
@@ -138,7 +143,8 @@ def fit(g, pts, tris, sprite, rect):
         inter = float((sil & target).sum())
         iou = inter / max(float((sil | target).sum()), 1.0)
         if best is None or iou > best["iou"] + 1e-9:
-            best = {"heading_deg": round(math.degrees(a), 1), "size": float(size), "move": [float(mx), float(my)],
+            best = {"heading_deg": round(math.degrees(a), 1), "stretch": stretch, "size": float(size),
+                    "move": [float(mx), float(my)],
                     "iou": round(iou, 4), "cover": round(inter / max(float(target.sum()), 1.0), 4),
                     "overflow": round(float((sil & ~target).sum()) / max(float(sil.sum()), 1.0), 4),
                     "points": q, "centre": [float(x) for x in base.mean(axis=0)]}
@@ -155,7 +161,8 @@ def place(ob, best, pts):
     a = -math.radians(best["heading_deg"])
     t0 = mathutils.Matrix.Translation((-cx, cy, -z0))
     r = mathutils.Matrix.Rotation(a, 4, "Z")
-    s = mathutils.Matrix.Scale(best["size"], 4)
+    k = best["size"]
+    s = mathutils.Matrix.Diagonal((k, k, k * best.get("stretch", 1.0), 1.0))
     t1 = mathutils.Matrix.Translation((best["move"][0], -best["move"][1], 0.0))
     ob.matrix_world = t1 @ s @ r @ t0
     return ob

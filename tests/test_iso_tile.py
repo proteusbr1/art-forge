@@ -213,6 +213,205 @@ class Steps(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class SecondPilot(unittest.TestCase):
+    """The fixes after the first real night (2026-10-21): a block's frames keep their columns,
+    painted light is measured against the original's own, an object's picture is fitted to the
+    original's silhouette, a wall's band only at its ends, a pattern made seamless in phase, the
+    material picked by its detail at the sprites' scales, the colour and the delight of a mesh."""
+
+    def setUp(self):
+        self.g = G.grid_of({})
+
+    def spec(self, **kw):
+        s = {"kind": "object", "seam": None, "grid": [1, 1], "height": 1.0, "thickness": None, "rect": None,
+             "cutout": "picture", "name": "t", "glow": None, "dome": 0.6, "alpha": "smooth", "clip": False,
+             "relief": 1.0}
+        s.update(kw)
+        return s
+
+    def test_a_field_block_gives_every_tile_its_column(self):
+        # A 4 x 4 field, low (the original rises 0.5 level): every frame holds its own tile's floor
+        # and what stands on it, so no frame is empty and a lone frame has no hole.
+        spec = self.spec(grid=[4, 4])
+        from forge.tile_jobs import block_canvas
+        x0, y0, x1, y1 = block_canvas(self.g, spec)
+        scale = 2
+        h, w = int((y1 - y0) * scale), int((x1 - x0) * scale)
+        sprite = synth.object_sprite(2, tall=0.5, wide=1.0)
+        block, _ = tile_steps.compose_block(self.g, spec, sprite)
+        alpha = tile_steps.resize(block[..., 3], [w, h], Image.NEAREST)
+        rgb = np.random.default_rng(1).random((h, w, 3))
+        tall = tile_steps.original_top(self.g, sprite) + tile_steps.COLUMN_MARGIN
+        self.assertAlmostEqual(tall, 0.5 + 0.1, delta=0.1)
+        frames = tile_steps.cut_block(self.g, spec, rgb, alpha, (x0, y0), scale, tall)
+        orig = tile_steps.original_in_canvas(self.g, sprite, None, scale)[..., 3] > 0.5
+        for f in frames:
+            fa = f["alpha"][..., 0] > 0.5
+            self.assertGreater(fa.sum(), 0, "frame %d is empty" % f["index"])
+            # Each frame covers its own original (the tile alone) almost entirely.
+            self.assertGreater((fa & orig).sum() / float(orig.sum()), 0.9, "frame %d" % f["index"])
+            over, _ = tile_steps.footprint(fa.astype(float), orig.astype(float), None, scale, 1)
+            self.assertLess(over, 0.08, "frame %d" % f["index"])
+        # Drawn back to front, the frames give the picture again.
+        back = np.zeros((h, w))
+        for f in sorted(frames, key=lambda f: (f["i"] + f["j"], f["i"])):
+            sx, sy = G.screen_position(self.g, (f["i"], f["j"], 0))
+            px, py = int(round((sx - x0) * scale)), int(round((sy - y0) * scale))
+            fa = f["alpha"][..., 0]
+            ys0, xs0 = max(py, 0), max(px, 0)
+            ys1, xs1 = min(py + fa.shape[0], h), min(px + fa.shape[1], w)
+            sub = back[ys0:ys1, xs0:xs1]
+            sub[...] = np.maximum(sub, fa[ys0 - py:ys1 - py, xs0 - px:xs1 - px])
+        self.assertTrue(np.array_equal(back > 0.5, alpha > 0.5))
+
+    def test_painted_light_is_measured_against_the_original(self):
+        yy, xx = np.mgrid[0:64, 0:64] / 64.0
+        mask = np.ones((64, 64), bool)
+        orig = 0.3 + 0.4 * (1 - yy)  # the original is brighter at its top (a crop's tips)
+        same = orig + 0.02 * np.sin(xx * 50)
+        sun = orig * (0.6 + 0.8 * xx)  # a sun from the right painted over it
+        v, v0 = tile_steps.painted_light(same, mask, orig, mask)
+        self.assertGreater(v0, 0.7)
+        self.assertLess(v, 0.05)
+        v, _ = tile_steps.painted_light(sun, mask, orig, mask)
+        self.assertGreater(v, 0.5)
+        # The planar delight takes most of the painted light out, the original's own slope stays.
+        rgb = np.repeat(sun[..., None], 3, -1)
+        out, info = tile_steps.planar_delight(rgb, mask, np.repeat(orig[..., None], 3, -1), mask, 1, 1.0)
+        self.assertGreater(info["shading_painted"], 0.5)
+        self.assertLess(info["shading"], 0.1)
+        lum = tile_steps.luminance(out)
+        self.assertGreater(lum[:8].mean(), lum[-8:].mean() + 0.2)
+
+    def test_a_picture_is_fitted_to_the_original(self):
+        scale = 4
+        target = np.zeros((160, 128), bool)
+        target[60:140, 30:90] = True
+        drawn = np.zeros((160, 128))
+        drawn[48:140, 34:103] = 1.0  # 15% larger, off to the right
+        fit = tile_steps.fit_silhouette(drawn, target, scale)
+        self.assertGreater(fit["iou"], 0.88)
+        self.assertLess(fit["iou_before"], 0.7)
+        self.assertLess(fit["scale"], 1.0)
+        moved, = tile_steps.apply_fit([drawn], fit, scale)
+        iou = ((moved > 0.5) & target).sum() / float(((moved > 0.5) | target).sum())
+        self.assertGreater(iou, 0.85)
+        # Already in place: the identity.
+        same = tile_steps.fit_silhouette(target.astype(float), target, scale)
+        self.assertEqual((same["scale"], same["move"]), (1.0, [0.0, 0.0]))
+
+    def test_a_wall_joins_only_at_its_ends(self):
+        size = [128, 160]
+        wall, _ = tile_steps.border_weight(self.spec(kind="west_wall", grid=[1, 2]), self.g, size, 0.08)
+        self.assertEqual(float(wall[:4, 64].max()), 0.0)  # its top keeps the picture
+        self.assertEqual(float(wall[-4:, 64].max()), 0.0)  # and its foot
+        self.assertEqual(float(wall[80, 0]), 1.0)  # its ends are the group's material
+        floor, _ = tile_steps.border_weight(self.spec(kind="floor", grid=[2, 2]), self.g, [128, 128], 0.08)
+        self.assertEqual(float(floor[0, 64]), 1.0)
+
+    def test_a_pattern_is_made_seamless_in_phase(self):
+        h, w = 96, 200
+        xx = np.arange(w)[None, :] * np.ones((h, 1))
+        ridges = 0.5 + 0.35 * np.sin(2 * np.pi * xx / 23.0)  # a period that does not divide the width
+        tex = np.repeat(ridges[..., None], 3, -1) + np.random.default_rng(0).random((h, w, 3)) * 0.03
+        self.assertGreater(tile_steps.seam_ratio(tex, 1), 3)
+        out, info = tile_steps.make_seamless(tex, "x")
+        self.assertEqual(out.shape, tex.shape)
+        self.assertLess(tile_steps.seam_ratio(out, 1), 1.5)
+        # The ridges keep their contrast (a blended cross would average them to grey).
+        self.assertGreater(out[..., 0].mean(axis=0).std(), 0.8 * ridges[0].std())
+        noise = tile_steps.box_blur(np.random.default_rng(2).random((128, 128, 3)), 2)
+        out, info = tile_steps.make_seamless(noise, "xy")
+        self.assertLess(max(tile_steps.seam_ratio(out, 1), tile_steps.seam_ratio(out, 0)), 2.0)
+        self.assertLess(info["x"]["stretch"], 1.25)
+
+    def test_the_material_is_picked_by_its_detail_at_the_sprites_scale(self):
+        from forge.scoring import score_tile_material
+        tmp = tempfile.mkdtemp(prefix="forge_tile_")
+        try:
+            xx = np.arange(384)[None, :] * np.ones((384, 1))
+            paths = {}
+            for name, period in (("hairlines", 3.0), ("broad", 32.0)):
+                v = 0.5 + 0.3 * np.sin(2 * np.pi * xx / period)
+                rgb = np.dstack([v * 0.6, v * 0.7, v])
+                paths[name] = os.path.join(tmp, name + ".png")
+                Image.fromarray(np.clip(rgb * 255, 0, 255).astype(np.uint8)).save(paths[name])
+            fine = score_tile_material(paths["hairlines"], 384, 143, 36)[0]
+            broad = score_tile_material(paths["broad"], 384, 143, 36)[0]
+            self.assertGreater(broad, 2 * fine)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_colour_toward_the_original(self):
+        dull = np.full((8, 8, 3), 0.5)
+        dull[..., 1] = 0.55
+        rich = np.zeros((8, 8, 3))
+        rich[..., 1] = 0.7
+        ones = np.ones((8, 8))
+        gain = tile_steps.saturation_gain([dull], [ones], rich, ones, 0.5)
+        self.assertEqual(gain, tile_steps.MAX_SATURATION_GAIN)
+        self.assertEqual(tile_steps.saturation_gain([rich], [ones], dull, ones, 0.5), 1.0)  # never duller
+        out = tile_steps.saturate(dull, 1.5)
+        self.assertAlmostEqual(float(tile_steps.luminance(out).mean()), float(tile_steps.luminance(dull).mean()),
+                               places=6)
+        self.assertGreater(float(tile_steps.chroma(out).mean()), float(tile_steps.chroma(dull).mean()))
+        # A seam group's record: one gain for all its pieces, the originals' brightness per kind
+        # (of the pieces that are the material itself when there are any).
+        floor = synth.sprite("floor", 1, (0.2, 0.6, 0.1), spread=0.05)
+        burnt = synth.sprite("floor", 2, (0.1, 0.1, 0.1), spread=0.05)
+        rec = tile_steps.group_colour(self.g, [{"kind": "floor", "material": True}, {"kind": "floor"}],
+                                      [floor, burnt], np.full((32, 32, 3), 0.4), 0.5)
+        self.assertGreater(rec["saturation_gain"], 1.0)
+        self.assertAlmostEqual(rec["original_luminance"]["floor"],
+                               float(tile_steps.luminance(floor[..., :3])[floor[..., 3] > 0.5].mean()), delta=0.03)
+
+    def test_a_tree_loses_its_own_ground(self):
+        # A tree drawn on its own grass diamond: the grass goes (the map's floor shows there), the
+        # crown, the trunk and the darker shadow under the crown stay.
+        scale = 2
+        spec = self.spec()
+        h, w = 40 * scale, 32 * scale
+        diamond = G.column_mask(self.g, (0, 0), [0, 0, 32, 40], scale, 0.0)
+        rgb = np.zeros((h, w, 3))
+        rgb[...] = (0.45, 0.75, 0.25)
+        rgb += np.random.default_rng(4).random((h, w, 3)) * 0.04
+        alpha = diamond.astype(float)
+        crown = np.zeros((h, w), bool)
+        crown[8:56, 12:52] = True  # the crown reaches into the diamond's back part
+        rgb[crown] = (0.1, 0.3, 0.1)
+        shadow = diamond & ~crown
+        shadow[:56] = False
+        shadow[66:] = False  # under the crown, behind the diamond's front
+        shadow[:, :24] = False
+        shadow[:, 40:] = False
+        rgb[shadow] *= 0.5
+        alpha[crown] = 1.0
+        out, share = tile_steps.ground_cut(self.g, spec, rgb, alpha, (0.0, 0.0), scale)
+        bright_ground = diamond & ~crown & ~shadow
+        self.assertLess(out[bright_ground].mean(), 0.15)
+        self.assertGreater(out[crown].mean(), 0.95)
+        self.assertGreater(out[shadow].mean(), 0.8)
+        self.assertGreater(share, 0.2)
+
+    def test_a_picture_on_a_mesh_loses_its_painted_light(self):
+        # A box seen from the camera: its top and its two sides, the picture's left side painted
+        # bright and its right side dark; the mesh's normals say which side is which.
+        h, w = 60, 60
+        nv = np.zeros((h, w, 3))
+        side = {"up": G.to_view(self.g, np.array([0, 0, 1.0])), "x": G.to_view(self.g, np.array([1.0, 0, 0])),
+                "y": G.to_view(self.g, np.array([0, 1.0, 0]))}
+        nv[:20] = side["up"]
+        nv[20:, :30] = side["y"]
+        nv[20:, 30:] = side["x"]
+        rgb = np.full((h, w, 3), 0.5)
+        rgb[20:, :30] *= 1.3
+        rgb[20:, 30:] *= 0.7
+        out, gains = tile_steps.delight(rgb, np.ones((h, w)), nv, self.g, 1.0)
+        lum = tile_steps.luminance(out)
+        self.assertLess(abs(lum[30:, 5:25].mean() - lum[30:, 35:55].mean()), 0.05)
+        self.assertEqual(sorted(gains), ["up", "x_side", "y_side"])
+
+
 STYLE = {"global": "Plain test style.", "view_tile_floor": "A flat texture.", "view_tile_wall": "A flat wall face.",
          "view_tile_object": "The object alone on grey.", "material_top": "A seamless texture of",
          "material_front": "A seamless wall of", "material_negative": "text"}
@@ -293,6 +492,24 @@ class Recipe(unittest.TestCase):
         sheet = jobs["f/_set/sheet"]
         self.assertEqual(sheet["from"], ["f/%s/final" % x for x in ("a", "w", "o", "m", "b")])
         self.assertEqual(jobs["f/a/final"]["accept"], {"mesh_flags": 0})
+        # A seam group's material: picked by its detail at the sprites' scales, made seamless by
+        # the local cut (no inpaint), which also writes the group's colour record.
+        self.assertEqual(jobs["f/_seam_ground/pick"]["metric"], "tile_material")
+        self.assertEqual(jobs["f/_seam_ground/seamless"]["kind"], "tile_seamless")
+        self.assertEqual(jobs["f/_seam_ground/seamless"]["args"]["axes"], "xy")
+        self.assertEqual(jobs["f/_seam_wood/seamless"]["args"]["axes"], "x")
+        self.assertFalse(any(j.startswith("f/_seam_ground/rolled") for j in jobs))
+        self.assertEqual(sp["inputs"]["group_colour"], {"ref": "f/_seam_ground/seamless", "role": "colour"})
+        # A meshed object's sprite also gets its picture (laid on the render) and the guide's layout.
+        ms = jobs["f/m/v%d/sprite" % mv]
+        self.assertEqual(ms["inputs"]["guide_layout"], {"ref": "f/m/guide", "role": "layout"})
+        self.assertEqual(ms["inputs"]["mask"], {"ref": "f/m/v%d/picture" % mv, "role": "mask"})
+        # The inpainted cross is still an option of a seam group.
+        old = {j["id"]: j for j in expand(self.load(order_of([
+            piece("a", "floor", f["stone"], tile={"seam": "ground"})],
+            {"seams": {"ground": {"kind": "floor", "brief": "gravel", "span": [2, 2], "seamless": "inpaint"}}})))}
+        self.assertEqual(old["f/_seam_ground/seamless"]["kind"], "unroll")
+        self.assertNotIn("group_colour", old["f/a/v%d/sprite" % s[0]]["inputs"])
 
     def test_problems(self):
         f = self.files
@@ -324,6 +541,16 @@ class Recipe(unittest.TestCase):
         self.assertProblem(self.problems([piece("a", "floor", f["stone"], stages={
             "sprite": {"settings": {"max_overflow": 3}}})]), "max_overflow")
         self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"glow": "plaid"})]), "tile.glow")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"clip": True})]),
+                           "tile.clip is for objects")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"relief": 9})]), "tile.relief")
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"], tile={"ground": "cut"})]),
+                           "tile.ground cut is for objects")
+        self.assertProblem(self.problems([piece("a", "object", f["bush"], tile={"ground": "dig"})]),
+                           "tile.ground must be keep or cut")
+        self.assertEqual(self.problems([piece("a", "object", f["crate"], tile={"clip": True})]), [])
+        self.assertProblem(self.problems([piece("a", "floor", f["stone"])], {"seams": {"g": {
+            "kind": "floor", "brief": "x", "seamless": "glue"}}}), "seamless must be one of")
         order = order_of([piece("a", "floor", f["stone"], tile={"seam": "ground"})])
         del order["style"]["view_tile_floor"]
         self.assertProblem(check_order(self.load(order), self.config), "style.view_tile_floor is required")
@@ -354,7 +581,7 @@ class Recipe(unittest.TestCase):
             self.assertIn("environment: verified", res.stdout)
             res = subprocess.run(base + ["--estimate"], cwd=ROOT, capture_output=True, text=True, timeout=120)
             self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
-            self.assertIn("total 90 jobs", res.stdout)
+            self.assertIn("total 84 jobs", res.stdout)
             self.assertFalse(any(r[1] == "POST" for r in fake.requests))
         finally:
             fake.close()
@@ -427,8 +654,9 @@ class Night(unittest.TestCase):
         im = Image.open(os.path.join(yard, "stone", "final", tile["frames"][0]["file"]))
         self.assertEqual((im.size, im.mode), ((128, 160), "RGBA"))
         self.assertEqual(sorted(set(np.asarray(im)[..., 3].ravel().tolist())), [0, 255])  # binary alpha: floors join
-        # The fake pictures are blobs on a light ground: the fence's cut from its picture and the bush
-        # overflow the originals' silhouettes and are flagged; no variant of theirs passes.
+        # The fake pictures are blobs on a light ground: the fence's cut from its picture overflows
+        # the original's silhouette and is flagged, no variant of it passes; the bush's blob is fitted
+        # (scaled and moved) onto the original's silhouette and passes.
         with open(os.path.join(yard, "fence", "pick_final.json"), encoding="utf-8") as fh:
             fence = json.load(fh)
         self.assertEqual(fence["outcome"], "no_variant_passed")
@@ -437,7 +665,7 @@ class Night(unittest.TestCase):
         sheet = os.path.join(yard, "_set", "sheet")
         with open(os.path.join(sheet, "set_sheet.json"), encoding="utf-8") as fh:
             info = json.load(fh)
-        self.assertEqual((info["maps"], info["not_picked"]), (["yard"], ["bush", "fence"]))
+        self.assertEqual((info["maps"], info["not_picked"]), (["yard"], ["fence"]))
         self.assertTrue(os.path.isfile(os.path.join(sheet, "set_sheet.png")))
         self.assertTrue(os.path.isfile(os.path.join(yard, "stone", "review", "sheet.png")))
         # A second run changes nothing.

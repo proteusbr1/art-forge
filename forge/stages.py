@@ -434,8 +434,8 @@ TILE_SPRITE_SETTINGS = {
                             "texel rows (default 2.5)"},
     "max_shading": {"type": "number", "min": 0.0, "max": 2.0, "arg": "max_shading",
                     "meaning": "painted-light flag: the largest brightness slope across the albedo (a face's) or "
-                               "toward one side of the object, as a share of its mean (default 0.35 for floors and "
-                               "walls, 0.6 for objects)"},
+                               "toward one side of the object, as a share of its mean, that the original's own "
+                               "slope does not have (default 0.35 for floors and walls, 0.6 for objects)"},
     "normal_strength": {"type": "number", "min": 0.0, "max": 10.0, "arg": "normal_strength",
                         "meaning": "how steep the relief the albedo's detail gives the normal map (default 1)"},
     "exposure": {"type": "choice", "choices": ("original", "none"), "arg": "exposure",
@@ -453,6 +453,23 @@ TILE_SPRITE_SETTINGS = {
                 "meaning": "how much a wall darkens toward its foot in the shaded sprite (default 0.18)"},
     "glow_strength": {"type": "number", "min": 0.0, "max": 1.0, "arg": "glow_strength",
                       "meaning": "the emissive frame's brightness (default 1)"},
+    "saturation": {"type": "number", "min": 0.0, "max": 1.0, "arg": "saturation",
+                   "meaning": "the share of the way the albedo's mean saturation is brought toward the original's, "
+                              "only up, at most 1.5 times (default 0.5); a seam group's faces take their group's gain"},
+    "sharpen": {"type": "number", "min": 0.0, "max": 2.0, "arg": "sharpen",
+                "meaning": "an unsharp mask on the albedo at the frame's scale (default 0.4)"},
+    "fit": {"type": "choice", "choices": ("silhouette", "none"), "arg": "fit",
+            "meaning": "silhouette (default): an object's picture scaled (0.8 to 1.25) and moved (up to 4 grid "
+                       "pixels) to overlap the original's silhouette best; none: placed as the guide was"},
+    "min_render_iou": {"type": "number", "min": 0.0, "max": 1.0, "arg": "min_render_iou",
+                       "meaning": "render flag: the least overlap of a meshed object's silhouette with the "
+                                  "original's (default 0.72)"},
+    "mesh_albedo": {"type": "choice", "choices": ("picture", "paint"), "arg": "mesh_albedo",
+                    "meaning": "picture (default): a meshed object's albedo is its picture fitted to the render's "
+                               "silhouette (the paint where the picture does not reach); paint: the painted mesh's"},
+    "delight": {"type": "number", "min": 0.0, "max": 1.0, "arg": "delight",
+                "meaning": "how far the picture laid on a mesh has its sides' brightness evened (its painted light "
+                           "taken out; the mesh's normals light it again) (default 0.7)"},
 }
 ISO_TILE_OPTIONS = {
     "guide": {

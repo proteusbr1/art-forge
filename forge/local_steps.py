@@ -79,7 +79,7 @@ class LocalSteps:
             inputs.append(self.input_record({"ref": c, "role": job["role"]}))
             fn = METRICS[job["metric"]]
             try:
-                s, info = fn(path)
+                s, info = fn(path, **(job.get("metric_args") or {}))
             except Exception as ex:
                 s, info = -1.0, {"error": str(ex)}
             scored.append({"job": c, "score": round(s, 3), **info})
