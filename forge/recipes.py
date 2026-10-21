@@ -4,11 +4,14 @@ per-piece keys (variants, stages, skip, params, inputs, review) into each piece.
 
   figure        FLUX.2 Klein concept, N seeds -> automatic pick -> 3 more views by
                 Qwen-Image-Edit 2511 (90, 180, 270 degrees) -> sheet -> Hunyuan3D 2.1
-                shape + Paint (PBR) from the picked front view (unrigged)
+                shape + Paint (PBR) from the picked front view (unrigged) -> normals
   vehicle       Klein 3/4 concept, N seeds -> pick -> 4 views (sides, back, top) -> sheet ->
                 emissive mask of the lights (Qwen-Image-Edit) -> mesh with a 4096 texture
-  object_3d     Klein concept, N seeds -> pick -> Hunyuan3D 2.1 shape + Paint; with
-                inputs.reference the supplied RGBA image goes straight to the mesh
+                -> normals
+  object_3d     Klein concept, N seeds -> pick -> Hunyuan3D 2.1 shape + Paint -> normals;
+                with inputs.reference the supplied RGBA image goes straight to the mesh
+                (normals: the painted mesh with smooth normals, edges over 60 degrees hard,
+                tools/blender/glb_normals.py; the paint stage writes none)
   concept       Klein concept, N seeds -> pick (2D only)
   illustration  finished picture (no background removal), picked by detail
   prop          object_3d with the prop view, or concept when the piece has "3d": false
@@ -97,6 +100,15 @@ def hy3d_job(fam, a, pick_id, faces, texture=2048, view=768):
             "mesh_role": "painted_mesh"}
 
 
+def normals_job(fam, a):
+    """The painted mesh again with smooth normals (the paint stage's GLB has none, so viewers
+    shade it flat): a local step (tools/blender/glb_normals.py smooth_glb, edges over 60
+    degrees hard), output role painted_mesh."""
+    fid, aid = fam["id"], a["id"]
+    return {"id": "%s/%s/normals" % (fid, aid), "kind": "normals", "group": "local",
+            "input": {"ref": "%s/%s/mesh" % (fid, aid), "role": "painted_mesh"}}
+
+
 def emissive_job(fam, a, pick_id, st):
     fid, aid = fam["id"], a["id"]
     return {"id": "%s/%s/emissive" % (fid, aid), "kind": "comfy", "group": "qwen_edit", "workflow": "qwen_edit_2511.json",
@@ -121,17 +133,18 @@ def has_reference(a):
 
 def recipe_object_3d(fam, a, st):
     if has_reference(a):
-        return [hy3d_job(fam, a, None, 40000)]
+        return [hy3d_job(fam, a, None, 40000), normals_job(fam, a)]
     jobs = concept_jobs(fam, a, st, "view_object", 6, (1536, 1024))
-    return jobs + [hy3d_job(fam, a, jobs[-1]["id"], 40000)]
+    return jobs + [hy3d_job(fam, a, jobs[-1]["id"], 40000), normals_job(fam, a)]
 
 
 def recipe_prop(fam, a, st):
     if has_reference(a) and a.get("3d", fam.get("3d", True)):
-        return [hy3d_job(fam, a, None, 30000)]
+        return [hy3d_job(fam, a, None, 30000), normals_job(fam, a)]
     jobs = concept_jobs(fam, a, st, "view_prop", 4, (1024, 1024))
     if a.get("3d", fam.get("3d", True)):
         jobs.append(hy3d_job(fam, a, jobs[-1]["id"], 30000))
+        jobs.append(normals_job(fam, a))
     return jobs
 
 
@@ -157,6 +170,7 @@ def recipe_vehicle(fam, a, st):
     jobs.append({"id": "%s/%s/sheet" % (fid, aid), "kind": "sheet", "group": "local", "inputs": sheet})
     jobs.append(emissive_job(fam, a, pick, st))
     jobs.append(hy3d_job(fam, a, pick, 120000, texture=4096, view=768))
+    jobs.append(normals_job(fam, a))
     return jobs
 
 
@@ -175,6 +189,7 @@ def recipe_figure(fam, a, st):
     if a.get("emissive"):
         jobs.append(emissive_job(fam, a, pick, st))
     jobs.append(hy3d_job(fam, a, pick, 60000))
+    jobs.append(normals_job(fam, a))
     return jobs
 
 
@@ -555,6 +570,8 @@ ARTICULATED_SIZE = (1536, 1024)
 CREATURE_SIZE = (1024, 1536)
 # Piece params the local tools of these recipes take (when the order gives them).
 PARTS_PARAMS = ("tris", "height", "length", "front", "image_format")
+# The shading params of the parts and held items (smooth by angle, the baked normal map).
+SHADING_PARAMS = ("normal_map", "crease", "relief")
 
 
 def _front_chain(fam, a, st, recipe, s, add, comfy, opts, fields, size, view):
@@ -704,10 +721,13 @@ def recipe_articulated(fam, a, st):
     one design."""
 
     def tail(add, v, mesh, painted, opts):
-        ins = {"mesh": painted}
+        # The raw mesh (before the mesh stage's reduction) is the normal map's bake source.
+        ins = {"mesh": painted, "bake_source": {"ref": mesh, "role": "raw_mesh"}}
         if opts.get("paint") == "hunyuan_paint":
             ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
+        p = a.get("params") or {}
         args = dict({"name": a["id"], "parts": a.get("parts")}, **_tool_params(a))
+        args.update({k: p[k] for k in SHADING_PARAMS if k in p})
         return add("parts", {"kind": "local_gpu", "tool": "parts", "inputs": ins, "args": args}), "glb"
     return _variants(fam, a, st, "articulated", ARTICULATED_SIZE, "view_articulated", tail)
 
@@ -751,7 +771,7 @@ def recipe_creature(fam, a, st):
 # space with its sockets (the socket file the humanoid exporter reads)
 
 HELD_ITEM_SIZE = (1536, 1024)
-ITEM_PARAMS = ("tris", "height", "length", "image_format")
+ITEM_PARAMS = ("tris", "height", "length", "image_format", "normal_map", "crease", "relief")
 # The family folder every picked item of a held-item family is copied to (<name>.glb and
 # <name>.json side by side): a humanoid order's inputs.items.
 ITEMS_FOLDER = "items"
@@ -771,7 +791,9 @@ def recipe_held_item(fam, a, st):
 
     def tail(add, v, mesh, painted, opts):
         # The cutout the mesh was made from: the item step finds the mesh's frame by its silhouette.
-        ins = {"mesh": painted, "reference": {"ref": "%s/%s/%s/cutout" % (fam["id"], a["id"], v), "role": "rgba"}}
+        # The raw mesh (before the mesh stage's reduction) is the normal map's bake source.
+        ins = {"mesh": painted, "reference": {"ref": "%s/%s/%s/cutout" % (fam["id"], a["id"], v), "role": "rgba"},
+               "bake_source": {"ref": mesh, "role": "raw_mesh"}}
         if opts.get("paint") == "hunyuan_paint":
             ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
         p = a.get("params") or {}

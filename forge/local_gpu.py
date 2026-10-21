@@ -46,8 +46,10 @@ BODY_FILES = [CONFORM_SCRIPT, os.path.join(TOOLS, "blender", "humanoid_fit.py"),
               os.path.join(TOOLS, "blender", "forge_blender.py"), os.path.join(ROOT, "forge", "body.py")]
 
 PARTS_SCRIPT = os.path.join(TOOLS, "blender", "articulated_export.py")
+# The shading of the parts and the held items: smooth by angle and the baked normal map.
+NORMAL_FILES = [os.path.join(TOOLS, "blender", "normal_bake.py"), os.path.join(TOOLS, "blender", "glb_normals.py")]
 PARTS_FILES = [PARTS_SCRIPT, os.path.join(TOOLS, "blender", "articulated_parts.py"),
-               os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
+               os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT] + NORMAL_FILES
 CREATURE_SCRIPT = os.path.join(TOOLS, "blender", "creature_export.py")
 CREATURE_FILES = [CREATURE_SCRIPT, os.path.join(TOOLS, "blender", "creature_bones.py"),
                   os.path.join(TOOLS, "blender", "creature_motion.py"),
@@ -56,7 +58,7 @@ SHEET_FILES = ("project.godot", "sheet.tscn", "sheet.gd")
 SHEET_LAYOUT = os.path.join(ROOT, "forge", "sheet_layout.py")
 ITEM_SCRIPT = os.path.join(TOOLS, "blender", "held_item_export.py")
 ITEM_FILES = [ITEM_SCRIPT, os.path.join(TOOLS, "blender", "held_item_geometry.py"),
-              os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT]
+              os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT] + NORMAL_FILES
 FIGURE_SCRIPT = os.path.join(TOOLS, "blender", "held_item_figure.py")
 HOLD_FILES = [FIGURE_SCRIPT, os.path.join(TOOLS, "blender", "forge_blender.py"), MATERIALS_SCRIPT,
               EXPORT_SCRIPT, BONES_SCRIPT, os.path.join(ROOT, "forge", "tool_specs.py")]
@@ -925,6 +927,26 @@ RUNNERS.update({"rig": rig_runner, "export": export_runner, "body_export": body_
 
 # ---- articulated: the parts --------------------------------------------------------------------
 
+# The shading params of the parts and the held items (piece params): the normal map's size
+# (0: the base colour's), the crease angle in degrees and the painted relief's strength.
+SHADING_PARAMS = {"normal_map": "--normal-map", "crease": "--crease", "relief": "--relief"}
+
+
+def _shading_cmd(config, bake_source, device, params, inputs):
+    """(command arguments, settings) of the normal map's bake: the raw mesh, the Cycles device
+    (default: the configuration's bake_device) and the shading params."""
+    device = (device or config.get("bake_device") or "GPU").upper()
+    cmd, settings = ["--device", device], {"device": device}
+    if bake_source:
+        cmd += ["--bake-source", os.path.abspath(bake_source)]
+        inputs.append(_input("bake_source", bake_source))
+    for k, opt in SHADING_PARAMS.items():
+        if params.get(k) is not None:
+            cmd += [opt, str(params[k])]
+            settings[k] = params[k]
+    return cmd, settings
+
+
 def _params_cmd(params):
     cmd, settings = [], {}
     for k, opt in (("height", "--height"), ("length", "--length"), ("tris", "--tris"), ("front", "--front")):
@@ -936,11 +958,13 @@ def _params_cmd(params):
 
 @_gpu_locked("parts")
 def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughness=None, image_format=None,
-              min_share=None, snap=None, max_width=None, timeout=3600):
+              min_share=None, snap=None, max_width=None, bake_source=None, device=None, timeout=3600):
     """The articulated parts (tools/blender/articulated_export.py in blender_python): the
-    painted mesh turned to face +Z, scaled, cut into `parts` (the order's part list), each
-    part a node with its origin at its pivot. params: height or length, tris, front. Returns
-    {glb, model, mesh_report, frame}."""
+    painted mesh turned to face +Z, scaled, smooth by angle with a normal map baked from
+    bake_source (the raw mesh before the reduction; Cycles on device, default the
+    configuration's bake_device), cut into `parts` (the order's part list), each part a node
+    with its origin at its pivot. params: height or length, tris, front, and normal_map,
+    crease, relief (SHADING_PARAMS). Returns {glb, model, mesh_report, frame}."""
     _require(config, "parts")
     out = os.path.abspath(out)
     os.makedirs(out, exist_ok=True)
@@ -967,6 +991,9 @@ def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughne
     if metal_roughness:
         cmd += ["--metal-roughness", os.path.abspath(metal_roughness)]
         inputs.append(_input("metal_roughness", metal_roughness))
+    extra, shading = _shading_cmd(config, bake_source, device, params or {}, inputs)
+    cmd += extra
+    settings.update(shading)
     for stale in ("model.json", "mesh_report.json", name + ".glb"):
         if os.path.exists(os.path.join(out, stale)):
             os.remove(os.path.join(out, stale))
@@ -987,15 +1014,17 @@ def run_parts(mesh, out, config, parts, name="model", params=None, metal_roughne
 
 def parts_runner(factory, job, out_dir):
     """The parts of a variant's painted mesh (args: name, parts, height, length, tris, front,
-    image_format, min_share, snap, max_width)."""
+    image_format, min_share, snap, max_width, normal_map, crease, relief; inputs: mesh, and
+    metal_roughness and bake_source, the raw mesh, when the recipe gives them)."""
     args = job.get("args", {})
     ins = job["inputs"]
     mesh, _ = factory.resolve(ins["mesh"])
     mr = factory.resolve(ins["metal_roughness"])[0] if "metal_roughness" in ins else None
-    params = {k: args[k] for k in ("height", "length", "tris", "front") if k in args}
+    raw = factory.resolve(ins["bake_source"])[0] if "bake_source" in ins else None
+    params = {k: args[k] for k in ("height", "length", "tris", "front") + tuple(SHADING_PARAMS) if k in args}
     files = run_parts(mesh, out_dir, factory.config, args["parts"], name=args.get("name", "model"), params=params,
                       metal_roughness=mr, image_format=args.get("image_format"), min_share=args.get("min_share"),
-                      snap=args.get("snap"), max_width=args.get("max_width"))
+                      snap=args.get("snap"), max_width=args.get("max_width"), bake_source=raw)
     rec = _step_record(out_dir, "parts")
     settings = rec.get("settings", {})
     return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}
@@ -1187,12 +1216,15 @@ RUNNERS.update({"parts": parts_runner, "creature_export": creature_export_runner
 
 @_gpu_locked("item")
 def run_item(mesh, out, config, item, name="model", params=None, metal_roughness=None, image_format=None,
-             front=None, top=None, snap=None, tolerance_cm=None, reference=None, timeout=3600):
+             front=None, top=None, snap=None, tolerance_cm=None, reference=None, bake_source=None, device=None,
+             timeout=3600):
     """The held item (tools/blender/held_item_export.py in blender_python): the painted mesh
     put in item space at its real size (params: length or height, tris), its frame found from
     the reference picture (the cutout the mesh was made from) unless front and top are given,
-    its sockets proposed from the class template of `item` (the order's item object). Returns
-    {glb, sockets, model, mesh_report, frame, socket_map}."""
+    its sockets proposed from the class template of `item` (the order's item object), smooth
+    by angle with a normal map baked from bake_source (the raw mesh before the reduction;
+    Cycles on device, default the configuration's bake_device; params normal_map, crease,
+    relief: SHADING_PARAMS). Returns {glb, sockets, model, mesh_report, frame, socket_map}."""
     _require(config, "item")
     out = os.path.abspath(out)
     os.makedirs(out, exist_ok=True)
@@ -1224,6 +1256,9 @@ def run_item(mesh, out, config, item, name="model", params=None, metal_roughness
     if reference:
         cmd += ["--reference", os.path.abspath(reference)]
         inputs.append(_input("reference", reference))
+    extra, shading = _shading_cmd(config, bake_source, device, params, inputs)
+    cmd += extra
+    settings.update(shading)
     for stale in ("model.json", "mesh_report.json", name + ".json", name + ".glb"):
         if os.path.exists(os.path.join(out, stale)):
             os.remove(os.path.join(out, stale))
@@ -1245,18 +1280,20 @@ def run_item(mesh, out, config, item, name="model", params=None, metal_roughness
 
 def item_runner(factory, job, out_dir):
     """The held item of a variant's painted mesh (args: name, item, length, height, tris,
-    image_format, front, top, snap, tolerance_cm; inputs: mesh, and metal_roughness and
-    reference, the cutout the mesh was made from, when the recipe gives them)."""
+    image_format, front, top, snap, tolerance_cm, normal_map, crease, relief; inputs: mesh, and
+    metal_roughness, reference (the cutout the mesh was made from) and bake_source (the raw
+    mesh) when the recipe gives them)."""
     args = job.get("args", {})
     ins = job["inputs"]
     mesh, _ = factory.resolve(ins["mesh"])
     mr = factory.resolve(ins["metal_roughness"])[0] if "metal_roughness" in ins else None
     ref = factory.resolve(ins["reference"])[0] if "reference" in ins else None
-    params = {k: args[k] for k in ("length", "height", "tris") if k in args}
+    raw = factory.resolve(ins["bake_source"])[0] if "bake_source" in ins else None
+    params = {k: args[k] for k in ("length", "height", "tris") + tuple(SHADING_PARAMS) if k in args}
     files = run_item(mesh, out_dir, factory.config, args["item"], name=args.get("name", "model"), params=params,
                      metal_roughness=mr, image_format=args.get("image_format"), front=args.get("front"),
                      top=args.get("top"), snap=args.get("snap"), tolerance_cm=args.get("tolerance_cm"),
-                     reference=ref)
+                     reference=ref, bake_source=raw)
     rec = _step_record(out_dir, "item")
     settings = rec.get("settings", {})
     return {"files": files, "passed": {k: settings[k] for k in args if k in settings}, "provenance": rec}

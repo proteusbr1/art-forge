@@ -113,6 +113,18 @@ def item_files():
 
 @unittest.skipUnless(HAVE_BLENDER, "blender_python is not configured in forge.local.json")
 class Item(unittest.TestCase):
+    def test_carbine_smooth_with_a_baked_normal_map(self):
+        # The painted carbine stands in for its own raw mesh (same frame): the map is baked.
+        out = fresh("item_normals")
+        files = local_gpu.run_item(carbine(), out, CONFIG, {"class": "carbine"}, name="carbine",
+                                   params={"length": 0.9}, reference=carbine_picture(), bake_source=carbine(),
+                                   device="CPU")
+        report = load(files["mesh_report"])
+        self.assertEqual(report["flags"], [])
+        self.assertTrue(report["normals"]["normal_baked"])
+        self.assertTrue(report["materials"]["slots"]["normal"]["lossless"])
+        self.assertLess(report["normals"]["primitives"][0]["flat_share"], 0.5)
+
     def test_carbine_in_item_space_with_its_sockets(self):
         out, files = item_files()
         report, model, sockets = load(files["mesh_report"]), load(files["model"]), load(files["sockets"])

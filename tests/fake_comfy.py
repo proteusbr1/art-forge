@@ -31,7 +31,34 @@ if not os.environ.get("FORGE_NVIDIA_SMI"):
 SIZE = 96
 # Inputs that name files rather than settings: left out of the picture's seed.
 NAME_INPUTS = ("filename_prefix", "output_mesh_name")
-FAKE_GLB = b"glTF\x02\x00\x00\x00" + b"\x00" * 16
+
+
+def _fake_glb():
+    """A small valid GLB, as a generated mesh: a tetrahedron with UVs and no normals (the
+    normals step of the rigid recipes reads it)."""
+    import struct
+    pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], np.float32)
+    uv = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], np.float32)
+    idx = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], np.uint16)
+    binary = pos.tobytes() + uv.tobytes() + idx.tobytes()
+    doc = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0, "name": "mesh"}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "indices": 2}]}],
+           "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3", "min": [0, 0, 0],
+                          "max": [1, 1, 1]},
+                         {"bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC2"},
+                         {"bufferView": 2, "componentType": 5123, "count": 12, "type": "SCALAR"}],
+           "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                           {"buffer": 0, "byteOffset": 48, "byteLength": 32},
+                           {"buffer": 0, "byteOffset": 80, "byteLength": 24}],
+           "buffers": [{"byteLength": len(binary)}]}
+    js = json.dumps(doc).encode("utf-8")
+    js += b" " * (-len(js) % 4)
+    binary += b"\0" * (-len(binary) % 4)
+    body = struct.pack("<II", len(js), 0x4E4F534A) + js + struct.pack("<II", len(binary), 0x004E4942) + binary
+    return b"glTF" + struct.pack("<II", 2, 12 + len(body)) + body
+
+
+FAKE_GLB = _fake_glb()
 
 
 def seed_of(wf):

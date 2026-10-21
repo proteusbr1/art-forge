@@ -96,6 +96,12 @@ format in [docs/order.md](docs/order.md) and the design in
   glowing, the detection, the emissive map written into a GLB without Blender; no `bpy`), used
   by the humanoid and creature exporters and by `forge/glow.py` (`python -m forge.glow`: the
   glow of an exported model again, without exporting it; [docs/conventions.md](docs/conventions.md)).
+  `glb_normals.py` (smooth normals by angle on a GLB's primitives, the painted relief, a normal
+  map put into a GLB and the check of a written GLB's normals and normal map; no `bpy`) and
+  `normal_bake.py` (smooth by angle, the raw mesh brought onto a model and the normal map's
+  bake in Blender; also a script) serve the parts and held-item exporters, the rigid recipes'
+  `normals` step and `forge/normals.py` (`python -m forge.normals`: smooth normals and a baked
+  normal map on an exported model, without exporting it; [docs/conventions.md](docs/conventions.md)).
   `articulated_parts.py` (part lists and region geometry, no `bpy`) and
   `articulated_export.py` (the parts); `creature_bones.py` (body plans, templates and the
   role map) and `creature_motion.py` (motion kinds, gaits, role-space clips), both without
@@ -241,7 +247,8 @@ as a process. No GPU inference and no visible window; about a minute.
 
 `tests/test_new_tools_smoke.py` does the same for the parts exporter, the creature
 exporter and the layout sheet (fixtures under `local/fixtures/new_tools/`, outputs in
-`local/smoke/new_tools/`), and `tests/test_held_item_smoke.py` for the item tool, the hold and
+`local/smoke/new_tools/`), and `tests/test_normals.py` tests the smooth normals and the refresh command without Blender, and
+`tests/test_held_item_smoke.py` for the item tool, the hold and
 the item sheet (`local/fixtures/held_item/`, `local/smoke/held_item/`).
 `tests/test_local_tools_smoke.py` runs the humanoid exporter and the review sheet when
 `forge.local.json` points to `blender_python` and `godot` (skipped otherwise): the fixture

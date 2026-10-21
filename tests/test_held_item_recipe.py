@@ -144,7 +144,8 @@ class Expansion(Base):
         self.assertEqual((item["kind"], item["tool"], item["group"]), ("local_gpu", "item", "local_gpu"))
         self.assertEqual(item["inputs"], {"mesh": {"ref": v + "paint", "role": "painted_mesh"},
                                           "metal_roughness": {"ref": v + "paint", "role": "metal_roughness"},
-                                          "reference": {"ref": v + "cutout", "role": "rgba"}})
+                                          "reference": {"ref": v + "cutout", "role": "rgba"},
+                                          "bake_source": {"ref": v + "mesh", "role": "raw_mesh"}})
         self.assertEqual(item["args"], {"name": "p", "item": {"class": "carbine"}, "length": 0.85})
         hold = jobs[v + "hold"]
         self.assertEqual(hold["inputs"]["glb"], {"ref": v + "item", "role": "glb"})
@@ -170,7 +171,8 @@ class Expansion(Base):
         self.assertNotIn("f/p/v%d/hold" % seeds[0], jobs)
         item = jobs["f/p/v%d/item" % seeds[0]]
         self.assertEqual(item["inputs"], {"mesh": {"ref": "f/p/v%d/mesh" % seeds[0], "role": "painted_mesh"},
-                                          "reference": {"ref": "f/p/v%d/cutout" % seeds[0], "role": "rgba"}})
+                                          "reference": {"ref": "f/p/v%d/cutout" % seeds[0], "role": "rgba"},
+                                          "bake_source": {"ref": "f/p/v%d/mesh" % seeds[0], "role": "raw_mesh"}})
         self.assertEqual((item["args"]["front"], item["args"]["top"], item["args"]["snap"]), ("-z", "+y", False))
         self.assertEqual(jobs["f/p/review"]["args"]["side_width"], 800)
         self.assertEqual(jobs["f/p/review"]["from"], ["f/p/v%d/item" % s for s in seeds[:2]])

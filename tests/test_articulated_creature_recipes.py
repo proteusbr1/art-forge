@@ -121,6 +121,7 @@ class Expansion(Base):
         parts = jobs[v + "parts"]
         self.assertEqual((parts["kind"], parts["tool"], parts["group"]), ("local_gpu", "parts", "local_gpu"))
         self.assertEqual(parts["inputs"], {"mesh": {"ref": v + "paint", "role": "painted_mesh"},
+                                           "bake_source": {"ref": v + "mesh", "role": "raw_mesh"},
                                            "metal_roughness": {"ref": v + "paint", "role": "metal_roughness"}})
         self.assertEqual(parts["args"], {"name": "p", "parts": PARTS})
         review = jobs["f/p/review"]
@@ -135,7 +136,8 @@ class Expansion(Base):
                                          "skip": ["paint"]})
         v = "f/p/v%d/" % seeds_for("f/p", 1)[0]
         self.assertNotIn(v + "paint", jobs)
-        self.assertEqual(jobs[v + "parts"]["inputs"], {"mesh": {"ref": v + "mesh", "role": "painted_mesh"}})
+        self.assertEqual(jobs[v + "parts"]["inputs"], {"mesh": {"ref": v + "mesh", "role": "painted_mesh"},
+                                                       "bake_source": {"ref": v + "mesh", "role": "raw_mesh"}})
         self.assertEqual(jobs[v + "parts"]["args"]["front"], "-x")
         self.assertEqual((jobs[v + "parts"]["args"]["min_share"], jobs[v + "parts"]["args"]["snap"]), (0.01, False))
         self.assertIn("322", jobs[v + "mesh"]["roles"])  # TRELLIS.2's own texture is kept
@@ -247,7 +249,7 @@ class OrderCheck(Base):
         jobs = expand(load_order(os.path.join(FIXTURES, "order_creature.json")))
         figures = [j for j in jobs if j["family"] == "blobs"]
         self.assertEqual(sorted(set(j["id"].rsplit("/", 1)[1] for j in figures if "concept" not in j["id"])),
-                         ["mesh", "pick", "sheet", "view_180", "view_270", "view_90"])
+                         ["mesh", "normals", "pick", "sheet", "view_180", "view_270", "view_90"])
         mesh = [j for j in figures if j["id"].endswith("/mesh")][0]
         self.assertEqual((mesh["values"]["$FACES$"], mesh["mesh_role"]), (15000, "painted_mesh"))
 
@@ -262,7 +264,7 @@ class CommandLineCheck(Base):
             with open(config, "w", encoding="utf-8") as f:
                 json.dump({k: self.config[k] for k in ("blender_python", "godot", "skintokens_python",
                                                        "skintokens_dir")}, f)
-            for name, jobs in (("order_articulated.json", 51), ("order_creature.json", 116)):
+            for name, jobs in (("order_articulated.json", 51), ("order_creature.json", 118)):
                 base = [sys.executable, "-m", "forge", "--order", os.path.join(FIXTURES, name), "--out",
                         os.path.join(self.tmp, "out_" + name), "--config", config, "--server", fake.url]
                 res = subprocess.run(base + ["--check"], cwd=ROOT, capture_output=True, text=True, timeout=120)

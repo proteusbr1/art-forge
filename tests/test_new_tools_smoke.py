@@ -128,6 +128,27 @@ def glb_doc(path):
 
 @unittest.skipUnless(HAVE_BLENDER, "blender_python is not configured in forge.local.json")
 class Parts(unittest.TestCase):
+    def test_tank_smooth_with_a_baked_normal_map_and_the_refresh(self):
+        # The painted tank stands in for its own raw mesh (same frame): the map is baked.
+        out = fresh("new_tools", "parts_normals")
+        tank = os.path.join(fixtures(), "painted_tank.glb")
+        files = local_gpu.run_parts(tank, out, CONFIG, PARTS, name="tank", params={"length": 6.0},
+                                    bake_source=tank, device="CPU")
+        report = load(files["mesh_report"])
+        self.assertEqual(report["flags"], [])
+        self.assertTrue(report["normals"]["normal_baked"])
+        self.assertEqual(report["normals"]["bake_source_fit"]["how"], "as_is")
+        self.assertTrue(report["materials"]["slots"]["normal"]["lossless"])
+        self.assertTrue(all(p["normals"] == "present" for p in report["normals"]["primitives"]))
+        # The refresh command finds the raw mesh on the exported parts (turned and scaled).
+        from forge import normals
+        again = fresh("new_tools", "parts_refresh")
+        rep = normals.refresh(files["glb"], again, raw=tank, normals="always", config=CONFIG,
+                              emit=lambda *_: None)
+        self.assertEqual(rep["flags"], [])
+        self.assertTrue(rep["bake"]["fit"]["used"], rep["bake"]["fit"])
+        self.assertTrue(rep["map"]["materials"]["0"]["baked"])
+
     def test_tank_parts_nodes_and_frame(self):
         out = fresh("new_tools", "parts")
         files = local_gpu.run_parts(os.path.join(fixtures(), "painted_tank.glb"), out, CONFIG, PARTS, name="tank",

@@ -206,6 +206,9 @@ Without settings a piece's jobs are the same as before (no hash changes).
 | `length` | number above 0 | length front to back in metres (scales instead of `height`) | articulated parts, creature export, held item (one of `length` and `height` is required) |
 | `front` | `+z`, `-z`, `+x`, `-x` | the glTF axis the generated front points along (default `+z`); the export faces +Z | articulated parts, creature export |
 | `scale` | whole number from 1 to 32 | art pixels per pixel of the tile grid (default 4) | iso_tile's sprite |
+| `normal_map` | whole number above 0 | size in pixels of the tangent-space normal map baked from the raw mesh (default: the base colour's size, at most 4096) | articulated parts, held item |
+| `crease` | number above 0 | crease angle in degrees: edges whose faces meet at more than this stay hard, the rest is shaded smooth (default 60) | articulated parts, held item |
+| `relief` | number above 0 | strength of the painted texture's relief blended into the normal map (default 3) | articulated parts, held item |
 
 `inputs`:
 

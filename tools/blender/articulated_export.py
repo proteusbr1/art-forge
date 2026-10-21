@@ -7,14 +7,22 @@ Runs with a Python that imports bpy (Blender as a module):
   python articulated_export.py --mesh PAINTED.glb --out DIR --parts PARTS.json [--name model]
       [--front +z|-z|+x|-x] [--height 2.0 | --length 6.0] [--tris 30000] [--snap 1|0]
       [--min-share 0.002] [--max-width 1.0] [--metal-roughness MAP.png]
-      [--image-format lossless|compact]
+      [--image-format lossless|compact] [--bake-source RAW.glb] [--normal-map 0] [--crease 60]
+      [--relief 3.0] [--device CPU|GPU]
 
 Steps (formats in docs/conventions.md; the geometry in articulated_parts.py):
 1. The frame: the mesh is turned so that its front (--front, the glTF axis the generated
    front points along; or <out>/frame.json marked "manual": true) faces glTF +Z, squared
    when its footprint came out turned by up to 30 degrees (--snap), scaled to --length
    (front to back) or --height, and stood on the ground with its footprint centred.
-   <out>/frame.json records it.
+   <out>/frame.json records it. The shading: every face smooth, edges whose faces meet at more
+   than --crease degrees kept hard (again on each part after the cuts, so a cut's faces stay
+   hard); a tangent-space normal map (--normal-map pixels, 0: the base colour's size, at most
+   4096) baked in Cycles (--device) on the whole object from --bake-source (the raw mesh
+   before the mesh stage's reduction, brought onto the painted mesh as it is, by its bounds or
+   found, and through the same frame), with the painted texture's relief blended in (--relief,
+   0 for none); without a bake source (or one that does not line up: a flag) the map is the
+   relief only. The parts keep the painted material and its map.
 2. The parts, parents first: each part takes the geometry of its parent inside its region
    (boxes in normalised object coordinates, [low, high] edges at the parent's narrowest
    section; the waist nearest the parent), cut exactly along the boxes' planes; both sides
@@ -24,7 +32,8 @@ Steps (formats in docs/conventions.md; the geometry in articulated_parts.py):
 3. Each part's origin is put at its pivot; the nodes are nested as the parts' parents.
 4. Writes <out>/<name>.glb (no animation: the game moves the parts), <out>/model.json
    (parts, joints in glTF axes) and <out>/mesh_report.json (per part: triangles, cut faces,
-   open edges, share of the surface; flags; the materials read back from the GLB). Only the
+   open edges, share of the surface; flags; the materials and the normals read back from the
+   GLB: a part without normals or shaded flat, a missing or lossy normal map are flags). Only the
    open edges a cut left (not the generated mesh's own, compared with its open edges before
    any cut, nor the bridges along its holes, nor a lone sliver edge) are flagged.
    No UV layer or no base-colour texture stops it (exit code 4). --max-width flags a
@@ -45,6 +54,8 @@ from mathutils import Matrix, Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import articulated_parts as ap  # noqa: E402
 import forge_blender as fb  # noqa: E402
+import glb_normals as gn  # noqa: E402
+import normal_bake as nb  # noqa: E402
 
 ap_ = argparse.ArgumentParser()
 ap_.add_argument("--mesh", required=True)
@@ -60,6 +71,11 @@ ap_.add_argument("--min-share", type=float, default=0.002)
 ap_.add_argument("--max-width", type=float, default=0.0, help="flag a footprint wider than this share of its length")
 ap_.add_argument("--metal-roughness", default="")
 ap_.add_argument("--image-format", default="lossless", choices=("lossless", "compact"))
+ap_.add_argument("--bake-source", default="", help="the raw mesh before the reduction (the normal map's bake)")
+ap_.add_argument("--normal-map", type=int, default=0, help="normal map size (0: the base colour's, at most 4096)")
+ap_.add_argument("--crease", type=float, default=gn.CREASE_DEG, help="edges sharper than this stay hard (degrees)")
+ap_.add_argument("--relief", type=float, default=gn.RELIEF_STRENGTH, help="the painted texture's relief (0: none)")
+ap_.add_argument("--device", default="GPU", choices=("GPU", "CPU"), help="Cycles device of the bake")
 a = ap_.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 OUT = os.path.abspath(a.out)
 os.makedirs(OUT, exist_ok=True)
@@ -121,6 +137,24 @@ if a.metal_roughness:
         fb.link_metal_roughness(mat, img)
     SOURCES["metallic_roughness"] = "the paint stage's map %s" % os.path.basename(a.metal_roughness)
 
+# The raw mesh (the normal map's bake source), brought onto the painted mesh in its frame.
+HIGH, BAKE_FIT = None, None
+if a.bake_source:
+    HIGH, _why = nb.import_source(a.bake_source)
+    if HIGH is None:
+        report["problems"].append("normals: the bake source %s %s" % (os.path.basename(a.bake_source), _why))
+    else:
+        BAKE_FIT = nb.align_source(HIGH, [body])
+        print("BAKE SOURCE", json.dumps(BAKE_FIT), flush=True)
+        if not BAKE_FIT["used"]:
+            report["problems"].append(
+                "normals: the bake source does not line up with the painted mesh (90th percentile distance %.4f m, "
+                "tolerance %.4f m): the normal map is the texture's relief only" % (
+                    BAKE_FIT["distance_m"]["p90"], BAKE_FIT["tolerance_m"]))
+            bpy.data.objects.remove(HIGH)
+            HIGH = None
+FRAMED = [body] + ([HIGH] if HIGH is not None else [])
+
 # ---- 1. the frame ----------------------------------------------------------------------------
 frame_path = os.path.join(OUT, "frame.json")
 frame = {"format": "forge-frame", "version": 1, "manual": False, "front": a.front, "snap": a.snap == "1"}
@@ -136,16 +170,17 @@ if os.path.exists(frame_path):
 front = frame.get("front", a.front)
 if front not in ap.FRONTS:
     fb.fail(2, "frame.json: front must be one of %s, not %r" % (", ".join(ap.FRONTS), front))
-turned = fb.turn_to_front([body], front)
-fb.apply_transforms([body])
+turned = fb.turn_to_front(FRAMED, front)
+fb.apply_transforms(FRAMED)
 verts, _ = fb.mesh_arrays(body)
 if "snap_deg" in frame and frame.get("manual"):
     snap = float(frame["snap_deg"])
 else:
     snap = ap.snap_yaw(verts[:, :2]) if frame.get("snap", True) else 0.0
 if snap:
-    body.matrix_world = Matrix.Rotation(math.radians(snap), 4, "Z") @ body.matrix_world
-    fb.apply_transforms([body])
+    for _o in FRAMED:
+        _o.matrix_world = Matrix.Rotation(math.radians(snap), 4, "Z") @ _o.matrix_world
+    fb.apply_transforms(FRAMED)
     verts, _ = fb.mesh_arrays(body)
 lo, hi = verts.min(0), verts.max(0)
 ext = hi - lo
@@ -155,8 +190,9 @@ if a.length > 0:
 elif a.height > 0:
     scale = a.height / max(ext[2], 1e-9)
 centre = Vector((((lo + hi) / 2.0)[0], ((lo + hi) / 2.0)[1], lo[2]))
-body.matrix_world = Matrix.Diagonal((scale, scale, scale, 1.0)) @ Matrix.Translation(-centre) @ body.matrix_world
-fb.apply_transforms([body])
+for _o in FRAMED:
+    _o.matrix_world = Matrix.Diagonal((scale, scale, scale, 1.0)) @ Matrix.Translation(-centre) @ _o.matrix_world
+fb.apply_transforms(FRAMED)
 verts, faces = fb.mesh_arrays(body)
 DIMS = ap.dims_of(verts)
 frame.update({"turned_deg": turned, "snap_deg": snap, "scale": round(scale, 6),
@@ -164,6 +200,19 @@ frame.update({"turned_deg": turned, "snap_deg": snap, "scale": round(scale, 6),
 if not frame.get("manual"):
     fb.write_json(OUT, "frame.json", frame)
 print("FRAME front %s turned %.1f snap %.1f scale %.4f size %s" % (front, turned, snap, scale, DIMS), flush=True)
+
+# The shading: smooth by angle and the normal map, baked on the whole object before the cuts.
+nb.smooth_by_angle(body, a.crease)
+_maps, BAKE_DEVICE = nb.normal_maps([body], HIGH, a.normal_map, a.device, a.relief)
+BAKED = HIGH is not None and bool(_maps)
+if HIGH is not None:
+    bpy.data.objects.remove(HIGH)
+NORMAL_SIZE = list(next(iter(_maps.values())).size) if _maps else None
+SOURCES["normal"] = "the exporter (%s)" % (
+    ("baked from %s" % os.path.basename(a.bake_source)) + (", with the painted texture's relief" if a.relief else "")
+    if BAKED else "the painted texture's relief only")
+print("NORMALS crease %.1f map %s %s on %s" % (a.crease, NORMAL_SIZE, "baked" if BAKED else "relief only",
+                                              BAKE_DEVICE), flush=True)
 
 # The interior material of the cut faces.
 interior = bpy.data.materials.new("interior")
@@ -447,6 +496,8 @@ for part in PARTS:
 part_info[root_id]["origin_m"] = [0.0, 0.0, 0.0]
 
 # ---- 4. export ---------------------------------------------------------------------------------
+for _ob in objects.values():  # each part smooth by angle again: a cut's faces stay hard
+    nb.smooth_by_angle(_ob, a.crease)
 GLB = os.path.join(OUT, a.name + ".glb")
 MAPS = os.path.join(OUT, "_maps")
 fb.prepare_images(mat, a.image_format, MAPS)
@@ -457,11 +508,17 @@ if os.path.isdir(MAPS):
 materials, mflags = fb.material_report(GLB, root_id, SOURCES, a.image_format, NOT_CARRIED)
 for slot in sorted(mflags):
     report["problems"].append("material slot %s: %s" % (slot, mflags[slot]))
+_written = gn.check_glb(GLB, require_maps=False)
+report["problems"] += ["normals: " + f for f in _written["flags"]]
+NORMALS = {"crease_deg": a.crease, "normal_map": NORMAL_SIZE, "normal_baked": BAKED,
+           "bake_source": os.path.basename(a.bake_source) if a.bake_source else None, "bake_source_fit": BAKE_FIT,
+           "bake_device": BAKE_DEVICE, "relief": a.relief, "primitives": _written["primitives"]}
 tris_out = sum(p["triangles"] for p in part_info.values())
 report.update({"uv_layers": len(body.data.uv_layers), "material_count": 1, "interior_material": "interior",
                "base_color_texture": base_node.image.name, "texture_size": list(base_node.image.size),
                "triangles_in": tris_in, "triangles": tris_out, "triangle_budget": a.tris or None,
-               "seam_vertices_merged": merged, "parts": part_info, "materials": materials})
+               "seam_vertices_merged": merged, "parts": part_info, "materials": materials,
+               "normals": NORMALS})
 report["valid"] = not report["problems"]
 report["flags"] = list(report["problems"])
 fb.write_json(OUT, "mesh_report.json", report)
@@ -472,7 +529,8 @@ info = {"format": "forge-articulated", "version": 1, "status": "pending review",
         "root": root_id, "parts": part_info, "joints": joints, "interior_material": "interior",
         "frame": {"file": "frame.json", "front_given": front, "source": "manual" if frame.get("manual") else "order",
                   "snap_deg": snap, "scale": round(scale, 6)},
-        "mesh": {"triangles": tris_out, "report": "mesh_report.json", "image_format": a.image_format},
+        "mesh": {"triangles": tris_out, "report": "mesh_report.json", "image_format": a.image_format,
+                 "normal_map": NORMAL_SIZE, "normal_baked": BAKED, "crease_deg": a.crease},
         "seconds_export": round(time.time() - T0, 1)}
 fb.write_json(OUT, "model.json", info)
 print("DONE", len(PARTS), "parts,", len(report["flags"]), "flags", flush=True)

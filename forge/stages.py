@@ -307,8 +307,9 @@ ARTICULATED_OPTIONS = dict(_FRONT_STAGES, **{
         "region_split": {
             "kind": "local_gpu", "tool": "parts", "group": "local_gpu",
             "outputs": ("glb", "model", "mesh_report", "frame"), "tools": ("blender_python",),
-            "params": ("tris", "height", "length", "front", "image_format"),
-            "meaning": "the painted mesh turned to face +Z, scaled, cut into the order's parts by their regions, "
+            "params": ("tris", "height", "length", "front", "image_format", "normal_map", "crease", "relief"),
+            "meaning": "the painted mesh turned to face +Z, scaled, smooth by angle with a normal map baked from the "
+                       "raw mesh, cut into the order's parts by their regions, "
                        "each cut closed, each part's origin at its pivot, one node per part",
             "settings": {
                 "min_share": {"type": "number", "min": 0.0, "max": 0.5, "arg": "min_share",
@@ -366,7 +367,7 @@ HELD_ITEM_OPTIONS = dict(_FRONT_STAGES, **{
         "item_frame": {
             "kind": "local_gpu", "tool": "item", "group": "local_gpu",
             "outputs": ("glb", "sockets", "model", "mesh_report", "frame", "socket_map"), "tools": ("blender_python",),
-            "params": ("tris", "height", "length", "image_format"),
+            "params": ("tris", "height", "length", "image_format", "normal_map", "crease", "relief"),
             "meaning": "the painted mesh put in item space (front +x, top +z, the grip at the origin) at its real size, "
                        "its frame found from the cutout's silhouette (and a gun's grip and barrel), squared when long "
                        "and straight, its sockets proposed from the class template, and the socket file",
@@ -596,6 +597,11 @@ PARAMS = {
     "front": ("choice", "the glTF axis the generated mesh's front points along (+z: toward the reference's camera); "
                         "the exported model faces +Z"),
     "scale": ("int", "art pixels per pixel of the tile grid (iso_tile; default 4)"),
+    "normal_map": ("int", "normal map size in pixels of the parts and held items (default: the base colour's, at "
+                          "most 4096)"),
+    "crease": ("number", "the parts' and held items' crease angle in degrees: edges sharper stay hard (default 60)"),
+    "relief": ("number", "strength of the painted texture's relief in the parts' and held items' normal map "
+                         "(default 3)"),
 }
 PARAM_CHOICES = {"image_format": ("lossless", "compact"), "front": ("+z", "-z", "+x", "-x")}
 

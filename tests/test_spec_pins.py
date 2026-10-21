@@ -42,8 +42,13 @@ ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_
 # emissive slot): the exporter and tools/blender/glow_regions.py are in the export's
 # specification. The sample order's texts name no glowing colour, so its exports write the same
 # files as before; a resumed night redoes them, their sheets and decisions all the same.
+# The generic order's pin moved on purpose on 2026-10-21: the rigid recipes (object_3d, prop,
+# vehicle, figure) got a local normals step after the mesh (the paint stage's GLB has no
+# normals, so it was shaded flat); its object_3d piece gains that one job, every earlier job keeps
+# its hash (the Hunyuan3D mesh job is not redone). The normals step's code enters its
+# specification with its line endings normalised.
 PINS = {
-    "order_generic.json": "a148805423689b29e1f8fa3cff06720115ec0753be4f28d322bc879f25c78e44",
+    "order_generic.json": "76f72d2ec74e3be7e06a24651714ca2870b2d646829d1ab495600d624b7b7c60",
     "order_humanoid.json": "5e754c9e077c89aa959025f97ad77ae77d21999c6bb2a2c8518f1c20b3564c97",
 }
 

@@ -62,7 +62,13 @@ text names as glowing (visors, cores, energy seams, veins, thrusters) found on t
 texture and written into the GLB's emissive slot and the regions mask
 ([order.md](docs/order.md), "What glows"); `python -m forge.glow` does the same to a model
 already exported. It was tuned and checked on copies of a real night's 14 humanoids, 4
-creatures and 2 figures (CPU only); no factory night has run it yet. See the
+creatures and 2 figures (CPU only); no factory night has run it yet. Rigid models shade smooth
+(2026-10-21): the parts and held-item exporters smooth by angle (edges over 60 degrees hard) and
+bake a tangent-space normal map from the raw mesh before the reduction, checked in the written
+GLB; the `object_3d`, `prop`, `vehicle` and `figure` recipes end with a step that gives the
+painted mesh smooth normals (the paint stage writes none); `python -m forge.normals` does the
+same to a model already exported. Tested on synthetic GLBs and fixtures and run on the CPU on
+copies of real nights' items and parts; no factory night has run it yet. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).

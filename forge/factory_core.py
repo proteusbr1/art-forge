@@ -283,6 +283,10 @@ class Factory(ComfyJobs, LocalSteps):
             # The motion clips' code (forge/motion_clips.py): a fixed correction redoes them.
             from . import motion_jobs
             base["tool_sha"] = motion_jobs.code_fingerprint()
+        if job["kind"] == "normals":
+            # The smooth normals' code (tools/blender/glb_normals.py): a fixed step redoes them.
+            from . import normals
+            base["tool_sha"] = normals.code_fingerprint()
         if job["kind"].startswith("tile_"):
             # The iso_tile steps' code (forge/tile_steps.py, tools/blender/iso_grid.py).
             from . import tile_steps

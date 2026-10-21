@@ -7,7 +7,8 @@ Runs with a Python that imports bpy (Blender as a module):
   python held_item_export.py --mesh PAINTED.glb --out DIR --spec ITEM.json [--name model]
       [--length 0.9 | --height 0.3] [--reference CUTOUT.png] [--front auto|+x|...] [--top auto|+y|...]
       [--snap auto|1|0] [--tris 12000] [--tolerance-cm 1.0] [--metal-roughness MAP.png]
-      [--image-format lossless|compact]
+      [--image-format lossless|compact] [--bake-source RAW.glb] [--normal-map 0] [--crease 60]
+      [--relief 3.0] [--device CPU|GPU]
 
 Steps (the geometry in held_item_geometry.py):
 1. The frame: found (`orient`, --front and --top auto, the default) from the side silhouette
@@ -25,9 +26,17 @@ Steps (the geometry in held_item_geometry.py):
    Flags: a required socket missing, a socket off the mesh, and the frame's (a mesh that
    matches its reference from no side, gun cues that disagree with the reference, a long item
    with no one long axis, an elongated long item whose longest axis is far from its front).
-3. Writes <out>/<name>.glb (item space: front glTF +x, top glTF +y, the grip at the origin),
+3. The shading: every face smooth, edges whose faces meet at more than --crease degrees kept
+   hard; a tangent-space normal map (--normal-map pixels, 0: the base colour's size, at most
+   4096) baked in Cycles (--device) from --bake-source (the raw mesh before the mesh stage's
+   reduction, brought onto the painted mesh as it is, by its bounds or found; the same frame
+   applied), with the painted texture's relief blended in (--relief, 0 for none); without a
+   bake source (or one that does not line up: a flag) the map is the relief only.
+4. Writes <out>/<name>.glb (item space: front glTF +x, top glTF +y, the grip at the origin),
    <out>/<name>.json (the socket file), <out>/model.json, <out>/frame.json, <out>/sockets.json
-   and <out>/mesh_report.json (flags, fit measures, the materials read back from the GLB).
+   and <out>/mesh_report.json (flags, fit measures, the materials read back from the GLB, the
+   normals read back from it: a primitive without normals or shaded flat, a missing or lossy
+   normal map are flags).
    No UV layer or no base-colour texture stops it (exit code 4).
 """
 import argparse
@@ -42,7 +51,9 @@ from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forge_blender as fb  # noqa: E402
+import glb_normals as gn  # noqa: E402
 import held_item_geometry as hg  # noqa: E402
+import normal_bake as nb  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--mesh", required=True)
@@ -59,6 +70,11 @@ ap.add_argument("--tris", type=int, default=0, help="triangle budget (reported; 
 ap.add_argument("--tolerance-cm", type=float, default=1.0, help="how far from the surface a socket may be")
 ap.add_argument("--metal-roughness", default="")
 ap.add_argument("--image-format", default="lossless", choices=("lossless", "compact"))
+ap.add_argument("--bake-source", default="", help="the raw mesh before the reduction (the normal map's bake)")
+ap.add_argument("--normal-map", type=int, default=0, help="normal map size (0: the base colour's, at most 4096)")
+ap.add_argument("--crease", type=float, default=gn.CREASE_DEG, help="edges sharper than this stay hard (degrees)")
+ap.add_argument("--relief", type=float, default=gn.RELIEF_STRENGTH, help="the painted texture's relief (0: none)")
+ap.add_argument("--device", default="GPU", choices=("GPU", "CPU"), help="Cycles device of the bake")
 a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 OUT = os.path.abspath(a.out)
 os.makedirs(OUT, exist_ok=True)
@@ -135,6 +151,24 @@ if a.metal_roughness:
         fb.link_metal_roughness(mat, img)
     SOURCES["metallic_roughness"] = "the paint stage's map %s" % os.path.basename(a.metal_roughness)
 
+# The raw mesh (the normal map's bake source), brought onto the painted mesh in its frame.
+HIGH, BAKE_FIT = None, None
+if a.bake_source:
+    HIGH, _why = nb.import_source(a.bake_source)
+    if HIGH is None:
+        report["problems"].append("normals: the bake source %s %s" % (os.path.basename(a.bake_source), _why))
+    else:
+        BAKE_FIT = nb.align_source(HIGH, [body])
+        print("BAKE SOURCE", json.dumps(BAKE_FIT), flush=True)
+        if not BAKE_FIT["used"]:
+            report["problems"].append(
+                "normals: the bake source does not line up with the painted mesh (90th percentile distance %.4f m, "
+                "tolerance %.4f m): the normal map is the texture's relief only" % (
+                    BAKE_FIT["distance_m"]["p90"], BAKE_FIT["tolerance_m"]))
+            bpy.data.objects.remove(HIGH)
+            HIGH = None
+
+
 def read_alpha(path):
     """The alpha of a picture (2-D, row 0 the top), or (None, why)."""
     try:
@@ -196,6 +230,9 @@ m4 = Matrix(((m3[0, 0], m3[0, 1], m3[0, 2], res["translation"][0]),
              (0.0, 0.0, 0.0, 1.0)))
 body.data.transform(m4)
 body.data.update()
+if HIGH is not None:
+    HIGH.data.transform(m4)
+    HIGH.data.update()
 body.name = body.data.name = a.name
 check, _ = fb.mesh_arrays(body)
 found = res["frame"]["orient"]
@@ -218,7 +255,20 @@ if manual_sockets is None:
                          "socket file); a grip other than [0, 0, 0] moves the origin there; the next factory run "
                          "redoes this variant's item"})
 
-# ---- 3. export ---------------------------------------------------------------------------------
+# ---- 3. the shading: smooth by angle and the normal map --------------------------------------------
+nb.smooth_by_angle(body, a.crease)
+_maps, BAKE_DEVICE = nb.normal_maps([body], HIGH, a.normal_map, a.device, a.relief)
+BAKED = HIGH is not None and bool(_maps)
+if HIGH is not None:
+    bpy.data.objects.remove(HIGH)
+NORMAL_SIZE = list(next(iter(_maps.values())).size) if _maps else None
+SOURCES["normal"] = "the exporter (%s)" % (
+    ("baked from %s" % os.path.basename(a.bake_source)) + (", with the painted texture's relief" if a.relief else "")
+    if BAKED else "the painted texture's relief only")
+print("NORMALS crease %.1f map %s %s on %s" % (a.crease, NORMAL_SIZE, "baked" if BAKED else "relief only",
+                                              BAKE_DEVICE), flush=True)
+
+# ---- 4. export ---------------------------------------------------------------------------------
 GLB = os.path.join(OUT, a.name + ".glb")
 MAPS = os.path.join(OUT, "_maps")
 fb.prepare_images(mat, a.image_format, MAPS)
@@ -230,11 +280,16 @@ materials, mflags = fb.material_report(GLB, a.name, SOURCES, a.image_format, NOT
 for slot in sorted(mflags):
     report["problems"].append("material slot %s: %s" % (slot, mflags[slot]))
 report["problems"] += res["flags"]
+_written = gn.check_glb(GLB, require_maps=False)
+report["problems"] += ["normals: " + f for f in _written["flags"]]
+NORMALS = {"crease_deg": a.crease, "normal_map": NORMAL_SIZE, "normal_baked": BAKED,
+           "bake_source": os.path.basename(a.bake_source) if a.bake_source else None, "bake_source_fit": BAKE_FIT,
+           "bake_device": BAKE_DEVICE, "relief": a.relief, "primitives": _written["primitives"]}
 tris_n = sum(len(p.vertices) - 2 for p in body.data.polygons)
 report.update({"uv_layers": len(body.data.uv_layers), "material_count": len(mats),
                "base_color_texture": base_node.image.name, "texture_size": list(base_node.image.size),
                "triangles": tris_n, "triangle_budget": a.tris or None, "seam_vertices_merged": merged,
-               "fit": res["fit"], "materials": materials})
+               "fit": res["fit"], "materials": materials, "normals": NORMALS})
 report["valid"] = not report["problems"]
 report["flags"] = list(report["problems"])
 fb.write_json(OUT, "mesh_report.json", report)
@@ -258,7 +313,8 @@ info = {"format": "forge-held-item-model", "version": 1, "status": "pending revi
                   "front_given": front, "top_given": top, "found": found, "square": res["frame"]["square"],
                   "scale": round(res["scale"], 6)},
         "sockets_source": "manual" if manual_sockets is not None else "proposed",
-        "fit": res["fit"], "mesh": {"triangles": tris_n, "report": "mesh_report.json", "image_format": a.image_format},
+        "fit": res["fit"], "mesh": {"triangles": tris_n, "report": "mesh_report.json", "image_format": a.image_format,
+                 "normal_map": NORMAL_SIZE, "normal_baked": BAKED, "crease_deg": a.crease},
         "seconds_export": round(time.time() - T0, 1)}
 fb.write_json(OUT, "model.json", info)
 print("DONE item", a.name, "class", TEMPLATE["class"], len(report["flags"]), "flags", flush=True)

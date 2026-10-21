@@ -52,6 +52,9 @@ class LocalSteps:
             self.cutout(job, d, files)
         elif job["kind"] == "final":
             inputs = self.final(job, d, rec, files)
+        elif job["kind"] == "normals":
+            inputs = [self.input_record(job["input"])]
+            self.normals(job, d, rec, files)
         elif job["kind"] in ("motion", "motions"):
             from . import motion_jobs
             inputs = motion_jobs.run_local(self, job, d, files)
@@ -118,6 +121,27 @@ class LocalSteps:
         p = os.path.join(d, "%s.png" % slug(job["id"]))
         sheet.save(p)
         files["rgb"] = [os.path.relpath(p, self.out), sha_file(p)]
+
+    def normals(self, job, d, rec, files):
+        """The painted mesh with smooth normals (glb_normals.smooth_glb: every triangle
+        primitive without normals or shaded flat gets creased normals, edges over 60 degrees
+        hard), and its report; a written GLB without normals or still shaded flat fails."""
+        from .normals import TOOLS
+        import sys
+        if TOOLS not in sys.path:
+            sys.path.insert(0, TOOLS)
+        import glb_normals
+        src = self.resolve(job["input"])[0]
+        p = os.path.join(d, "%s.glb" % slug(job["id"]))
+        report = glb_normals.smooth_glb(src, p, job.get("crease", glb_normals.CREASE_DEG))
+        check = glb_normals.check_glb(p, require_maps=False)
+        report["flags"] = check["flags"]
+        r = os.path.join(d, "%s_report.json" % slug(job["id"]))
+        write_json(r, report)
+        if check["flags"]:
+            raise RuntimeError("normals: " + "; ".join(check["flags"]))
+        files["painted_mesh"] = [os.path.relpath(p, self.out), sha_file(p)]
+        files["normals_report"] = [os.path.relpath(r, self.out), sha_file(r)]
 
     def roll(self, job, d, files):
         x = load_rgba(self.resolve(job["input"])[0])[..., :3]

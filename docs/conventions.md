@@ -281,6 +281,86 @@ holds a map of its own (carried from the material source) keeps it, and only the
 marks the lights. When nothing glows the GLB is left as written. `mesh_report.json`
 `materials.slots.emissive.source_from` is then "the exporter's glow (colours)".
 
+### Smooth normals and the normal map
+
+A generated mesh comes without normals (the Hunyuan3D paint stage's GLB has no `NORMAL`
+attribute, and glTF viewers then shade every triangle flat), and a mesh exported without
+smoothing carries one normal per triangle: both look faceted. The parts and held-item exporters
+(since 2026-10-21) and the rigid recipes' normals step give them smooth shading:
+
+- **Smooth by angle**: every face smooth; an edge whose faces meet at more than the crease
+  angle (`crease`, default 60 degrees) stays hard. In the exporters Blender's own (sharp edges
+  from the angle; the parts again after the cuts, so a cut's faces stay hard); without Blender
+  `tools/blender/glb_normals.py` `creased_normals`: a corner's normal is the corner-angle
+  weighted mean of the normals of the triangles around its vertex within the crease angle of
+  its own triangle, vertices at one place counted as one (a UV seam does not split the
+  shading).
+- **The normal map** (exporters and the refresh command): tangent space (glTF's convention),
+  baked in Cycles from the raw mesh before the mesh stage's reduction (the job's input
+  `bake_source`: the mesh stage's `raw_mesh`; ray 2 % and cage 0.6 % of the extent, as the
+  humanoid's), with the painted texture's relief blended in (`relief`, default 3: the slopes of
+  its luminance high-passed, the humanoid exporter's blend). The raw mesh is brought onto the
+  painted mesh as it is, by its bounds, or found (`tools/blender/normal_bake.py`
+  `align_source`: a similarity transform searched from the 48 frames of the two meshes' axes
+  and principal axes, refined by closest points, then point to plane) and is used when 90 % of
+  the painted mesh's vertices lie within 1 % of its extent from the raw surface; otherwise the
+  map is the relief only and `mesh_report.json` has the flag `normals: the bake source does not
+  line up ...`. Size `normal_map` (default the base colour's, at most 4096). The articulated
+  exporter bakes the whole object before the cuts; the cut faces' `interior` material has no map.
+- **The check after writing**, read from the written GLB (`glb_normals.check_glb`): a
+  primitive without normals, or shaded flat (half or more of its curved joins split: corners at
+  one place whose triangles meet at 2 to 30 degrees and whose normals differ by more than 1
+  degree), is a flag `normals: ...`; the normal map's slot is in `materials.slots.normal` and,
+  as every slot whose source exists, a missing or lossy map is a flag.
+
+`mesh_report.json` `normals` (parts and held items): `crease_deg`, `normal_map` (its size),
+`normal_baked`, `bake_source` (file name), `bake_source_fit` (`tolerance_m`, `distance_as_is_m`,
+`distance_bounds_m`, `candidates`, `how`: `as_is`, `bounds` or `found`, `distance_m` (median
+and 90th percentile), `scale`, `rotation_deg`, `matrix`, `used`), `bake_device`, `relief` and
+`primitives` (per primitive: `mesh`, `primitive`, `triangles`, `normals` (`present` or
+`missing`), `flat_share`). `model.json` `mesh` adds `normal_map`, `normal_baked` and
+`crease_deg`.
+
+The rigid recipes (`object_3d`, `prop`, `vehicle`, `figure`) end with a local step
+`<family>/<piece>/normals` (kind `normals`): the mesh job's painted mesh again with smooth
+normals (`glb_normals.smooth_glb`, crease 60 degrees; no normal map: they have no raw mesh), in
+`<piece>/<piece>_normals.glb` (role `painted_mesh`) with `<piece>/<piece>_normals_report.json`
+(per primitive the state before and after and the vertex counts). A written GLB still without
+normals or shaded flat fails the step.
+
+### Normals on an exported model
+
+`python -m forge.normals` gives an exported model smooth normals and a baked normal map
+without exporting it again (no GPU unless asked, nothing sent to a server):
+
+    python -m forge.normals SOURCE --out DIR [--raw RAW.glb [--via PAINTED.glb]] [--crease 60]
+                            [--normals auto|always|keep] [--size 0] [--max-size 2048]
+                            [--relief 3] [--no-map] [--replace ours|all] [--device CPU|GPU]
+                            [--tolerance 0.01] [--config forge.local.json]
+
+`SOURCE` is an exporter's folder (its `model.json` names the GLB) or a GLB file. Every
+triangle primitive without normals or with half its curved joins split (`--normals auto`;
+`always`: every one; `keep`: none) gets creased smooth normals (`glb_normals.smooth_glb`:
+vertices split where a hard edge needs two normals and vertices equal in every attribute
+merged; a `TANGENT` attribute is dropped, a client computes MikkTSpace tangents from the new
+normals); skeleton, skins, animations, nodes, materials and images are kept. With `--raw` (the
+variant's `v<seed>_mesh_raw_mesh.glb`) Blender (`blender_python`) bakes a map per base-colour
+image from it on the new normals (`tools/blender/normal_bake.py` run as a script; armatures in
+their rest pose); the raw mesh is found on the model as above, or, with `--via` (the painted
+mesh the model was exported from, `v<seed>_paint_painted_mesh.glb`, in the raw mesh's frame),
+the via mesh is found on the model, which is exact because the model holds its very surface,
+and the raw mesh follows it. Without `--raw`, or when it does not line up (a flag), the map is
+flat with the painted relief (`--relief`, 0 for none). `--no-map` writes the normals only. A
+material's normal map that this command did not write is kept unless `--replace all`. The map's
+size is `--size`, else the base colour's at most `--max-size`. Exit codes: 0, 2 (bad input), 3
+(the check flagged the written GLB).
+
+Writes into `DIR` the GLB (same name) and `normals.json` (`forge-normals`: `normals` (per
+primitive before and after), `bake` (the bake's record: `fit`, `via`, `raw_on_via`, `device`,
+`raw_problem`), `map` (per material `size`, `baked`, `relief`, `slot`: `written` or `kept`),
+`check` (`glb_normals.check_glb`) and `flags`: the check's, a lost node, skin, animation,
+material, image or emissive map, and a raw mesh that did not line up).
+
 ### Glow on an exported model
 
 `python -m forge.glow` gives an exported model its glow again without exporting it (no
