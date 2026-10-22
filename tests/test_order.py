@@ -108,9 +108,12 @@ class OrderTest(unittest.TestCase):
         self.assertProblem(self.problems({"recipe": "spaceship"}), "unknown recipe 'spaceship'")
 
     def test_missing_stage_option(self):
-        # The core recipes have one option per stage (concept, mesh); material has none.
+        # The core recipes have few options per stage (concept, mesh, paint); material has none.
         self.assertProblem(self.problems({"stages": {"rig": "unirig"}}), "has no stage 'rig'")
-        self.assertProblem(self.problems({"stages": {"mesh": "trellis2"}}), "stage mesh of recipe object_3d has no option 'trellis2'")
+        self.assertProblem(self.problems({"stages": {"mesh": "unirig"}}), "stage mesh of recipe object_3d has no option 'unirig'")
+        # mesh trellis2 (2026-10-22) needs its own texture or hunyuan_concept, not the Paint inside a Hunyuan3D job
+        self.assertProblem(self.problems({"stages": {"mesh": "trellis2"}}), "mesh trellis2 needs paint")
+        self.assertEqual(self.problems({"stages": {"mesh": "trellis2", "paint": "trellis2_texture"}}), [])
         self.assertEqual(self.problems({"stages": {"mesh": "hunyuan21", "concept": "klein"}}), [])
         fake = {"mesh": {"default": "a", "skippable": False, "options": {"a": {"kind": "comfy"}}}}
         with patch.dict(stages.CATALOGUE, {"object_3d": fake}):

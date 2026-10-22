@@ -168,6 +168,14 @@ and `figure`; stage `mesh` (option `hunyuan21`) in `object_3d`, `prop`, `vehicle
 `hunyuan21_inline` (Hunyuan3D Paint inside the mesh job, as always: its `paint_*` settings
 are mesh settings), or `hunyuan_concept` (the mesh job keeps its shape, role `shape`, and
 the paint stage paints it in three jobs: [below](#the-paint-option-hunyuan_concept)).
+Their stage `mesh` also has the option `trellis2` (TRELLIS.2 from the picked concept, with the
+recipe's triangle budget and texture size and the `trellis2` settings below, `resolution`
+among them), painted by `trellis2_texture` (the mesh job keeps TRELLIS.2's own bake at the
+recipe's texture size, as the humanoid's option) or `hunyuan_concept` (over its `game_mesh`).
+The texture-painting lab's winner for objects and vehicles seen in 3/4 is mesh `trellis2` with
+`resolution` 1536 and paint `trellis2_texture` ([labs/texture-painting.md](labs/texture-painting.md)).
+The order check refuses mesh `trellis2` with paint `hunyuan21_inline`, and paint
+`trellis2_texture` with mesh `hunyuan21`.
 `material` has stage `texture` (its raw textures, the N seeds before the pick): by default
 `qwen21_turbo` (Qwen Image 2.1 Turbo with the material negative text, as always), or
 `klein4b` (FLUX.2 Klein 4B, `klein4b_t2i.json` without its background removal, nodes 14 to
@@ -255,7 +263,7 @@ Seeds are fixed: derived from `family/piece` (the same order gives the same seed
 | `concept` | Klein concept (N seeds) -> pick (2D only) |
 | `illustration` | finished picture (background kept), picked by detail |
 | `material` | Qwen Image 2.1 Turbo (or, with stage `texture` `klein4b`, FLUX.2 Klein 4B) texture at 1024 (N seeds) -> pick -> 2K repaint -> rolled by half -> seam band repainted (inpaint) -> rolled back |
-| `object_3d` | Klein concept -> pick -> Hunyuan3D 2.1 shape and Paint; with `inputs.reference`, only the mesh |
+| `object_3d` | Klein concept -> pick -> Hunyuan3D 2.1 shape and Paint (or, with mesh `trellis2`, TRELLIS.2 and its own texture or `hunyuan_concept`); with `inputs.reference`, only the mesh |
 | `prop` | as `object_3d` with the prop view; no mesh with `"3d": false` |
 | `vehicle` | 3/4 concept (N seeds) -> pick -> views `side`, `back`, `other_side`, `top` -> sheet -> emissive mask -> mesh with a 4096 texture |
 | `figure` | Klein concept -> pick -> 3 Qwen Image Edit views (90, 180, 270 degrees) -> sheet -> emissive mask if `emissive` -> unrigged Hunyuan3D mesh |

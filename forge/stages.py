@@ -599,20 +599,26 @@ MATERIAL_TEXTURE_OPTIONS = {
                     meaning="FLUX.2 Klein 4B, 4 steps (no negative text: the material negative is not used)"),
 }
 _MESH = {"default": "hunyuan21", "skippable": False, "options": {"hunyuan21": OPTIONS["hunyuan21"]}}
-# The paint of the one-mesh recipes (object_3d, prop, vehicle): by default Hunyuan3D Paint inside the
-# mesh job; hunyuan_concept drops the mesh job's Paint branch and paints its shape in three jobs.
+# The mesh of the one-mesh recipes (object_3d, prop, vehicle): Hunyuan3D 2.1 by default, or TRELLIS.2
+# (its settings, "resolution" among them: the texture-painting lab's objects at 1536).
+_ONE_MESH = {"default": "hunyuan21", "skippable": False,
+             "options": {"hunyuan21": OPTIONS["hunyuan21"], "trellis2": OPTIONS["trellis2"]}}
+# The paint of the one-mesh recipes: by default Hunyuan3D Paint inside the mesh job (mesh hunyuan21);
+# hunyuan_concept paints the mesh job's shape in three jobs (either mesh); trellis2_texture keeps
+# TRELLIS.2's own bake (mesh trellis2; the lab's winner for objects and vehicles with a 3/4 concept).
 _PAINT = {"default": "hunyuan21_inline", "skippable": False, "options": {
     "hunyuan21_inline": {"kind": "comfy", "group": "hy3d", "in_stage": "mesh", "outputs": ("painted_mesh",),
                          "meaning": "Hunyuan3D Paint inside the mesh job (hunyuan21_shape_paint.json: its paint_* "
                                     "settings are mesh settings)"},
-    "hunyuan_concept": HUMANOID_OPTIONS["paint"]["hunyuan_concept"]}}
+    "hunyuan_concept": HUMANOID_OPTIONS["paint"]["hunyuan_concept"],
+    "trellis2_texture": HUMANOID_OPTIONS["paint"]["trellis2_texture"]}}
 CATALOGUE = {
     "concept": {"concept": _CONCEPT},
     "illustration": {"concept": _CONCEPT},
     "material": {"texture": {"default": "qwen21_turbo", "skippable": False, "options": MATERIAL_TEXTURE_OPTIONS}},
-    "object_3d": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
-    "prop": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
-    "vehicle": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
+    "object_3d": {"concept": _CONCEPT, "mesh": _ONE_MESH, "paint": _PAINT},
+    "prop": {"concept": _CONCEPT, "mesh": _ONE_MESH, "paint": _PAINT},
+    "vehicle": {"concept": _CONCEPT, "mesh": _ONE_MESH, "paint": _PAINT},
     "figure": {"concept": _CONCEPT, "mesh": _MESH},
     "humanoid": {stage: {"default": HUMANOID_DEFAULTS[stage], "skippable": stage in HUMANOID_SKIPPABLE,
                          "options": opts} for stage, opts in HUMANOID_OPTIONS.items()},

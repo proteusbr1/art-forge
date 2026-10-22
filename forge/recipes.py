@@ -109,21 +109,47 @@ def normals_job(fam, a):
             "input": {"ref": "%s/%s/mesh" % (fid, aid), "role": "painted_mesh"}}
 
 
+def trellis2_mesh_job(mesh_job, keep_texture):
+    """The mesh job of a one-mesh recipe made by TRELLIS.2 (mesh option trellis2) instead of the
+    Hunyuan3D job the recipe built: the same id, image, seed, triangle budget and texture size.
+    With keep_texture (paint trellis2_texture) it keeps TRELLIS.2's own bake at that size
+    (painted_mesh); otherwise it drops the bake and another paint stage paints its game_mesh."""
+    v = mesh_job["values"]
+    tex = mesh_job.get("set", {}).get("9.texture_size", 2048)
+    job = {"id": mesh_job["id"], "kind": "comfy", "group": "trellis2", "workflow": "trellis2_mesh.json",
+           "stage": "mesh", "values": {"$IMAGE$": v["$IMAGE$"], "$SEED$": v["$SEED$"], "$TRIS$": v["$FACES$"]},
+           "roles": {"403": "game_mesh", "405": "raw_mesh"}}
+    if keep_texture:
+        job["roles"]["322"] = "painted_mesh"
+        job["set"] = {"147.texture_size": tex, "196.resolution": tex}
+    else:
+        job["drop"] = list(stages.TRELLIS2_TEXTURE_NODES)
+    return job, tex
+
+
 def mesh_and_paint(recipe, fam, a, mesh_job):
     """The mesh job of a one-mesh recipe (object_3d, prop, vehicle) and its paint: by default
     Hunyuan3D Paint inside it; with the piece's paint option hunyuan_concept the mesh job keeps
-    its shape only and the paint stage's three jobs (paint_jobs) paint it. Then the normals step
-    over the painted mesh."""
+    its shape only and the paint stage's three jobs (paint_jobs) paint it. With mesh trellis2 the
+    mesh job is TRELLIS.2's (trellis2_mesh_job): paint trellis2_texture keeps its own bake,
+    hunyuan_concept paints its game_mesh. Then the normals step over the painted mesh."""
     fid, aid = fam["id"], a["id"]
     opts = stages.chosen_options(recipe, a)
-    if opts.get("paint") != "hunyuan_concept":
-        return [mesh_job, normals_job(fam, a)]
-    tex = mesh_job.get("set", {}).get("9.texture_size", 2048)
-    mesh_job["drop"] = list(mesh_job.get("drop", [])) + list(stages.HUNYUAN21_PAINT_NODES)
-    mesh_job["roles"] = {"6": "shape"}
-    mesh_job.pop("mesh_role", None)
-    for key in ("set", "set_on_failure"):
-        mesh_job[key] = {k: v for k, v in mesh_job.get(key, {}).items() if not k.startswith("9.")}
+    if opts.get("mesh") == "trellis2":
+        mesh_job, tex = trellis2_mesh_job(mesh_job, opts.get("paint") == "trellis2_texture")
+        if opts.get("paint") != "hunyuan_concept":
+            return [mesh_job, normals_job(fam, a)]
+        shape = {"ref": mesh_job["id"], "role": "game_mesh"}
+    else:
+        if opts.get("paint") != "hunyuan_concept":
+            return [mesh_job, normals_job(fam, a)]
+        tex = mesh_job.get("set", {}).get("9.texture_size", 2048)
+        mesh_job["drop"] = list(mesh_job.get("drop", [])) + list(stages.HUNYUAN21_PAINT_NODES)
+        mesh_job["roles"] = {"6": "shape"}
+        mesh_job.pop("mesh_role", None)
+        for key in ("set", "set_on_failure"):
+            mesh_job[key] = {k: v for k, v in mesh_job.get(key, {}).items() if not k.startswith("9.")}
+        shape = {"ref": mesh_job["id"], "role": "shape"}
     jobs = [mesh_job]
     fields = {"paint": stages.option(recipe, "paint", "hunyuan_concept")}
 
@@ -132,8 +158,7 @@ def mesh_and_paint(recipe, fam, a, mesh_job):
         job.setdefault("group", fields[stage]["group"])
         jobs.append(job)
         return job["id"]
-    last = paint_jobs(add, None, opts, fields, mesh_job["values"]["$IMAGE$"], {"ref": mesh_job["id"], "role": "shape"},
-                      mesh_job["values"]["$SEED$"], tex)
+    last = paint_jobs(add, None, opts, fields, mesh_job["values"]["$IMAGE$"], shape, mesh_job["values"]["$SEED$"], tex)
     normals = normals_job(fam, a)
     normals["input"] = {"ref": last, "role": "painted_mesh"}
     return jobs + [normals]
@@ -995,10 +1020,24 @@ RECIPES = {"vehicle": recipe_vehicle, "illustration": recipe_illustration, "figu
            "object_3d": recipe_object_3d, "concept": recipe_concept, "prop": recipe_prop,
            "material": recipe_material, "humanoid": recipe_humanoid, "articulated": recipe_articulated,
            "creature": recipe_creature, "held_item": recipe_held_item, "iso_tile": recipe_iso_tile}
+def check_one_mesh(where, piece, problems):
+    """The paint of a one-mesh recipe (object_3d, prop, vehicle: one stage catalogue) against its
+    mesh: Hunyuan3D Paint inside the mesh job needs mesh hunyuan21, TRELLIS.2's own texture needs
+    mesh trellis2."""
+    opts = stages.chosen_options("object_3d", piece)
+    if opts.get("mesh") == "trellis2" and opts.get("paint") == "hunyuan21_inline":
+        problems.append("%s: mesh trellis2 needs paint trellis2_texture (TRELLIS.2's own bake) or hunyuan_concept "
+                        "(hunyuan21_inline is the Paint inside a Hunyuan3D mesh job)" % where)
+    if opts.get("mesh") != "trellis2" and opts.get("paint") == "trellis2_texture":
+        problems.append("%s: paint trellis2_texture keeps TRELLIS.2's own texture, which needs mesh trellis2 "
+                        "(mesh %s)" % (where, opts.get("mesh")))
+
+
 # Recipe-specific checks of a piece, called by forge.order.check_order with the piece's
 # valid stages and skips: check(where, piece, problems).
 PIECE_CHECKS = {"humanoid": check_humanoid, "articulated": check_articulated, "creature": check_creature,
-                "held_item": check_held_item}
+                "held_item": check_held_item, "object_3d": check_one_mesh, "prop": check_one_mesh,
+                "vehicle": check_one_mesh}
 
 
 def expand(job_list, only=None):

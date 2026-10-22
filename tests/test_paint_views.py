@@ -241,6 +241,52 @@ class ExpansionTest(unittest.TestCase):
                 self.assertEqual(jobs["f/box/paint"]["values"]["$TEXTURE$"], 4096 if recipe == "vehicle" else 2048)
                 self.assertEqual(jobs["f/box/normals"]["input"], {"ref": "f/box/paint", "role": "painted_mesh"})
 
+    def test_one_mesh_trellis2(self):
+        """object_3d, prop and vehicle with mesh trellis2: paint trellis2_texture keeps TRELLIS.2's bake
+        at the recipe's texture size (the lab's objects: resolution 1536), hunyuan_concept paints its
+        game_mesh; the Hunyuan3D paint inside the mesh job and TRELLIS.2's texture without its mesh
+        are refused."""
+        for recipe in ("object_3d", "prop", "vehicle"):
+            with self.subTest(recipe=recipe):
+                style = {"global": "g", "view_object": "o", "view_prop": "p", "view_vehicle": "v", "emissive": "e"}
+                piece = {"id": "box", "brief": "A box.", "params": {"tris": 90000},
+                         "stages": {"mesh": {"option": "trellis2", "settings": {"resolution": 1536}},
+                                    "paint": "trellis2_texture"}}
+                base = {"version": 1, "style": style, "families": [{"id": "f", "recipe": recipe, "assets": [piece]}]}
+                order = self.load(base)
+                self.assertEqual(check_order(order, self.config), [])
+                jobs = {j["id"]: j for j in expand(order)}
+                mesh = jobs["f/box/mesh"]
+                tex = 4096 if recipe == "vehicle" else 2048
+                self.assertEqual(mesh["workflow"], "trellis2_mesh.json")
+                self.assertEqual(mesh["roles"], {"403": "game_mesh", "405": "raw_mesh", "322": "painted_mesh"})
+                self.assertEqual(mesh["values"]["$TRIS$"], 90000)
+                self.assertEqual(mesh["values"]["$IMAGE$"], {"ref": "f/box/pick", "role": "rgba"})
+                self.assertEqual(mesh["set"], {"147.texture_size": tex, "196.resolution": tex,
+                                               "94.target_resolution": 1536})
+                self.assertNotIn("drop", mesh)
+                self.assertNotIn("f/box/paint", jobs)
+                self.assertEqual(jobs["f/box/normals"]["input"], {"ref": "f/box/mesh", "role": "painted_mesh"})
+
+                piece["stages"]["paint"] = "hunyuan_concept"
+                order = self.load(base)
+                self.assertEqual(check_order(order, self.config), [])
+                jobs = {j["id"]: j for j in expand(order)}
+                mesh = jobs["f/box/mesh"]
+                self.assertEqual(mesh["roles"], {"403": "game_mesh", "405": "raw_mesh"})
+                self.assertTrue(set(stages.TRELLIS2_TEXTURE_NODES) <= set(mesh["drop"]))
+                self.assertEqual(jobs["f/box/paint_views"]["values"]["$MESH$"]["ref"], "f/box/mesh")
+                self.assertEqual(jobs["f/box/paint_views"]["values"]["$MESH$"]["role"], "game_mesh")
+                self.assertEqual(jobs["f/box/paint"]["values"]["$TEXTURE$"], tex)
+                self.assertEqual(jobs["f/box/normals"]["input"], {"ref": "f/box/paint", "role": "painted_mesh"})
+
+                piece["stages"]["paint"] = "hunyuan21_inline"
+                problems = check_order(self.load(base), self.config)
+                self.assertTrue(any("mesh trellis2 needs paint" in p for p in problems), problems)
+                piece["stages"] = {"paint": "trellis2_texture"}
+                problems = check_order(self.load(base), self.config)
+                self.assertTrue(any("needs mesh trellis2" in p for p in problems), problems)
+
 
 class FakeNightTest(unittest.TestCase):
     """The three jobs run against the fake server: six views come back, the view step lays the
