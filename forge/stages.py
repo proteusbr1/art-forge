@@ -212,6 +212,36 @@ HUMANOID_OPTIONS = {
                 "view_size": {"type": "int", "min": 512, "max": 1024, "step": 256, "to": ["9.view_size"],
                               "meaning": "size of the Paint views"},
             }},
+        # Hunyuan3D Paint's views with the cutout projected (forge/paint_views.py): three jobs,
+        # <variant>/paint_views (the views, ComfyUI), <variant>/paint_concept (the cutout laid on
+        # them, local) and <variant>/paint (their bake, ComfyUI: painted_mesh, albedo,
+        # metal_roughness, as hunyuan_paint's).
+        "hunyuan_concept": {
+            "kind": "comfy", "workflow": "hunyuan21_paint_views.json", "group": "hunyuan_paint", "heavy": True,
+            "roles": {"14": "views", "15": "mr_views", "16": "positions", "17": "normals"},
+            "bake_workflow": "hunyuan21_bake_views.json", "bake_group": "hunyuan_bake",
+            "bake_roles": {"12": "albedo", "13": "metal_roughness"}, "mesh_role": "painted_mesh",
+            "outputs": ("painted_mesh",), "params": ("texture",),
+            "meaning": "Hunyuan3D Paint's six views, the cutout itself laid on the "
+                       "view that shows what it shows where the surface faces its camera (when its silhouette fits "
+                       "that view: an orthographic cutout such as a held item's side view or a figure's front), "
+                       "enlarged and baked (forge/paint_views.py)",
+            "settings": {
+                "steps": {"type": "int", "min": 1, "max": 100, "to": ["9.steps"], "meaning": "steps of the Paint views"},
+                "guidance": {"type": "number", "min": 1.0, "max": 10.0, "to": ["9.guidance_scale"],
+                             "meaning": "guidance of the Paint views"},
+                "seed": {"type": "seed", "to": ["9.seed"],
+                         "meaning": "seed of the Paint views (its diffusion noise is fixed by the node: see OVERRIDDEN)"},
+                "view_size": {"type": "int", "min": 512, "max": 1024, "step": 256, "to": ["9.view_size"],
+                              "meaning": "size of the Paint views (default 768)"},
+                "bake_view_size": {"type": "int", "min": 512, "max": 4096, "step": 256, "arg": "size",
+                                   "meaning": "size the views are enlarged to before the bake (default 2048)"},
+                "match_colour": {"type": "bool", "arg": "match_colour",
+                                 "meaning": "also bring every view's colours to the cutout's (default false)"},
+                "min_fit": {"type": "number", "min": 0.0, "max": 1.0, "arg": "min_fit",
+                            "meaning": "the least overlap (IoU) of the cutout's silhouette with a view for the cutout "
+                                       "to be laid on it (default 0.88; 1 never lays it)"},
+            }},
         # TRELLIS.2's own texture: the mesh job keeps its bake (only with mesh trellis2).
         "trellis2_texture": {
             "kind": "comfy", "workflow": "trellis2_mesh.json", "group": "trellis2", "roles": {"322": "painted_mesh"},
@@ -550,13 +580,20 @@ STAGE_ORDER = {
 # exist so that an order can give their settings.
 _CONCEPT = {"default": "klein", "skippable": False, "options": {"klein": OPTIONS["klein"]}}
 _MESH = {"default": "hunyuan21", "skippable": False, "options": {"hunyuan21": OPTIONS["hunyuan21"]}}
+# The paint of the one-mesh recipes (object_3d, prop, vehicle): by default Hunyuan3D Paint inside the
+# mesh job; hunyuan_concept drops the mesh job's Paint branch and paints its shape in three jobs.
+_PAINT = {"default": "hunyuan21_inline", "skippable": False, "options": {
+    "hunyuan21_inline": {"kind": "comfy", "group": "hy3d", "in_stage": "mesh", "outputs": ("painted_mesh",),
+                         "meaning": "Hunyuan3D Paint inside the mesh job (hunyuan21_shape_paint.json: its paint_* "
+                                    "settings are mesh settings)"},
+    "hunyuan_concept": HUMANOID_OPTIONS["paint"]["hunyuan_concept"]}}
 CATALOGUE = {
     "concept": {"concept": _CONCEPT},
     "illustration": {"concept": _CONCEPT},
     "material": {},
-    "object_3d": {"concept": _CONCEPT, "mesh": _MESH},
-    "prop": {"concept": _CONCEPT, "mesh": _MESH},
-    "vehicle": {"concept": _CONCEPT, "mesh": _MESH},
+    "object_3d": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
+    "prop": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
+    "vehicle": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
     "figure": {"concept": _CONCEPT, "mesh": _MESH},
     "humanoid": {stage: {"default": HUMANOID_DEFAULTS[stage], "skippable": stage in HUMANOID_SKIPPABLE,
                          "options": opts} for stage, opts in HUMANOID_OPTIONS.items()},
@@ -579,6 +616,7 @@ PAINT_SEED = ("Hy3DMultiViewsGenerator passes the seed to seed_everything, but t
 OVERRIDDEN = {
     "hunyuan21_shape_paint.json": {"9.seed": PAINT_SEED},
     "hunyuan21_paint_mesh.json": {"9.seed": PAINT_SEED},
+    "hunyuan21_paint_views.json": {"9.seed": PAINT_SEED},
 }
 
 # Piece "params": name -> (type, meaning). "int" and "number" must be greater than zero; a
@@ -828,6 +866,10 @@ def apply_settings(recipe, piece, jobs):
         if stage not in given:
             continue
         sets, args = setting_targets(chosen[stage], given[stage], j.get("drop", ()))
+        # A stage of several jobs: each says what it takes ("set", "args"; hunyuan_concept)
+        if "takes" in j:
+            sets = sets if "set" in j["takes"] else {}
+            args = args if "args" in j["takes"] else {}
         if sets:
             j["set"] = dict(j.get("set", {}), **sets)
         if args:

@@ -109,6 +109,36 @@ def normals_job(fam, a):
             "input": {"ref": "%s/%s/mesh" % (fid, aid), "role": "painted_mesh"}}
 
 
+def mesh_and_paint(recipe, fam, a, mesh_job):
+    """The mesh job of a one-mesh recipe (object_3d, prop, vehicle) and its paint: by default
+    Hunyuan3D Paint inside it; with the piece's paint option hunyuan_concept the mesh job keeps
+    its shape only and the paint stage's three jobs (paint_jobs) paint it. Then the normals step
+    over the painted mesh."""
+    fid, aid = fam["id"], a["id"]
+    opts = stages.chosen_options(recipe, a)
+    if opts.get("paint") != "hunyuan_concept":
+        return [mesh_job, normals_job(fam, a)]
+    tex = mesh_job.get("set", {}).get("9.texture_size", 2048)
+    mesh_job["drop"] = list(mesh_job.get("drop", [])) + list(stages.HUNYUAN21_PAINT_NODES)
+    mesh_job["roles"] = {"6": "shape"}
+    mesh_job.pop("mesh_role", None)
+    for key in ("set", "set_on_failure"):
+        mesh_job[key] = {k: v for k, v in mesh_job.get(key, {}).items() if not k.startswith("9.")}
+    jobs = [mesh_job]
+    fields = {"paint": stages.option(recipe, "paint", "hunyuan_concept")}
+
+    def add(stage, job, name=None):
+        job.update({"id": "%s/%s/%s" % (fid, aid, name or stage), "stage": stage})
+        job.setdefault("group", fields[stage]["group"])
+        jobs.append(job)
+        return job["id"]
+    last = paint_jobs(add, None, opts, fields, mesh_job["values"]["$IMAGE$"], {"ref": mesh_job["id"], "role": "shape"},
+                      mesh_job["values"]["$SEED$"], tex)
+    normals = normals_job(fam, a)
+    normals["input"] = {"ref": last, "role": "painted_mesh"}
+    return jobs + [normals]
+
+
 def emissive_job(fam, a, pick_id, st):
     fid, aid = fam["id"], a["id"]
     return {"id": "%s/%s/emissive" % (fid, aid), "kind": "comfy", "group": "qwen_edit", "workflow": "qwen_edit_2511.json",
@@ -133,18 +163,17 @@ def has_reference(a):
 
 def recipe_object_3d(fam, a, st):
     if has_reference(a):
-        return [hy3d_job(fam, a, None, 40000), normals_job(fam, a)]
+        return mesh_and_paint("object_3d", fam, a, hy3d_job(fam, a, None, 40000))
     jobs = concept_jobs(fam, a, st, "view_object", 6, (1536, 1024))
-    return jobs + [hy3d_job(fam, a, jobs[-1]["id"], 40000), normals_job(fam, a)]
+    return jobs + mesh_and_paint("object_3d", fam, a, hy3d_job(fam, a, jobs[-1]["id"], 40000))
 
 
 def recipe_prop(fam, a, st):
     if has_reference(a) and a.get("3d", fam.get("3d", True)):
-        return [hy3d_job(fam, a, None, 30000), normals_job(fam, a)]
+        return mesh_and_paint("prop", fam, a, hy3d_job(fam, a, None, 30000))
     jobs = concept_jobs(fam, a, st, "view_prop", 4, (1024, 1024))
     if a.get("3d", fam.get("3d", True)):
-        jobs.append(hy3d_job(fam, a, jobs[-1]["id"], 30000))
-        jobs.append(normals_job(fam, a))
+        jobs.extend(mesh_and_paint("prop", fam, a, hy3d_job(fam, a, jobs[-1]["id"], 30000)))
     return jobs
 
 
@@ -169,8 +198,7 @@ def recipe_vehicle(fam, a, st):
         sheet.append({"ref": jid, "role": "rgba"})
     jobs.append({"id": "%s/%s/sheet" % (fid, aid), "kind": "sheet", "group": "local", "inputs": sheet})
     jobs.append(emissive_job(fam, a, pick, st))
-    jobs.append(hy3d_job(fam, a, pick, 120000, texture=4096, view=768))
-    jobs.append(normals_job(fam, a))
+    jobs.extend(mesh_and_paint("vehicle", fam, a, hy3d_job(fam, a, pick, 120000, texture=4096, view=768)))
     return jobs
 
 
@@ -265,6 +293,48 @@ def humanoid_texts(st, fam, a):
     return text, st.get("pose_humanoid") or st["view_humanoid"], st.get("cutout_humanoid") or st["view_humanoid"]
 
 
+# The paint options whose last job is a Hunyuan3D Paint bake (painted_mesh, albedo, metal_roughness).
+HUNYUAN_PAINTS = ("hunyuan_paint", "hunyuan_concept")
+
+
+def paint_jobs(add, comfy, opts, fields, cut_ref, mesh, s, tex):
+    """The paint stage's jobs over `mesh` (a reference to the mesh to paint) from the cutout
+    `cut_ref`; returns the id of the job whose painted_mesh the next stages take, or None when no
+    paint job runs (paint skipped, or TRELLIS.2's own texture).
+
+    hunyuan_paint: one job (Hunyuan3D Paint's views and bake). hunyuan_concept: <variant>/paint_views
+    (the six views with their metal-roughness, position and normal maps; takes the Paint settings),
+    <variant>/paint_concept (forge/paint_views.py: the cutout laid on the views; takes
+    bake_view_size and min_fit) and <variant>/paint (the bake of those views, painted_mesh)."""
+    option = opts.get("paint")
+    local_mesh = dict(mesh, transport="local_path")
+    if option == "hunyuan_paint":
+        return comfy("paint", {"$IMAGE$": cut_ref, "$SEED$": s, "$TEXTURE$": tex, "$MESH$": local_mesh},
+                     mesh_role="painted_mesh",
+                     set_on_failure={"9.texture_size": min(tex, 2048), "9.view_size": 512})
+    if option != "hunyuan_concept":
+        return None
+    f = fields["paint"]
+    views = add("paint", {"kind": "comfy", "workflow": f["workflow"], "heavy": True, "roles": dict(f["roles"]),
+                          "values": {"$IMAGE$": cut_ref, "$SEED$": s, "$MESH$": local_mesh},
+                          "set_on_failure": {"9.view_size": 512}, "takes": ("set",)}, name="paint_views")
+
+    def nth(role, i):
+        return {"ref": views, "role": role if i == 0 else "%s_%d" % (role, i)}
+    ins = {"cutout": dict(cut_ref)}
+    for i in range(6):
+        ins.update({"view_%d" % i: nth("views", i), "mr_%d" % i: nth("mr_views", i),
+                    "position_%d" % i: nth("positions", i), "normal_%d" % i: nth("normals", i)})
+    concept = add("paint", {"kind": "paint_views", "group": "local", "inputs": ins, "args": {}, "takes": ("args",)},
+                  name="paint_concept")
+    values = {"$MESH$": local_mesh, "$TEXTURE$": tex}
+    for i in range(6):
+        values["$ALBEDO%d$" % i] = {"ref": concept, "role": "albedo_%d" % i}
+        values["$MR%d$" % i] = {"ref": concept, "role": "mr_%d" % i}
+    return add("paint", {"kind": "comfy", "workflow": f["bake_workflow"], "group": f["bake_group"], "values": values,
+                         "roles": dict(f["bake_roles"]), "mesh_role": "painted_mesh", "takes": ()})
+
+
 def recipe_humanoid(fam, a, st):
     """A skinned figure with a human skeleton. For each seed of seeds_for(family/piece,
     variants) a chain of jobs <family>/<piece>/v<seed>/<stage>: reference -> pose ->
@@ -303,8 +373,8 @@ def recipe_humanoid(fam, a, st):
         chain = []
         reserve = i >= n
 
-        def add(stage, job):
-            job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, stage), "stage": stage, "variant": v})
+        def add(stage, job, name=None):
+            job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, name or stage), "stage": stage, "variant": v})
             if reserve:
                 job["hold"] = dict(hold)
             job.setdefault("group", fields[stage]["group"])
@@ -366,11 +436,7 @@ def recipe_humanoid(fam, a, st):
                          drop=list(stages.HUNYUAN21_PAINT_NODES))
         last, role = mesh, "painted_mesh"
         # paint: Hunyuan3D Paint over game_mesh (else TRELLIS.2's own texture stays)
-        if opts.get("paint") == "hunyuan_paint":
-            last = comfy("paint", {"$IMAGE$": cut_ref, "$SEED$": s, "$TEXTURE$": tex,
-                                   "$MESH$": {"ref": mesh, "role": "game_mesh", "transport": "local_path"}},
-                         mesh_role="painted_mesh",
-                         set_on_failure={"9.texture_size": min(tex, 2048), "9.view_size": 512})
+        last = paint_jobs(add, comfy, opts, fields, cut_ref, {"ref": mesh, "role": "game_mesh"}, s, tex) or last
         painted = {"ref": last, "role": "painted_mesh"}
         # rig, export: local tools on the card (forge/local_gpu.py RUNNERS)
         if "rig" in opts:
@@ -385,7 +451,7 @@ def recipe_humanoid(fam, a, st):
             # metallic-roughness map goes in losslessly.
             ins = {"rig": {"ref": last, "role": "rig"}, "bake_source": {"ref": mesh, "role": "raw_mesh"},
                    "material_source": dict(painted)}
-            if opts.get("paint") == "hunyuan_paint":
+            if opts.get("paint") in HUNYUAN_PAINTS:
                 ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
             for name, key in (("clips", "file"), ("items", "folder")):
                 if inputs.get(name):
@@ -496,7 +562,7 @@ def check_humanoid(where, piece, problems):
                     where, key, ", ".join(names)))
     tex = params.get("texture")
     if isinstance(tex, int) and not isinstance(tex, bool):
-        if opts.get("paint") == "hunyuan_paint" and not (512 <= tex <= 4096 and tex % 512 == 0):
+        if opts.get("paint") in HUNYUAN_PAINTS and not (512 <= tex <= 4096 and tex % 512 == 0):
             problems.append("%s: params.texture %d: Hunyuan3D Paint takes 512 to 4096, a multiple of 512" % (where, tex))
         elif opts["mesh"] == "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture" \
                 and not (256 <= tex <= 8192 and tex % 256 == 0):
@@ -622,12 +688,7 @@ def _front_chain(fam, a, st, recipe, s, add, comfy, opts, fields, size, view):
     else:
         mesh = comfy("mesh", {"$IMAGE$": cut_ref, "$SEED$": s, "$FACES$": tris},
                      drop=list(stages.HUNYUAN21_PAINT_NODES))
-    last = mesh
-    if opts.get("paint") == "hunyuan_paint":
-        last = comfy("paint", {"$IMAGE$": cut_ref, "$SEED$": s, "$TEXTURE$": tex,
-                               "$MESH$": {"ref": mesh, "role": "game_mesh", "transport": "local_path"}},
-                     mesh_role="painted_mesh",
-                     set_on_failure={"9.texture_size": min(tex, 2048), "9.view_size": 512})
+    last = paint_jobs(add, comfy, opts, fields, cut_ref, {"ref": mesh, "role": "game_mesh"}, s, tex) or mesh
     return mesh, {"ref": last, "role": "painted_mesh"}
 
 
@@ -651,8 +712,8 @@ def _variants(fam, a, st, recipe, size, view, tail, review_tool="sheet", final_e
         chain = []
         reserve = i >= n
 
-        def add(stage, job, v=v, chain=chain, reserve=reserve):
-            job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, stage), "stage": stage, "variant": v})
+        def add(stage, job, name=None, v=v, chain=chain, reserve=reserve):
+            job.update({"id": "%s/%s/%s/%s" % (fid, aid, v, name or stage), "stage": stage, "variant": v})
             if reserve:
                 job["hold"] = dict(hold)
             job.setdefault("group", fields[stage]["group"])
@@ -723,7 +784,7 @@ def recipe_articulated(fam, a, st):
     def tail(add, v, mesh, painted, opts):
         # The raw mesh (before the mesh stage's reduction) is the normal map's bake source.
         ins = {"mesh": painted, "bake_source": {"ref": mesh, "role": "raw_mesh"}}
-        if opts.get("paint") == "hunyuan_paint":
+        if opts.get("paint") in HUNYUAN_PAINTS:
             ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
         p = a.get("params") or {}
         args = dict({"name": a["id"], "parts": a.get("parts")}, **_tool_params(a))
@@ -748,7 +809,7 @@ def recipe_creature(fam, a, st):
             args.update(beams=10, postprocess=False)
         rig = add("rig", {"kind": "local_gpu", "tool": "rig", "inputs": {"mesh": painted}, "args": args})
         ins = {"rig": {"ref": rig, "role": "rig"}}
-        if opts.get("paint") == "hunyuan_paint":
+        if opts.get("paint") in HUNYUAN_PAINTS:
             ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
         if inputs.get("clips"):
             ins["clips"] = {"file": inputs["clips"]}
@@ -794,7 +855,7 @@ def recipe_held_item(fam, a, st):
         # The raw mesh (before the mesh stage's reduction) is the normal map's bake source.
         ins = {"mesh": painted, "reference": {"ref": "%s/%s/%s/cutout" % (fam["id"], a["id"], v), "role": "rgba"},
                "bake_source": {"ref": mesh, "role": "raw_mesh"}}
-        if opts.get("paint") == "hunyuan_paint":
+        if opts.get("paint") in HUNYUAN_PAINTS:
             ins["metal_roughness"] = {"ref": painted["ref"], "role": "metal_roughness"}
         p = a.get("params") or {}
         args = dict({"name": a["id"], "item": a.get("item")}, **{k: p[k] for k in ITEM_PARAMS if k in p})
@@ -862,7 +923,7 @@ def _check_front(where, recipe, piece, problems):
                                     where, why, " and pose skipped" if recipe == "creature" else ""))
     tex = params.get("texture")
     if isinstance(tex, int) and not isinstance(tex, bool):
-        if opts.get("paint") == "hunyuan_paint" and not (512 <= tex <= 4096 and tex % 512 == 0):
+        if opts.get("paint") in HUNYUAN_PAINTS and not (512 <= tex <= 4096 and tex % 512 == 0):
             problems.append("%s: params.texture %d: Hunyuan3D Paint takes 512 to 4096, a multiple of 512" % (where, tex))
         elif opts["mesh"] == "trellis2" and opts.get("paint", "trellis2_texture") == "trellis2_texture" \
                 and not (256 <= tex <= 8192 and tex % 256 == 0):

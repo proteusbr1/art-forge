@@ -55,6 +55,9 @@ class LocalSteps:
         elif job["kind"] == "normals":
             inputs = [self.input_record(job["input"])]
             self.normals(job, d, rec, files)
+        elif job["kind"] == "paint_views":
+            inputs = [self.input_record(r) for r in job["inputs"].values()]
+            self.paint_views(job, d, files)
         elif job["kind"] in ("motion", "motions"):
             from . import motion_jobs
             inputs = motion_jobs.run_local(self, job, d, files)
@@ -195,6 +198,20 @@ class LocalSteps:
         p = os.path.join(d, "%s_rgba.png" % slug(job["id"]))
         out.save(p)
         files["rgba"] = [os.path.relpath(p, self.out), sha_file(p)]
+
+    def paint_views(self, job, d, files):
+        """The paint option hunyuan_concept between its two ComfyUI jobs: Hunyuan3D Paint's views
+        with the cutout laid on them, enlarged (forge/paint_views.py)."""
+        from . import paint_views
+        ins = job["inputs"]
+        path = lambda k: self.resolve(ins[k])[0]
+        out = paint_views.run([path("view_%d" % i) for i in range(6)], [path("mr_%d" % i) for i in range(6)],
+                              [path("position_%d" % i) for i in range(6)], [path("normal_%d" % i) for i in range(6)],
+                              path("cutout"), os.path.join(d, slug(job["id"])), **(job.get("args") or {}))
+        for i in range(6):
+            files["albedo_%d" % i] = [os.path.relpath(out["albedo"][i], self.out), sha_file(out["albedo"][i])]
+            files["mr_%d" % i] = [os.path.relpath(out["mr"][i], self.out), sha_file(out["mr"][i])]
+        files["record"] = [os.path.relpath(out["record"], self.out), sha_file(out["record"])]
 
     def variant_flags(self, jid):
         """(flags, rank) of a finished variant from its export's reports: flags as text lines

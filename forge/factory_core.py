@@ -37,7 +37,8 @@ LOCAL_NATIVE_CLASSES = frozenset(("TripoSplatPreprocessImage", "TripoSplatCondit
 # (60 steps at 1024x1536), local_gpu an average of a rig, an export with its bake and a
 # sheet. Real nights replace them (timings.csv).
 ESTIMATE = {"klein": 13, "qwen_t2i": 8, "qwen_hires": 16, "qwen_inpaint": 30, "qwen_edit": 23,
-            "hy3d": 330, "local": 1, "qwen21_base": 90, "trellis2": 45, "hunyuan_paint": 90, "local_gpu": 60}
+            "hy3d": 330, "local": 1, "qwen21_base": 90, "trellis2": 45, "hunyuan_paint": 90, "hunyuan_bake": 45,
+            "local_gpu": 60}
 HEAVY_MIN_VRAM_GB = 3.0  # Hunyuan shape + Paint peaked at 7.6 and 8.8 GB; margin for 2048 textures
 SAME_GROUP_BURST = 24  # jobs of one model in a row before others' ready jobs get a turn
 STOP_FILE = "STOP"
@@ -287,6 +288,10 @@ class Factory(ComfyJobs, LocalSteps):
             # The smooth normals' code (tools/blender/glb_normals.py): a fixed step redoes them.
             from . import normals
             base["tool_sha"] = normals.code_fingerprint()
+        if job["kind"] == "paint_views":
+            # The paint views' code (forge/paint_views.py): a fixed step redoes them.
+            from . import paint_views
+            base["tool_sha"] = paint_views.code_fingerprint()
         if job["kind"].startswith("tile_"):
             # The iso_tile steps' code (forge/tile_steps.py, tools/blender/iso_grid.py).
             from . import tile_steps

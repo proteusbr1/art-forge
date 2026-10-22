@@ -50,6 +50,10 @@ format in [docs/order.md](docs/order.md) and the design in
 - `forge/comfy_jobs.py`: builds a workflow's prompt, submits it, collects its outputs.
 - `forge/local_steps.py`, `forge/scoring.py`: local steps without GPU (picks, sheets,
   seamless materials, a humanoid's cutout and final decision) and the pick scores.
+- `forge/paint_views.py`: the local step of the paint option `hunyuan_concept` (the cutout laid
+  on Hunyuan3D Paint's views before their bake; NumPy and Pillow), between the workflows
+  `hunyuan21_paint_views.json` and `hunyuan21_bake_views.json` ([docs/order.md](docs/order.md),
+  [docs/labs/texture-painting.md](docs/labs/texture-painting.md)).
 - `forge/acceptance.py`: a humanoid's acceptance limits (`accept`), the classification of
   its variants (acceptable or rejected, with the stage held responsible) and the outcome
   `no_variant_passed` that releases reserve variants.

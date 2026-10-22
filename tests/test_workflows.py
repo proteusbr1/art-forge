@@ -18,6 +18,7 @@ SHIPPED = {
     "qwen_image_21_turbo_inpaint.json", "qwen_image_21_turbo_tile.json", "qwen_edit_2511.json",
     "qwen_edit_character.json", "qwen_edit_view_angles.json", "klein_t2i.json",
     "hunyuan21_shape_paint.json", "hunyuan21_paint_mesh.json", "trellis2_mesh.json",
+    "hunyuan21_paint_views.json", "hunyuan21_bake_views.json",
 }
 
 
@@ -56,6 +57,29 @@ class WorkflowsTest(unittest.TestCase):
         self.assertEqual(markers(paint) - {"$PREFIX$", "$MESHNAME$"}, {"$IMAGE$", "$MESH$", "$SEED$", "$TEXTURE$"})
         views = [n for n in paint.values() if n["class_type"] == "Hy3DMultiViewsGenerator"][0]
         self.assertEqual((views["inputs"]["steps"], views["inputs"]["texture_size"]), (10, "$TEXTURE$"))
+
+    def test_concept_paint_workflows(self):
+        """hunyuan_concept: the views job saves the six views and their maps and bakes nothing;
+        the bake job takes six views and six metal-roughness views and bakes them."""
+        views, _ = load_workflow("hunyuan21_paint_views.json")
+        self.assertEqual(markers(views) - {"$PREFIX$"}, {"$IMAGE$", "$MESH$", "$SEED$"})
+        self.assertEqual({views[n]["inputs"]["images"][1] for n in ("14", "15", "16", "17")}, {1, 2, 3, 4})
+        self.assertFalse(any(n["class_type"] in ("Hy3DBakeMultiViews", "Hy3DInPaint") for n in views.values()))
+        paint, _ = load_workflow("hunyuan21_paint_mesh.json")
+        self.assertEqual(views["8"], paint["8"])  # the same cameras as Hunyuan3D Paint's own
+        self.assertEqual(views["9"]["inputs"]["steps"], paint["9"]["inputs"]["steps"])
+        bake, _ = load_workflow("hunyuan21_bake_views.json")
+        self.assertEqual(markers(bake) - {"$PREFIX$", "$MESHNAME$"},
+                         {"$MESH$", "$TEXTURE$"} | {"$ALBEDO%d$" % i for i in range(6)} | {"$MR%d$" % i for i in range(6)})
+        self.assertEqual(bake["8"]["inputs"]["camera_azimuths"], paint["8"]["inputs"]["camera_azimuths"])
+        self.assertEqual(bake["8"]["inputs"]["view_weights"], "1, 1, 1, 1, 0.5, 0.5")
+        # the views in camera order: albedo 100..105 and mr 200..205 batched in that order
+        ref, order = bake["9"]["inputs"]["albedo"], []
+        while bake[ref[0]]["class_type"] == "ImageBatch":
+            order.append(bake[ref[0]]["inputs"]["image2"][0])
+            ref = bake[ref[0]]["inputs"]["image1"]
+        self.assertEqual([ref[0]] + order[::-1], [str(100 + i) for i in range(6)])
+        self.assertEqual(bake["11"]["class_type"], "Hy3DInPaint")
 
     def test_trellis_texture_branch_drops_cleanly(self):
         wf, _ = load_workflow("trellis2_mesh.json")

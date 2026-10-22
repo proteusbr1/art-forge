@@ -164,7 +164,11 @@ list of names).
 The core recipes have one option per stage (the models they always used): stage
 `concept` (option `klein`) in `concept`, `illustration`, `object_3d`, `prop`, `vehicle`
 and `figure`; stage `mesh` (option `hunyuan21`) in `object_3d`, `prop`, `vehicle` and
-`figure`. `material` has no stages. No core stage can be skipped.
+`figure`. `object_3d`, `prop` and `vehicle` also have stage `paint`: by default
+`hunyuan21_inline` (Hunyuan3D Paint inside the mesh job, as always: its `paint_*` settings
+are mesh settings), or `hunyuan_concept` (the mesh job keeps its shape, role `shape`, and
+the paint stage paints it in three jobs: [below](#the-paint-option-hunyuan_concept)).
+`material` has no stages. No core stage can be skipped.
 
 | Option | Workflow | Setting | Type and range | Lands on |
 |---|---|---|---|---|
@@ -276,7 +280,7 @@ Everything it delivers is a candidate pending human review.
 | `pose` | `qwen_edit_2511` (Qwen Image Edit 2511, Lightning LoRA, 4 steps): the picture edited to the text of `pose_humanoid`, else `view_humanoid` | | yes | `rgb`, `mask` |
 | `cutout` | `birefnet` (local: the BiRefNet mask the previous workflow saved becomes the alpha; without a mask the picture's own alpha) | `qwen_edit_character` (Qwen Image Edit character edit, text `cutout_humanoid`, else `view_humanoid`) | no | `rgba` |
 | `mesh` | `trellis2` (TRELLIS.2 at 1024, remesh, reduction to `params.tris`) | `hunyuan21` (Hunyuan3D 2.1 shape only, reduced to `params.tris`; heavy) | no | `game_mesh` (reduced) and `raw_mesh` (before the reduction) |
-| `paint` | `hunyuan_paint` (Hunyuan3D Paint 2.1 over `game_mesh` by its local path, 10 steps, `params.texture`; heavy) | `trellis2_texture` (the mesh job keeps TRELLIS.2's own bake, at `params.texture`) | yes: TRELLIS.2's texture stays | `painted_mesh` |
+| `paint` | `hunyuan_paint` (Hunyuan3D Paint 2.1 over `game_mesh` by its local path, 10 steps, `params.texture`; heavy) | `trellis2_texture` (the mesh job keeps TRELLIS.2's own bake, at `params.texture`), `hunyuan_concept` (Hunyuan3D Paint's views with the cutout laid on them, then baked: [below](#the-paint-option-hunyuan_concept)) | yes: TRELLIS.2's texture stays | `painted_mesh` |
 | `rig` | `skintokens` (seed 9001, 10 beams: the validated setting; the `seed` setting overrides it) | `unirig` (seed 9001) | yes, with export (a statue) | `rig` |
 | `export` | `humanoid_export` (Blender: bone map, Godot humanoid names, `raw_mesh` as `--bake-source`, the painted mesh as `--material-source`, Hunyuan3D Paint's `metal_roughness` as `--metal-roughness`, `params`, `inputs.clips`, `inputs.items`, `inputs.bone_map`; what glows: the colours the piece's text names as glowing, weighed by the variant's cutout, see "What glows" below) | | yes | `glb`, `model`, `regions_mask`, `bone_map`, `mesh_report`, `motion_report` |
 | `review` | `godot_sheet` (Godot off screen, the piece's `review` camera) | | no | `sheet`, `layout` |
@@ -309,6 +313,10 @@ humanoid's `hunyuan21` takes only `shape_steps`, `shape_guidance`, `shape_seed` 
 | | `guidance` | number 1-10 | `9.guidance_scale` |
 | | `seed` | seed | `9.seed` (overridden by the node, as `paint_seed`) |
 | | `view_size` | int 512-1024, multiple of 256 | `9.view_size` |
+| `hunyuan_concept` | `steps`, `guidance`, `seed`, `view_size` | as `hunyuan_paint` | `9.*` of the `paint_views` job |
+| | `bake_view_size` | int 512-4096, multiple of 256 | argument `size` of the `paint_concept` step (default 2048) |
+| | `min_fit` | number 0-1 | argument `min_fit` of the `paint_concept` step (default 0.88) |
+| | `match_colour` | bool | argument `match_colour` of the `paint_concept` step (default false) |
 | `skintokens` | `seed` | int 0 to 2^32 - 1 | argument `seed` |
 | | `beams` | int 1-64 | argument `beams` |
 | | `postprocess` | bool | argument `postprocess` |
@@ -325,6 +333,25 @@ humanoid's `hunyuan21` takes only `shape_steps`, `shape_guidance`, `shape_seed` 
 
 `birefnet`, `input_image` and `trellis2_texture` have no settings (TRELLIS.2's texture
 sampler is set with the mesh's `texture_*` settings).
+
+### The paint option hunyuan_concept
+
+A paint option of every recipe with a `paint` stage (`humanoid`, `articulated`, `creature`,
+`held_item`, and `object_3d`, `prop` and `vehicle`), chosen by the order; the default stays
+`hunyuan_paint` (`hunyuan21_inline` in the one-mesh recipes). It paints the same mesh with
+the same Hunyuan3D Paint views, in three jobs instead of one:
+
+| Job | Kind | What it does | Hands on |
+|---|---|---|---|
+| `<variant>/paint_views` (`<piece>/paint_views` in the one-mesh recipes) | ComfyUI, heavy (`hunyuan21_paint_views.json`) | Hunyuan3D Paint's six views of the mesh (azimuths 0, 90, 180, 270, top, bottom) with their metal-roughness views, position maps and normal maps; no bake | `views`, `mr_views`, `positions`, `normals` (six files each: `views`, `views_1` ... `views_5`) |
+| `<variant>/paint_concept` | local, no card (`forge/paint_views.py`) | the side view whose silhouette the cutout's fits best (scale and shift, no mirror; a view and its opposite told apart by colour) is matched; when the overlap (IoU) reaches `min_fit`, the cutout itself replaces that view where the surface faces its camera (within about 40 degrees, fading out by 55; with `match_colour` every view's colours are first brought to the cutout's mean and spread of L*, a*, b*); every view is then enlarged to `bake_view_size`. Without a good fit the views are only enlarged. `paint_views.json` records the view, the fit and what was done | `albedo_0` ... `albedo_5`, `mr_0` ... `mr_5`, `record` |
+| `<variant>/paint` | ComfyUI (`hunyuan21_bake_views.json`) | the twelve views baked onto the mesh by Hunyuan3D Paint's own baker and inpainting (side views weight 1, top and bottom 0.5), at `params.texture` | `painted_mesh`, `albedo`, `metal_roughness` |
+
+The cutout reaches the texture only when it is an orthographic picture of the mesh: a held
+item's strict side view or a figure's front fit; a 3/4 concept (a vehicle's, an object's) or a
+mesh that does not match its cutout falls back to Hunyuan3D Paint's own views, enlarged. The
+cutout's light (its shading and highlights) goes into the albedo with it. The comparison that
+led to this option is [docs/labs/texture-painting.md](labs/texture-painting.md).
 
 ### What glows (humanoid and creature exports)
 

@@ -24,6 +24,12 @@ from forge.recipes import refs_of  # noqa: E402
 FIXTURES = os.path.join(HERE, "fixtures")
 ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_roughness", "rig", "glb", "model",
          "mesh_report", "motion_report", "image", "pick", "albedo", "paint_views", "shape", "background_mask")
+# The roles of the paint option hunyuan_concept's jobs (only its sample order's jobs get them: the
+# decisions' specifications hold every file of their candidates).
+CONCEPT_ROLES = ROLES + ("views", "mr_views", "positions", "normals", "record") + tuple(
+    "%s_%d" % (r, i) for r in ("views", "mr_views", "positions", "normals") for i in range(1, 6)) + tuple(
+    "%s_%d" % (r, i) for r in ("albedo", "mr") for i in range(6))
+ORDER_ROLES = {"order_paint_concept.json": CONCEPT_ROLES}
 # sha_obj({job id: specification hash}) of each sample order. The humanoid's moved on purpose
 # on 2026-10-19 with the exporter's fix (bones aimed by their joints, exact two-bone IK, the
 # figure turned to face glTF +z): its script enters the export's specification, so a resumed
@@ -47,13 +53,16 @@ ROLES = ("rgb", "mask", "rgba", "game_mesh", "raw_mesh", "painted_mesh", "metal_
 # normals, so it was shaded flat); its object_3d piece gains that one job, every earlier job keeps
 # its hash (the Hunyuan3D mesh job is not redone). The normals step's code enters its
 # specification with its line endings normalised.
+# order_paint_concept.json (2026-10-21): the paint option hunyuan_concept in the one-mesh recipes
+# (the mesh job without its Paint branch, then paint_views, paint_concept and paint).
 PINS = {
     "order_generic.json": "76f72d2ec74e3be7e06a24651714ca2870b2d646829d1ab495600d624b7b7c60",
     "order_humanoid.json": "5e754c9e077c89aa959025f97ad77ae77d21999c6bb2a2c8518f1c20b3564c97",
+    "order_paint_concept.json": "341f82841fa295cb2eec56f948950f6d9b32c41c68879888fb69a905902bc105",
 }
 
 
-def specs(order_path, tmp):
+def specs(order_path, tmp, roles=ROLES):
     """Every job's specification hash, each job "finished" in dependency order with output
     hashes derived from its own specification (a changed job changes its dependants)."""
     config = load_config(None)
@@ -73,7 +82,7 @@ def specs(order_path, tmp):
             sp = f.spec(j)
             out[j["id"]] = sp
             grew = True
-            entry = {"status": "done", "spec": sp, "files": {r: ["x/%s.bin" % r, sha_obj([sp, r])] for r in ROLES}}
+            entry = {"status": "done", "spec": sp, "files": {r: ["x/%s.bin" % r, sha_obj([sp, r])] for r in roles}}
             if j["kind"] == "pick":
                 entry["chosen"] = j["from"][0]
             f.manifest[j["id"]] = entry
@@ -91,7 +100,7 @@ class SpecificationPins(unittest.TestCase):
 
     def test_sample_orders_keep_their_specification_hashes(self):
         for name, pin in PINS.items():
-            got = sha_obj(specs(os.path.join(FIXTURES, name), self.tmp))
+            got = sha_obj(specs(os.path.join(FIXTURES, name), self.tmp, ORDER_ROLES.get(name, ROLES)))
             self.assertEqual(got, pin, "the specification hashes of %s changed" % name)
 
 

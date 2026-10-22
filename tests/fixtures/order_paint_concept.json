@@ -1,0 +1,17 @@
+{
+ "version": 1,
+ "note": "Sample order of the paint option hunyuan_concept: a 3D object and a prop painted with Hunyuan3D Paint's views and the cutout laid on them.",
+ "style": {
+  "global": "High detail original concept art, no text, no letters, no logos.",
+  "view_object": "Single object seen strictly from its side, centred, whole object visible, plain light grey background.",
+  "view_prop": "Single prop seen strictly from the front, centred, plain light grey background."
+ },
+ "families": [
+  {"id": "objects", "recipe": "object_3d", "variants": 2, "params": {"tris": 20000, "texture": 2048},
+   "stages": {"paint": {"option": "hunyuan_concept", "settings": {"min_fit": 0.85}}}, "assets": [
+   {"id": "lantern", "brief": "An old iron lantern with a glass chimney and a ring handle."}]},
+  {"id": "props", "recipe": "prop", "variants": 2, "assets": [
+   {"id": "crate", "brief": "A sturdy wooden crate with iron corner brackets.", "stages": {"paint": "hunyuan_concept"}}]}
+ ],
+ "tasks": []
+}

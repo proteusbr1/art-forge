@@ -68,7 +68,11 @@ bake a tangent-space normal map from the raw mesh before the reduction, checked 
 GLB; the `object_3d`, `prop`, `vehicle` and `figure` recipes end with a step that gives the
 painted mesh smooth normals (the paint stage writes none); `python -m forge.normals` does the
 same to a model already exported. Tested on synthetic GLBs and fixtures and run on the CPU on
-copies of real nights' items and parts; no factory night has run it yet. See the
+copies of real nights' items and parts; no factory night has run it yet. The paint option `hunyuan_concept`
+(2026-10-21) lays the cutout on Hunyuan3D Paint's views before their bake where the cutout is an
+orthographic view of the mesh; it was chosen by a comparison of paint methods on seven objects
+([docs/labs/texture-painting.md](docs/labs/texture-painting.md)) and its three jobs ran on a real server
+for four of them, not yet in a factory night. See the
 [design](docs/superpowers/specs/2026-10-18-art-forge-design.md), the
 [implementation plan](docs/superpowers/plans/2026-10-18-art-forge.md) and the formats in
 [docs/conventions.md](docs/conventions.md).
