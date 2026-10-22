@@ -35,8 +35,9 @@ LOCAL_NATIVE_CLASSES = frozenset(("TripoSplatPreprocessImage", "TripoSplatCondit
 # measurements of the same workflows (trellis2 42 s with its bake, hunyuan_paint 89 s,
 # qwen_edit 23 s for a 1024x1536 pose edit), qwen21_base from the Turbo's time per step
 # (60 steps at 1024x1536), local_gpu an average of a rig, an export with its bake and a
-# sheet. Real nights replace them (timings.csv).
-ESTIMATE = {"klein": 13, "qwen_t2i": 8, "qwen_hires": 16, "qwen_inpaint": 30, "qwen_edit": 23,
+# sheet; klein4b from the image-model lab (docs/labs/image-models.md, 3.5 s at 1024x1024).
+# Real nights replace them (timings.csv).
+ESTIMATE = {"klein": 13, "klein4b": 4, "qwen_t2i": 8, "qwen_hires": 16, "qwen_inpaint": 30, "qwen_edit": 23,
             "hy3d": 330, "local": 1, "qwen21_base": 90, "trellis2": 45, "hunyuan_paint": 90, "hunyuan_bake": 45,
             "local_gpu": 60}
 HEAVY_MIN_VRAM_GB = 3.0  # Hunyuan shape + Paint peaked at 7.6 and 8.8 GB; margin for 2048 textures

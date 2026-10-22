@@ -194,6 +194,41 @@ class SettingsTest(unittest.TestCase):
                     {"id": "p", "brief": "B.", "skip": ["paint"], "stages": {"paint": {"settings": {"steps": 2}}}}]}]}),
                 self.config), "stage paint is skipped")
 
+    # --- the material recipe's texture stage
+    def test_material_texture_option(self):
+        style = dict(STYLE, material_top="A seamless top-down texture of", material_look="Flat light.",
+                     material_negative="text, perspective")
+
+        def order(piece):
+            return {"version": 1, "style": style, "families": [{"id": "ground", "recipe": "material", "variants": 2,
+                    "assets": [dict({"id": "slabs", "brief": "worn grey flagstones"}, **piece)]}]}
+        plain = {j["id"]: j for j in expand(self.load(order({})))}
+        raws = [j for j in plain.values() if "/raw_s" in j["id"]]
+        self.assertEqual(len(raws), 2)
+        for j in raws:
+            self.assertEqual((j["workflow"], j["group"], j["roles"]), ("qwen_image_21_turbo_tile.json", "qwen_t2i", {"12": "rgb"}))
+            self.assertNotIn("stage", j)
+        # The default named explicitly changes nothing (no hash change).
+        self.assertEqual({j["id"]: j for j in expand(self.load(order({"stages": {"texture": "qwen21_turbo"}})))}, plain)
+        piece = {"stages": {"texture": {"option": "klein4b", "settings": {"steps": 6}}}}
+        self.assertEqual(check_order(self.load(order(piece)), self.config), [])
+        klein = {j["id"]: j for j in expand(self.load(order(piece)))}
+        self.assertEqual(sorted(klein), sorted(plain))
+        for jid, j in klein.items():
+            if "/raw_s" not in jid:
+                self.assertEqual(j, plain[jid])  # the pick, 2K repaint and seam stay as they were
+                continue
+            self.assertEqual((j["workflow"], j["group"], j["roles"]), ("klein4b_t2i.json", "klein4b", {"13": "rgb"}))
+            self.assertEqual(j["drop"], list(stages.KLEIN_RGBA_NODES))
+            self.assertNotIn("$NEGATIVE$", j["values"])
+            self.assertEqual(j["values"]["$PROMPT$"], plain[jid]["values"]["$PROMPT$"])
+            self.assertEqual(j["set"], {"10.steps": 6})
+            wf = build(dict(j, family="ground", asset="slabs"))
+            self.assertEqual(wf["10"]["inputs"]["steps"], 6)
+            self.assertNotIn("18", wf)
+        self.assertProblem(check_order(self.load(order({"stages": {"texture": "nope"}})), self.config),
+                           "has no option 'nope'")
+
 
 class SettingsHashTest(unittest.TestCase):
     """A setting enters the job specification: changing it redoes that job and what depends

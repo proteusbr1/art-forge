@@ -11,12 +11,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from forge.comfy_jobs import drop_nodes  # noqa: E402
 from forge.factory_core import WORKFLOWS, load_workflow  # noqa: E402
-from forge.stages import HUNYUAN21_PAINT_NODES, HUNYUAN21_RAW_NODES, TRELLIS2_TEXTURE_NODES  # noqa: E402
+from forge.stages import (HUNYUAN21_PAINT_NODES, HUNYUAN21_RAW_NODES, KLEIN_RGBA_NODES,  # noqa: E402
+                          TRELLIS2_TEXTURE_NODES)
 
 SHIPPED = {
     "qwen_image_21_base_t2i.json", "qwen_image_21_turbo_t2i.json", "qwen_image_21_turbo_hires.json",
     "qwen_image_21_turbo_inpaint.json", "qwen_image_21_turbo_tile.json", "qwen_edit_2511.json",
-    "qwen_edit_character.json", "qwen_edit_view_angles.json", "klein_t2i.json",
+    "qwen_edit_character.json", "qwen_edit_view_angles.json", "klein_t2i.json", "klein4b_t2i.json",
     "hunyuan21_shape_paint.json", "hunyuan21_paint_mesh.json", "trellis2_mesh.json",
     "hunyuan21_paint_views.json", "hunyuan21_bake_views.json",
 }
@@ -111,6 +112,20 @@ class WorkflowsTest(unittest.TestCase):
         core = json_copy(hy)
         drop_nodes(core, list(HUNYUAN21_RAW_NODES), "hunyuan21_shape_paint.json")
         self.assertNotIn("16", core)
+
+    def test_klein4b_is_klein_with_the_4b_model(self):
+        """klein4b_t2i.json is klein_t2i.json with FLUX.2 Klein 4B and its Qwen3 4B encoder;
+        without its background removal branch only the picture (13) is saved."""
+        k9, _ = load_workflow("klein_t2i.json")
+        k4, _ = load_workflow("klein4b_t2i.json")
+        self.assertEqual(k4["1"]["inputs"]["unet_name"], "flux-2-klein-4b-fp8.safetensors")
+        self.assertEqual(k4["2"]["inputs"]["clip_name"], "qwen_3_4b.safetensors")
+        k4["1"]["inputs"]["unet_name"] = k9["1"]["inputs"]["unet_name"]
+        k4["2"]["inputs"]["clip_name"] = k9["2"]["inputs"]["clip_name"]
+        self.assertEqual(k4, k9)
+        rgb = json_copy(k4)
+        drop_nodes(rgb, list(KLEIN_RGBA_NODES), "klein4b_t2i.json")
+        self.assertEqual([n for n, v in rgb.items() if v["class_type"] == "SaveImage"], ["13"])
 
 
 if __name__ == "__main__":

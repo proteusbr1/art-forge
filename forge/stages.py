@@ -82,6 +82,15 @@ OPTIONS = {
             "guidance": {"type": "number", "min": 0.0, "max": 30.0, "to": ["8.cfg"], "meaning": "guidance (CFG)"},
             "sampler": {"type": "combo", "to": ["9.sampler_name"], "meaning": "sampler"},
         }},
+    # FLUX.2 Klein 4B (distilled, fp8): the same graph as klein_t2i.json with the 4B model and
+    # its Qwen3 4B text encoder.
+    "klein4b": {
+        "kind": "comfy", "workflow": "klein4b_t2i.json", "group": "klein4b", "roles": {"13": "rgb", "18": "rgba"},
+        "settings": {
+            "steps": {"type": "int", "min": 1, "max": 50, "to": ["10.steps"], "meaning": "sampling steps"},
+            "guidance": {"type": "number", "min": 0.0, "max": 30.0, "to": ["8.cfg"], "meaning": "guidance (CFG)"},
+            "sampler": {"type": "combo", "to": ["9.sampler_name"], "meaning": "sampler"},
+        }},
     "hunyuan21": {
         "kind": "comfy", "workflow": "hunyuan21_shape_paint.json", "group": "hy3d", "heavy": True,
         "roles": {"6": "shape", "12": "albedo", "13": "metal_roughness", "14": "paint_views"},
@@ -579,6 +588,16 @@ STAGE_ORDER = {
 # The core recipes have one option per stage (the models they always used); the stages
 # exist so that an order can give their settings.
 _CONCEPT = {"default": "klein", "skippable": False, "options": {"klein": OPTIONS["klein"]}}
+# The material recipe's raw textures (its N seeds before the pick). The 2K repaint and the seam
+# inpaint stay Qwen Image 2.1 Turbo whichever option makes them.
+KLEIN_RGBA_NODES = ("14", "15", "16", "17", "18")  # klein*_t2i.json: the background removal branch
+MATERIAL_TEXTURE_OPTIONS = {
+    "qwen21_turbo": {
+        "kind": "comfy", "workflow": "qwen_image_21_turbo_tile.json", "group": "qwen_t2i", "roles": {"12": "rgb"},
+        "outputs": ("rgb",), "meaning": "Qwen Image 2.1 Turbo, 8 steps, with the material negative text"},
+    "klein4b": dict(OPTIONS["klein4b"], roles={"13": "rgb"}, outputs=("rgb",),
+                    meaning="FLUX.2 Klein 4B, 4 steps (no negative text: the material negative is not used)"),
+}
 _MESH = {"default": "hunyuan21", "skippable": False, "options": {"hunyuan21": OPTIONS["hunyuan21"]}}
 # The paint of the one-mesh recipes (object_3d, prop, vehicle): by default Hunyuan3D Paint inside the
 # mesh job; hunyuan_concept drops the mesh job's Paint branch and paints its shape in three jobs.
@@ -590,7 +609,7 @@ _PAINT = {"default": "hunyuan21_inline", "skippable": False, "options": {
 CATALOGUE = {
     "concept": {"concept": _CONCEPT},
     "illustration": {"concept": _CONCEPT},
-    "material": {},
+    "material": {"texture": {"default": "qwen21_turbo", "skippable": False, "options": MATERIAL_TEXTURE_OPTIONS}},
     "object_3d": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
     "prop": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},
     "vehicle": {"concept": _CONCEPT, "mesh": _MESH, "paint": _PAINT},

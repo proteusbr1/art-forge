@@ -183,6 +183,7 @@ licence text on each model's page is what counts. Check it before using the outp
 | [Qwen-Image-Edit-2511-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning) (LoRA) | `qwen_edit_*` | Apache 2.0 |
 | [Qwen-Image-Edit-2511 Multiple Angles LoRA](https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA) | `qwen_edit_view_angles.json` | Apache 2.0 |
 | [FLUX.2 Klein 9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B) | `klein_t2i.json` | FLUX Non-Commercial License |
+| [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) | `klein4b_t2i.json` | Apache 2.0 |
 | [Hunyuan3D 2.1](https://huggingface.co/tencent/Hunyuan3D-2.1) (shape and Paint) | `hunyuan21_*` | Tencent Hunyuan Community License; its territory excludes the European Union, the United Kingdom and South Korea |
 | [TRELLIS.2](https://huggingface.co/microsoft/TRELLIS.2-4B) | `trellis2_mesh.json` | MIT |
 | [BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet) (background removal) | `klein_t2i.json`, `qwen_*` | MIT |

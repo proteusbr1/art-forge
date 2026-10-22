@@ -168,13 +168,19 @@ and `figure`; stage `mesh` (option `hunyuan21`) in `object_3d`, `prop`, `vehicle
 `hunyuan21_inline` (Hunyuan3D Paint inside the mesh job, as always: its `paint_*` settings
 are mesh settings), or `hunyuan_concept` (the mesh job keeps its shape, role `shape`, and
 the paint stage paints it in three jobs: [below](#the-paint-option-hunyuan_concept)).
-`material` has no stages. No core stage can be skipped.
+`material` has stage `texture` (its raw textures, the N seeds before the pick): by default
+`qwen21_turbo` (Qwen Image 2.1 Turbo with the material negative text, as always), or
+`klein4b` (FLUX.2 Klein 4B, `klein4b_t2i.json` without its background removal, nodes 14 to
+18 dropped; it reads no negative text). The 2K repaint and the seam inpaint stay Qwen Image
+2.1 Turbo with either option. The image-model lab chose it
+([labs/image-models.md](labs/image-models.md)). No core stage can be skipped.
 
 | Option | Workflow | Setting | Type and range | Lands on |
 |---|---|---|---|---|
 | `klein` | `klein_t2i.json` | `steps` | int 1-50 | `10.steps` |
 | | | `guidance` | number 0-30 | `8.cfg` |
 | | | `sampler` | combo | `9.sampler_name` |
+| `klein4b` | `klein4b_t2i.json` | `steps`, `guidance`, `sampler` | as `klein` | as `klein` |
 | `hunyuan21` | `hunyuan21_shape_paint.json` | `shape_steps` | int 1-100 | `3.steps` |
 | | | `shape_guidance` | number 1-30 | `3.guidance_scale` |
 | | | `shape_seed` | seed | `3.seed` |
@@ -248,7 +254,7 @@ Seeds are fixed: derived from `family/piece` (the same order gives the same seed
 |---|---|
 | `concept` | Klein concept (N seeds) -> pick (2D only) |
 | `illustration` | finished picture (background kept), picked by detail |
-| `material` | Qwen Image 2.1 Turbo texture at 1024 (N seeds) -> pick -> 2K repaint -> rolled by half -> seam band repainted (inpaint) -> rolled back |
+| `material` | Qwen Image 2.1 Turbo (or, with stage `texture` `klein4b`, FLUX.2 Klein 4B) texture at 1024 (N seeds) -> pick -> 2K repaint -> rolled by half -> seam band repainted (inpaint) -> rolled back |
 | `object_3d` | Klein concept -> pick -> Hunyuan3D 2.1 shape and Paint; with `inputs.reference`, only the mesh |
 | `prop` | as `object_3d` with the prop view; no mesh with `"3d": false` |
 | `vehicle` | 3/4 concept (N seeds) -> pick -> views `side`, `back`, `other_side`, `top` -> sheet -> emissive mask -> mesh with a 4096 texture |
@@ -1136,6 +1142,7 @@ All in ComfyUI API format, in `forge/workflows/`. `$PREFIX$`, `$PREFIX_MASK$` an
 | `qwen_edit_character.json` | Qwen Image Edit 2511, character edit | as `qwen_edit_2511.json` | picture (16), background mask (20), RGBA (32) |
 | `qwen_edit_view_angles.json` | Qwen Image Edit 2511 with the multiple-angles LoRA | none (image in node 1 through `images`; angles by `set` on node 10, seed on node 16) | picture (18), RGBA (23) |
 | `klein_t2i.json` | FLUX.2 Klein 9B, 4 steps | `$PROMPT$` `$WIDTH$` `$HEIGHT$` `$SEED$` | picture (13), RGBA (18) |
+| `klein4b_t2i.json` | FLUX.2 Klein 4B, 4 steps (the same graph) | as `klein_t2i.json` | picture (13), RGBA (18) |
 | `hunyuan21_shape_paint.json` | Hunyuan3D 2.1 shape and Paint | `$IMAGE$` `$SEED$` `$FACES$` | shape (6), shape before the face reduction (16, floaters removed), albedo (12), metal-roughness (13), paint views (14), painted mesh (`mesh_role`) |
 | `hunyuan21_paint_mesh.json` | Hunyuan3D 2.1 Paint over a given mesh, 10 steps | `$IMAGE$` `$MESH$` (local path) `$SEED$` `$TEXTURE$` | albedo (12), metal-roughness (13), paint views (14), painted mesh (`mesh_role`) |
 | `trellis2_mesh.json` | TRELLIS.2 at 1024 with remesh | `$IMAGE$` (RGBA) `$SEED$` `$TRIS$` (the `DecimateMesh` target) | remeshed and reduced mesh (403), remeshed mesh before the reduction (405), textured mesh (322) |

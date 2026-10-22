@@ -227,11 +227,18 @@ def recipe_material(fam, a, st):
     text = " ".join(p for p in (st[view], a["brief"], fam.get("material_style", ""), st.get("material_look", "")) if p)
     neg = st["material_negative"]
     n = variants_of(fam, a, 4, "material_seeds")
+    texture = stages.chosen_options("material", a)["texture"]
     ids = []
     jobs = []
     for s in seeds_for(fid + "/" + aid, n):
         jid = "%s/%s/raw_s%d" % (fid, aid, s)
         ids.append(jid)
+        if texture == "klein4b":
+            # FLUX.2 Klein 4B: no negative text; the background removal branch is dropped.
+            jobs.append({"id": jid, "kind": "comfy", "group": "klein4b", "workflow": "klein4b_t2i.json",
+                         "values": {"$PROMPT$": text, "$WIDTH$": 1024, "$HEIGHT$": 1024, "$SEED$": s},
+                         "drop": list(stages.KLEIN_RGBA_NODES), "roles": {"13": "rgb"}})
+            continue
         jobs.append({"id": jid, "kind": "comfy", "group": "qwen_t2i", "workflow": "qwen_image_21_turbo_tile.json",
                      "values": {"$PROMPT$": text, "$NEGATIVE$": neg, "$WIDTH$": 1024, "$HEIGHT$": 1024, "$SEED$": s},
                      "roles": {"12": "rgb"}})
